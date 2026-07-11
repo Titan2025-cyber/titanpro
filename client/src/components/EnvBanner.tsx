@@ -63,12 +63,12 @@ export default function EnvBanner() {
     <div
       role="alert"
       aria-live="polite"
-      className="w-full bg-amber-400 text-amber-950 border-b-2 border-amber-600 px-4 py-2 flex items-center justify-center gap-2 text-sm font-semibold shadow-sm z-50"
+      className="w-full bg-red-600 text-white border-b-2 border-red-800 px-4 py-2 flex items-center justify-center gap-2 text-sm font-semibold shadow-sm z-50"
       data-testid="env-banner"
     >
       <AlertTriangle className="w-4 h-4 shrink-0" aria-hidden="true" />
       <span>
-        {label} SITE — this is not production. Do not enter real customer data.
+        Staging Site — this is not production. Do not enter real customer data.
       </span>
     </div>
   );
