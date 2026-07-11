@@ -24,6 +24,7 @@ import SessionTimeout from "@/components/SessionTimeout";
 import Login from "@/pages/Login";
 import ForceEnroll2FA from "@/components/ForceEnroll2FA";
 import ForcePinChange from "@/components/ForcePinChange";
+import EnvBanner from "@/components/EnvBanner";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { PresenceTracker } from "@/lib/presence";
 
@@ -435,6 +436,10 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
+        {/* Non-production banner — hidden entirely on the live site. Rendered
+            above the Router so it appears on the login screen and every
+            authenticated view. */}
+        <EnvBanner />
         <Router hook={useHashLocationNoQuery}>
           <AppRoutes />
         </Router>
