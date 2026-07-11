@@ -440,6 +440,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       "/api/auth/logout",
       "/api/auth/me",
       "/api/auth/change-password",
+      // Forced-PIN-change flow (uses short-lived pinChangeToken from login response)
+      "/api/auth/pin/change-forced",
+      // 2FA enrollment + challenge flow — token-authenticated via body, not session
+      "/api/auth/2fa/setup/start",
+      "/api/auth/2fa/setup/verify",
+      "/api/auth/2fa/verify",
       // Token-based portals (self-authenticated via portal session token)
       "/api/customer-portal/",   // prefix: login + all portal data/pay/stripe routes
       "/api/adjuster-portal/",   // prefix: access token + supplement response

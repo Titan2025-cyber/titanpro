@@ -10,6 +10,10 @@ export interface AuthUser {
   phone: string | null;
   avatarInitials: string;
   permissions: string[];
+  twoFactorEnabled?: boolean;
+  twoFactorEnrolledAt?: string | null;
+  backupCodesRemaining?: number;
+  mustChangePin?: boolean;
 }
 
 interface AuthContextType {
@@ -18,10 +22,14 @@ interface AuthContextType {
   isLoading: boolean;
   login: (name: string, credential: string, isPin?: boolean) => Promise<void>;
   loginWeb: (identifier: string, password: string) => Promise<void>;
+  applySession: (token: string, employee: AuthUser) => void;
   logout: () => Promise<void>;
   can: (permission: string) => boolean;
   refreshUser: () => Promise<void>;
 }
+
+// localStorage key for the "remember this device for 30 days" trusted-device token.
+export const TRUSTED_DEVICE_KEY = "titan_trusted_device";
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
@@ -110,6 +118,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(data.employee);
   }
 
+  // Finalize a session after a multi-step (2FA) login completes in the Login page.
+  function applySession(tok: string, employee: AuthUser) {
+    persistToken(tok);
+    setToken(tok);
+    setUser(employee);
+  }
+
   async function logout() {
     if (token) {
       await apiRequest("POST", "/api/auth/logout").catch(() => {});
@@ -129,7 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, token, isLoading, login, loginWeb, logout, can, refreshUser }}>
+    <AuthContext.Provider value={{ user, token, isLoading, login, loginWeb, applySession, logout, can, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );
