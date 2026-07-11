@@ -1,0 +1,15 @@
+# Nixpacks build config for Railway
+# Ensures the native better-sqlite3 module compiles and build tools (in devDependencies) are available.
+
+[phases.setup]
+nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake"]
+
+[phases.install]
+# Install ALL dependencies (including devDependencies) so vite/esbuild/tsx are available for the build.
+cmds = ["npm ci --include=dev"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm start"

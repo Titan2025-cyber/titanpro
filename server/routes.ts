@@ -1,0 +1,4964 @@
+import type { Express } from "express";
+import { createServer, type Server } from "http";
+import { storage, sqlite } from "./storage";
+import crypto from "crypto";
+import { registerSuite4Routes } from "./routes_suite4";
+import { registerAuthRoutes, makeAuthMiddleware } from "./routes_auth";
+import { registerRampRoutes } from "./routes_ramp";
+import { registerRoutePlannerRoutes } from "./routes_routeplanner";
+import { registerSuite5Routes } from "./routes_suite5";
+import { registerSuite6Routes } from "./routes_suite6";
+import { registerAIAgentRoutes } from "./routes_aiagent";
+import { registerMarketingAIRoutes } from "./routes_marketing_ai";
+import { registerPresenceRoutes } from "./routes_presence";
+
+// ── Error handler wrapper ────────────────────────────────────────────────────
+type Handler = (req: any, res: any, next?: any) => any;
+function wrapAsync(fn: Handler): Handler {
+  return (req, res, next) => {
+    try {
+      const result = fn(req, res, next);
+      if (result && typeof result.catch === 'function') {
+        result.catch((err: any) => {
+          console.error('[Route Error]', req.method, req.path, err?.message);
+          if (!res.headersSent) res.status(500).json({ error: err?.message || 'Server error' });
+        });
+      }
+    } catch (err: any) {
+      console.error('[Route Error]', req.method, req.path, err?.message);
+      if (!res.headersSent) res.status(500).json({ error: err?.message || 'Server error' });
+    }
+  };
+}
+
+
+// ── IICRC Category Multipliers ───────────────────────────────────────────────
+const IICRC_CATEGORIES: Record<string, number> = {
+  "Category 1 (Clean Water)": 1.0,
+  "Category 2 (Gray Water)": 1.35,
+  "Category 3 (Black Water)": 1.75,
+  "Class 1 (Least Amount)": 1.0,
+  "Class 2 (Significant)": 1.2,
+  "Class 3 (Greatest Amount)": 1.5,
+  "Class 4 (Special Situations)": 1.8,
+};
+
+// ── Full SC/GA Statute Lookup Table ──────────────────────────────────────────
+interface Statute {
+  code: string;
+  topic: string;
+  text: string;
+  lossTypes: string[]; // ['all'] for universal, or ['water','fire','mold','storm']
+  rebuttalHook: string; // short phrase for inline rebuttal use
+}
+
+const STATUTE_TABLE: Record<"SC" | "GA", Statute[]> = {
+  SC: [
+    // ── Universal (all loss types) ──
+    {
+      code: "SC Code § 38-59-20",
+      topic: "Claim Acceptance / Denial Deadline",
+      text: "An insurer must accept or deny a claim within 45 days of receipt of proof of loss. Failure to do so constitutes constructive waiver of defenses.",
+      lossTypes: ["all"],
+      rebuttalHook: "The carrier's failure to act within 45 days of submitted proof of loss constitutes waiver under SC Code § 38-59-20.",
+    },
+    {
+      code: "SC Code § 38-77-290",
+      topic: "Claim Acknowledgment",
+      text: "Insurer must acknowledge the claim in writing within 10 days of receiving notice. Failure to acknowledge is a per se unfair claims practice.",
+      lossTypes: ["all"],
+      rebuttalHook: "Insurer is required to acknowledge this claim within 10 days per SC Code § 38-77-290.",
+    },
+    {
+      code: "SC Code § 38-77-310",
+      topic: "Undisputed Amount Payment",
+      text: "An insurer may not unreasonably delay payment of any undisputed portion of a claim. Undisputed amounts must be tendered promptly.",
+      lossTypes: ["all"],
+      rebuttalHook: "Payment of the undisputed line items must be tendered immediately under SC Code § 38-77-310.",
+    },
+    {
+      code: "SC Code § 38-59-40",
+      topic: "Attorney's Fees — Bad Faith",
+      text: "If an insurer refuses to pay without reasonable cause, the policyholder is entitled to recover attorney's fees and costs in addition to the claim amount.",
+      lossTypes: ["all"],
+      rebuttalHook: "Continued refusal without reasonable cause exposes the carrier to attorney's fees under SC Code § 38-59-40.",
+    },
+    {
+      code: "SC Reg. 69-64(D)",
+      topic: "Extra-Contractual Damages",
+      text: "Bad-faith failure to settle a claim where liability is reasonably clear supports extra-contractual damages including punitive damages.",
+      lossTypes: ["all"],
+      rebuttalHook: "Carrier's conduct may constitute bad faith supporting extra-contractual damages per SC Reg. 69-64(D).",
+    },
+    {
+      code: "SC Code § 38-59-30",
+      topic: "Reasonable Investigation Required",
+      text: "Insurer must complete a reasonable investigation prior to denying a claim. Denial without adequate investigation is an unfair claims settlement practice.",
+      lossTypes: ["all"],
+      rebuttalHook: "Any reduction or denial without documented field investigation violates SC Code § 38-59-30.",
+    },
+    {
+      code: "SC Code § 38-57-30",
+      topic: "Misrepresentation of Policy Provisions",
+      text: "It is an unfair trade practice to misrepresent the provisions of any policy in connection with a claim.",
+      lossTypes: ["all"],
+      rebuttalHook: "Misrepresenting scope-of-coverage provisions in this adjustment violates SC Code § 38-57-30.",
+    },
+    // ── Water-Specific ──
+    {
+      code: "SC Code § 38-75-730",
+      topic: "Flood / Water Loss Coverage Duty",
+      text: "Insurers must clearly disclose coverage limitations for water intrusion and are prohibited from retroactively narrowing scope after a documented loss event.",
+      lossTypes: ["water"],
+      rebuttalHook: "Retroactive narrowing of water loss coverage after documentation of the loss event is prohibited under SC Code § 38-75-730.",
+    },
+    {
+      code: "SC Code § 38-77-270",
+      topic: "Prompt Payment — Water Damage",
+      text: "After receipt of satisfactory proof of water damage loss, the insurer shall pay within 30 days.",
+      lossTypes: ["water"],
+      rebuttalHook: "Full payment of this documented water loss is required within 30 days of submitted proof per SC Code § 38-77-270.",
+    },
+    // ── Fire/Smoke-Specific ──
+    {
+      code: "SC Code § 38-47-10",
+      topic: "Fire Policy Mandatory Coverage",
+      text: "All fire insurance policies in SC must provide coverage for the actual cash value of damaged property and cost of debris removal. Smoke damage is an insured peril under all standard fire policies.",
+      lossTypes: ["fire"],
+      rebuttalHook: "Smoke and fire damage including contents and debris removal are mandatory covered perils under SC Code § 38-47-10.",
+    },
+    // ── Mold-Specific ──
+    {
+      code: "SC Code § 38-77-140",
+      topic: "Mold Remediation — Carrier Duty",
+      text: "When mold results from a covered water loss, the carrier has a duty to pay for remediation to pre-loss condition. Denial of remediation costs directly caused by a covered peril is a breach of the policy.",
+      lossTypes: ["mold"],
+      rebuttalHook: "Mold resulting from the covered water loss requires carrier-funded remediation under SC Code § 38-77-140.",
+    },
+    // ── Storm-Specific ──
+    {
+      code: "SC Code § 38-75-1510",
+      topic: "Catastrophic Loss — Expedited Handling",
+      text: "Following a state-declared catastrophic event, insurers must expedite claims processing and may not apply standard processing timelines as a delay tactic.",
+      lossTypes: ["storm"],
+      rebuttalHook: "Storm-related claims during a declared catastrophic event are subject to expedited handling under SC Code § 38-75-1510.",
+    },
+  ],
+
+  GA: [
+    // ── Universal (all loss types) ──
+    {
+      code: "GA Code § 33-6-34",
+      topic: "Claim Acknowledgment & Investigation",
+      text: "Insurer must acknowledge a claim within 10 days of receipt of notice, conduct a reasonable investigation, and respond to any reasonable inquiry within 10 business days.",
+      lossTypes: ["all"],
+      rebuttalHook: "Failure to acknowledge and investigate within 10 days violates GA Code § 33-6-34.",
+    },
+    {
+      code: "GA Code § 33-6-34(4)",
+      topic: "Undisputed Amount Tender",
+      text: "An insurer shall tender any undisputed amount due within 60 days of proof of loss, regardless of any dispute over other portions of the claim.",
+      lossTypes: ["all"],
+      rebuttalHook: "Undisputed amounts must be tendered within 60 days under GA Code § 33-6-34(4).",
+    },
+    {
+      code: "GA Code § 33-4-6",
+      topic: "Bad Faith Penalty",
+      text: "If an insurer refuses to pay a loss within 60 days after demand, and the refusal is in bad faith, the insurer is liable for the loss amount plus a 50% penalty plus attorney's fees.",
+      lossTypes: ["all"],
+      rebuttalHook: "Refusal beyond 60 days after demand exposes carrier to a 50% penalty plus attorney's fees under GA Code § 33-4-6.",
+    },
+    {
+      code: "GA Code § 13-6-11",
+      topic: "Attorney's Fees — Bad Faith",
+      text: "Attorney's fees are recoverable when the defendant has acted in bad faith, been stubbornly litigious, or caused unnecessary trouble and expense.",
+      lossTypes: ["all"],
+      rebuttalHook: "Carrier's bad-faith reduction of a well-documented claim exposes it to attorney's fees under GA Code § 13-6-11.",
+    },
+    {
+      code: "GA Code § 33-6-34(3)",
+      topic: "No Waiver of Rights",
+      text: "Insurer is prohibited from requiring a policyholder to waive rights as a condition of receiving payment of any undisputed amount.",
+      lossTypes: ["all"],
+      rebuttalHook: "Requesting a waiver of rights in exchange for partial payment violates GA Code § 33-6-34(3).",
+    },
+    {
+      code: "GA Code § 33-6-34(7)",
+      topic: "No Delay by Frivolous Demand",
+      text: "It is an unfair claims practice to compel a claimant to institute litigation by offering substantially less than the amount ultimately recovered.",
+      lossTypes: ["all"],
+      rebuttalHook: "Substantially under-paying a documented loss to force litigation is prohibited under GA Code § 33-6-34(7).",
+    },
+    {
+      code: "GA Code § 33-24-45",
+      topic: "Reasonable Basis Required for Denial",
+      text: "An insurer must have a reasonable basis in law and fact for denying any portion of a covered claim. A reduction must be supported by a written explanation.",
+      lossTypes: ["all"],
+      rebuttalHook: "Any line-item reduction without a written factual and legal basis violates GA Code § 33-24-45.",
+    },
+    // ── Water-Specific ──
+    {
+      code: "GA Code § 33-32-1",
+      topic: "Water Damage — Policy Construction",
+      text: "Ambiguous policy language regarding water damage coverage must be construed in favor of the insured. Exclusions must be strictly and narrowly applied.",
+      lossTypes: ["water"],
+      rebuttalHook: "Any ambiguity in water loss coverage must be resolved in the insured's favor per GA Code § 33-32-1.",
+    },
+    {
+      code: "GA Code § 33-6-34(5)",
+      topic: "Prompt Payment — Water Damage",
+      text: "Insurer must pay documented water damage claims within a reasonable time after proof of loss. Drying and mitigation costs are compensable immediate-response expenses.",
+      lossTypes: ["water"],
+      rebuttalHook: "Mitigation and drying costs are required immediate-response compensable expenses under GA Code § 33-6-34(5).",
+    },
+    // ── Fire/Smoke-Specific ──
+    {
+      code: "GA Code § 33-35-1",
+      topic: "Standard Fire Policy — Mandatory Coverage",
+      text: "Georgia requires coverage for fire and smoke as defined perils in all standard property policies. Smoke damage caused by a covered fire is an insured peril.",
+      lossTypes: ["fire"],
+      rebuttalHook: "Smoke and odor remediation resulting from a covered fire event is a mandatory insured peril under GA Code § 33-35-1.",
+    },
+    // ── Mold-Specific ──
+    {
+      code: "GA Code § 33-6-34(2)",
+      topic: "Mold — Consequential Loss",
+      text: "Mold resulting directly from a covered water loss event is a consequential covered loss. The carrier must fund remediation to pre-loss condition.",
+      lossTypes: ["mold"],
+      rebuttalHook: "Mold caused by the covered water event is a consequential covered loss requiring remediation under GA Code § 33-6-34(2).",
+    },
+    // ── Storm-Specific ──
+    {
+      code: "GA Code § 33-6-34(6)",
+      topic: "Storm — No Denial Pending Inspection",
+      text: "An insurer may not deny a storm loss claim without first conducting a physical inspection of the damaged property.",
+      lossTypes: ["storm"],
+      rebuttalHook: "Denial or reduction of this storm claim without physical inspection violates GA Code § 33-6-34(6).",
+    },
+  ],
+};
+
+// ── IICRC Standards by Loss Type ─────────────────────────────────────────────
+const IICRC_STANDARDS: Record<string, string[]> = {
+  water: [
+    "IICRC S500 Standard for Professional Water Damage Restoration (current edition) — All drying protocols, equipment placement, and moisture monitoring meet Class/Category requirements.",
+    "IICRC S500 §7.4 — Water extraction required for all Category 2/3 losses to prevent secondary damage.",
+    "IICRC S500 §11.3 — Low Grain Refrigerant (LGR) dehumidification required per Class 2/3 moisture readings.",
+    "IICRC S500 §11.4 — Air movers required at minimum 1 per 50 SF per Class 2 drying protocol.",
+    "IICRC S500 §9.7 — Antimicrobial treatment required for all Category 2+ water losses.",
+    "IICRC S500 §6.1 — Emergency response within 2 hours required to mitigate secondary damage and limit further loss.",
+  ],
+  fire: [
+    "IICRC S700 Standard for Professional Fire and Smoke Damage Restoration — All cleaning and deodorization procedures comply with S700 requirements.",
+    "IICRC S700 §6 — Emergency securing and board-up required to prevent further loss following a fire event.",
+    "IICRC S700 §7 — Professional dry/wet chemical soot cleaning protocol required for all surfaces exposed to fire residue.",
+    "IICRC S700 §8 — Contents pack-out required when smoke contamination levels preclude in-place cleaning.",
+    "IICRC S700 §9 — Hydroxyl generator or ozone treatment required to address embedded smoke odor.",
+    "IICRC S700 §11 — Structural deodorization required when odor penetration exceeds surface level.",
+  ],
+  mold: [
+    "IICRC S520 Standard for Professional Mold Remediation — All containment, remediation, and clearance procedures comply with S520.",
+    "IICRC S520 §9 — Full negative-air containment required during active mold remediation to prevent cross-contamination.",
+    "IICRC S520 §10 — HEPA air filtration required during and following all mold remediation work.",
+    "IICRC S520 §11 — Personal Protective Equipment (PPE) at minimum Level C required for all remediation personnel.",
+    "IICRC S520 §12 — Post-remediation verification (clearance testing) required prior to reconstruction.",
+    "IICRC S520 §13 — Affected porous materials (drywall, insulation, carpet) must be removed and disposed of per EPA/state guidelines.",
+  ],
+  storm: [
+    "IICRC S500 Standard for Professional Water Damage Restoration — Storm-driven water intrusion treated as Category 2/3 loss requiring full drying protocol.",
+    "IICRC S700 Standard for Professional Fire and Smoke Damage Restoration — Applicable when storm causes fire or electrical damage.",
+    "RIA (Restoration Industry Association) Restoration Consensus Pricing — Unit pricing reflects current Southeast regional market rates for storm loss response.",
+    "IICRC S500 §6.1 — Emergency response mobilization required within 2 hours to mitigate further storm damage.",
+    "IICRC S500 §7 — Structural drying required when storm infiltration exceeds surface-level moisture levels.",
+  ],
+  biohazard: [
+    "IICRC S540 Standard for Professional Trauma and Crime Scene Cleanup — All biohazard remediation follows S540 protocols.",
+    "OSHA 29 CFR 1910.1030 — Bloodborne Pathogens Standard compliance required for all biohazard remediation personnel.",
+    "EPA 40 CFR Part 243 — All biohazard waste transported and disposed per EPA solid/hazardous waste guidelines.",
+    "IICRC S540 §7 — Containment and decontamination required for all areas with confirmed biohazard contamination.",
+    "IICRC S540 §9 — Post-remediation clearance testing required prior to restoration work.",
+  ],
+  reconstruction: [
+    "IICRC S500 §14 — Post-drying structural assessments must confirm moisture levels at or below baseline before reconstruction begins.",
+    "IRC (International Residential Code) — All reconstruction work meets current IRC requirements applicable in GA/SC.",
+    "OSHA 29 CFR 1926 — Construction Safety Standards compliance maintained throughout reconstruction.",
+    "RIA Reconstruction Consensus Pricing — Unit pricing reflects current Southeast regional market rates.",
+    "IICRC S500 §15 — Written documentation of drying completion and moisture clearance is required before any reconstruction is performed.",
+  ],
+};
+
+// ── Smart State Detector ──────────────────────────────────────────────────────
+const SC_CITIES = ["chapin", "columbia", "greenville", "spartanburg", "charleston", "myrtle beach", "florence", "rock hill", "sumter", "hilton head", "lexington", "irmo", "west columbia", "cayce", "newberry", "orangeburg", "beaufort", "aiken", "anderson", "gaffney", "conway", "north charleston", "mount pleasant", "bluffton", "greer"];
+const GA_CITIES = ["augusta", "martinez", "evans", "grovetown", "hephzibah", "atlanta", "savannah", "macon", "columbus", "athens", "sandy springs", "roswell", "johns creek", "albany", "warner robins", "alpharetta", "marietta", "smyrna", "valdosta", "brookhaven", "peachtree city", "dunwoody", "mcdonough", "kennesaw", "gainesville", "dalton", "north augusta"];
+
+function detectState(address: string | null | undefined): "SC" | "GA" {
+  if (!address) return "GA"; // default to GA (Titan's primary market)
+  const lower = address.toLowerCase();
+
+  // 1. Explicit state abbreviation (", SC" or ", GA" with word boundary)
+  if (/,\s*sc\b/.test(lower)) return "SC";
+  if (/,\s*ga\b/.test(lower)) return "GA";
+
+  // 2. Full state name
+  if (/south carolina/.test(lower)) return "SC";
+  if (/georgia/.test(lower)) return "GA";
+
+  // 3. ZIP code range: 29000–29999 → SC, 30000–31999 → GA
+  const zipMatch = lower.match(/\b(\d{5})\b/);
+  if (zipMatch) {
+    const zip = parseInt(zipMatch[1], 10);
+    if (zip >= 29000 && zip <= 29999) return "SC";
+    if (zip >= 30000 && zip <= 31999) return "GA";
+  }
+
+  // 4. Known city lists
+  for (const city of SC_CITIES) {
+    if (lower.includes(city)) return "SC";
+  }
+  for (const city of GA_CITIES) {
+    if (lower.includes(city)) return "GA";
+  }
+
+  // 5. Default to GA (primary market is Augusta, GA)
+  return "GA";
+}
+
+// ── Statute Selector ──────────────────────────────────────────────────────────
+function selectStatutes(state: "SC" | "GA", lossType: string): Statute[] {
+  const all = STATUTE_TABLE[state];
+  const normalizedLoss = lossType?.toLowerCase() || "water";
+  const universal = all.filter(s => s.lossTypes.includes("all"));
+  const specific = all.filter(s => s.lossTypes.includes(normalizedLoss));
+  // Deduplicate by code
+  const seen = new Set<string>();
+  const result: Statute[] = [];
+  for (const s of [...universal, ...specific]) {
+    if (!seen.has(s.code)) {
+      seen.add(s.code);
+      result.push(s);
+    }
+  }
+  return result;
+}
+
+// ── IICRC Line-Item Justification ─────────────────────────────────────────────
+function getIICRCJustification(item: any): string {
+  const desc = (item.description || "").toLowerCase();
+  if (desc.includes("extract")) return "IICRC S500 §7.4 — Required for all Category 2/3 losses to prevent secondary damage.";
+  if (desc.includes("dehumid")) return "IICRC S500 §11.3 — LGR equipment required per Class 2/3 moisture levels.";
+  if (desc.includes("air mover")) return "IICRC S500 §11.4 — Air movers required at 1 per 50 SF per Class 2 drying protocol.";
+  if (desc.includes("antimicro")) return "IICRC S500 §9.7 — Antimicrobial treatment required for all Category 2+ losses.";
+  if (desc.includes("emergency") || desc.includes("mobiliz")) return "IICRC S500 §6.1 — Emergency response within 2 hours required to mitigate secondary damage.";
+  if (desc.includes("soot") || desc.includes("smoke") || (desc.includes("clean") && !desc.includes("antimicro"))) return "IICRC S700 §7 — Professional smoke/soot cleaning per fire restoration standard.";
+  if (desc.includes("odor") || desc.includes("hydroxyl") || desc.includes("ozone")) return "IICRC S700 §9 — Hydroxyl/ozone treatment required to address embedded smoke odor.";
+  if (desc.includes("board") || desc.includes("tarping") || desc.includes("tarp")) return "IICRC S700 §6 — Emergency securing required to prevent further loss.";
+  if (desc.includes("content") || desc.includes("pack")) return "IICRC S700 §8 — Contents pack-out required per smoke contamination levels.";
+  if (desc.includes("mold") || desc.includes("remediat") || desc.includes("contain")) return "IICRC S520 §12 — Full containment and remediation per mold remediation standard.";
+  if (desc.includes("hepa") || desc.includes("air scrub") || desc.includes("negative")) return "IICRC S520 §10 — HEPA air filtration required during all mold remediation.";
+  if (desc.includes("clearance") || desc.includes("test")) return "IICRC S520 §12 — Post-remediation clearance testing required before reconstruction.";
+  if (desc.includes("dry") && (desc.includes("wall") || desc.includes("board"))) return "IICRC S500 §14 — Structural drying must reach baseline moisture before reconstruction.";
+  if (desc.includes("reconstruct") || desc.includes("drywall") || desc.includes("framing") || desc.includes("flooring")) return "IICRC S500 §15 — Reconstruction may proceed only after certified drying completion.";
+  return "Per IICRC industry standards and Xactimate regional pricing database.";
+}
+
+// ── Rebuttal Generator (auto, no prompt required) ────────────────────────────
+function generateRebuttal(estimate: any, job: any): { text: string; state: "SC" | "GA"; statutesUsed: Statute[] } {
+  const items = JSON.parse(estimate.lineItems || "[]");
+  const total = estimate.total || 0;
+  const jobNum = job?.jobNumber || "Unknown";
+  const lossType = job?.lossType || "water";
+  const carrier = job?.insuranceCarrier || "the carrier";
+  const address = job?.address || "";
+
+  const state = detectState(address);
+  const statutes = selectStatutes(state, lossType);
+  const iicrcRefs = IICRC_STANDARDS[lossType.toLowerCase()] || IICRC_STANDARDS.water;
+
+  const itemList = items.map((i: any) =>
+    `  • ${i.description}: $${Number(i.total).toFixed(2)}\n    Basis: ${getIICRCJustification(i)}`
+  ).join("\n");
+
+  const statuteList = statutes.map(s =>
+    `• ${s.code} — ${s.topic}\n  ${s.text}\n  ↳ ${s.rebuttalHook}`
+  ).join("\n\n");
+
+  const iicrcList = iicrcRefs.map(r => `• ${r}`).join("\n");
+
+  const stateLabel = state === "SC" ? "South Carolina" : "Georgia";
+
+  const text = `FORMAL REBUTTAL & SUPPLEMENT DEMAND
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Job: ${jobNum} | Loss Type: ${lossType.toUpperCase()} | Estimate Total: $${total.toFixed(2)}
+Carrier: ${carrier} | State: ${stateLabel}
+Property: ${address || "See job file"}
+Date: ${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TO THE ASSIGNED ADJUSTER:
+
+Titan Restoration LLC respectfully submits this formal rebuttal to the carrier's reduction or denial of the documented scope of loss on this claim. All work reflected in our estimate was performed in strict compliance with IICRC ${lossType.toUpperCase()} restoration standards, Xactimate pricing methodology, and applicable ${stateLabel} insurance statutes.
+
+SCOPE JUSTIFICATION BY LINE ITEM:
+${itemList || "  • Full scope of documented loss — see attached estimate for line-item detail."}
+
+IICRC STANDARD REFERENCES:
+${iicrcList}
+
+APPLICABLE ${stateLabel.toUpperCase()} STATE LAW:
+${statuteList}
+
+DEMAND:
+Titan Restoration LLC demands payment of the full documented scope of loss within 30 days of this notice. The undisputed amounts must be tendered immediately under ${state === "SC" ? "SC Code § 38-77-310" : "GA Code § 33-6-34(4)"}. Failure to pay the full documented scope within 30 days may constitute bad faith under ${state === "SC" ? "SC Reg. 69-64(D) and SC Code § 38-59-40" : "GA Code § 33-4-6 and GA Code § 13-6-11"}, subjecting the carrier to penalties, attorney's fees, and potential litigation.
+
+All supporting documentation — including moisture logs, drying records, psychrometric data, field photographs, signed authorizations, and equipment placement records — is available upon request and will be submitted to any arbitration or litigation panel.
+
+Respectfully submitted,
+Cody Brantley, Owner
+Titan Restoration LLC
+706-922-0154 | cody@titanrestorationllc.com
+License: Licensed Contractor — GA & SC`;
+
+  return { text, state, statutesUsed: statutes };
+}
+
+export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+
+  // ── GLOBAL API AUTH GATE (default-deny) ─────────────────────────────────────
+  // Every /api/* request requires a valid staff session EXCEPT an explicit
+  // allowlist of public endpoints (staff login, token-based customer/adjuster
+  // portals which enforce their own session checks internally, health, and the
+  // QuickBooks OAuth callback). This is mounted FIRST so it runs before any
+  // route handler regardless of where that route is registered. Default-deny
+  // means any route added in the future is protected automatically.
+  {
+    const { requireStaffAuth: gateStaffAuth } = makeAuthMiddleware(sqlite);
+    // Exact paths OR path prefixes (matched against req.path) that stay public.
+    const PUBLIC_API = [
+      "/api/health",
+      // Staff auth endpoints
+      "/api/auth/login",
+      "/api/auth/logout",
+      "/api/auth/me",
+      "/api/auth/change-password",
+      // Token-based portals (self-authenticated via portal session token)
+      "/api/customer-portal/",   // prefix: login + all portal data/pay/stripe routes
+      "/api/adjuster-portal/",   // prefix: access token + supplement response
+      "/api/portal/login",
+      // QuickBooks OAuth redirect callback (no bearer token on the redirect)
+      "/api/qb/oauth/callback",
+      "/api/qb/oauth/start",
+    ];
+    const isPublic = (p: string) =>
+      PUBLIC_API.some((allow) =>
+        allow.endsWith("/") ? p.startsWith(allow) : p === allow
+      );
+    app.use("/api", (req, res, next) => {
+      // req.path here is relative to the "/api" mount, so re-prefix for matching.
+      const full = "/api" + (req.path === "/" ? "" : req.path);
+      if (isPublic(full)) return next();
+      return gateStaffAuth(req, res, next);
+    });
+  }
+
+  // ── Contacts ──────────────────────────────────────────────────────────────
+  app.get("/api/contacts", (_req, res) => { res.json(storage.getContacts()); });
+  app.get("/api/contacts/:id", (req, res) => {
+    const c = storage.getContact(Number(req.params.id));
+    if (!c) return res.status(404).json({ error: "Not found" });
+    res.json(c);
+  });
+  app.post("/api/contacts", (req, res) => { res.json(storage.createContact(req.body)); });
+  app.patch("/api/contacts/:id", (req, res) => {
+    const c = storage.updateContact(Number(req.params.id), req.body);
+    if (!c) return res.status(404).json({ error: "Not found" });
+    res.json(c);
+  });
+  app.delete("/api/contacts/:id", (req, res) => {
+    storage.deleteContact(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+  // ── Jobs ──────────────────────────────────────────────────────────────────
+  app.get("/api/jobs", (_req, res) => { res.json(storage.getJobs()); });
+
+
+  // ── Job Financial Summary (all jobs in one call) ──────────────────────────
+  app.get("/api/jobs/financials", (_req, res) => {
+    // Ensure credit_memo columns exist
+    try { sqlite.exec(`ALTER TABLE payments ADD COLUMN credit_memo INTEGER DEFAULT 0`); } catch(_) {}
+    try { sqlite.exec(`ALTER TABLE payments ADD COLUMN memo_reason TEXT`); } catch(_) {}
+
+    const jobs = sqlite.prepare("SELECT id FROM jobs").all() as any[];
+    const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
+    const payments = sqlite.prepare("SELECT * FROM payments").all() as any[];
+    // Per-job, per-phase cost & estimate sums (estimates/invoices/job_costs carry a phase column).
+    const costsPhase = sqlite.prepare("SELECT job_id, phase, SUM(total) as total FROM job_costs GROUP BY job_id, phase").all() as any[];
+    const estimatesPhase = sqlite.prepare("SELECT job_id, phase, SUM(total) as total FROM estimates WHERE status != 'rejected' GROUP BY job_id, phase").all() as any[];
+    const supplements = sqlite.prepare("SELECT job_id, SUM(amount_approved) as settled FROM supplements WHERE status IN ('approved','partial') GROUP BY job_id").all() as any[];
+
+    const PHASES = ["mitigation", "reconstruction"] as const;
+    const normPhase = (p: any) => (p === "reconstruction" ? "reconstruction" : "mitigation");
+
+    // job_id -> phase -> amount
+    const costPhaseMap: Record<number, Record<string, number>> = {};
+    costsPhase.forEach((c: any) => {
+      (costPhaseMap[c.job_id] ||= {});
+      const ph = normPhase(c.phase);
+      costPhaseMap[c.job_id][ph] = (costPhaseMap[c.job_id][ph] || 0) + (c.total || 0);
+    });
+    const estPhaseMap: Record<number, Record<string, number>> = {};
+    estimatesPhase.forEach((e: any) => {
+      (estPhaseMap[e.job_id] ||= {});
+      const ph = normPhase(e.phase);
+      estPhaseMap[e.job_id][ph] = (estPhaseMap[e.job_id][ph] || 0) + (e.total || 0);
+    });
+
+    const suppMap: Record<number, number> = {};
+    supplements.forEach((s: any) => { suppMap[s.job_id] = s.settled || 0; });
+
+    const result: Record<number, any> = {};
+    for (const job of jobs) {
+      const jobInvoices = invoices.filter((i: any) => i.job_id === job.id);
+      const invoiceTotal = jobInvoices.reduce((s: number, i: any) => s + (i.total || 0), 0);
+
+      const jobPayments = payments.filter((p: any) => p.job_id === job.id || jobInvoices.some((i: any) => i.id === p.invoice_id));
+      const collected = jobPayments.filter((p: any) => p.type === 'received' && !p.credit_memo).reduce((s: number, p: any) => s + (p.amount || 0), 0);
+      const creditMemos = jobPayments.filter((p: any) => p.credit_memo).reduce((s: number, p: any) => s + (p.amount || 0), 0);
+
+      const totalCosts = (costPhaseMap[job.id]?.mitigation || 0) + (costPhaseMap[job.id]?.reconstruction || 0);
+      const estimateTotal = (estPhaseMap[job.id]?.mitigation || 0) + (estPhaseMap[job.id]?.reconstruction || 0);
+      const settledAmount = suppMap[job.id] || 0; // supplement approved (claim-level, no phase)
+      const grossProfit = collected - totalCosts;
+
+      // Invoice phase lookup for attributing payments.
+      const invPhaseById: Record<number, string> = {};
+      jobInvoices.forEach((i: any) => { invPhaseById[i.id] = normPhase(i.phase); });
+
+      // Build per-phase breakdown.
+      const byPhase: Record<string, any> = {};
+      for (const ph of PHASES) {
+        const phEstimate = estPhaseMap[job.id]?.[ph] || 0;
+        const phCosts = costPhaseMap[job.id]?.[ph] || 0;
+        const phInvoiceTotal = jobInvoices.filter((i: any) => normPhase(i.phase) === ph).reduce((s: number, i: any) => s + (i.total || 0), 0);
+        // Payment attributed to the phase of its invoice; job-level payments (no invoice) default to mitigation.
+        const phPayments = jobPayments.filter((p: any) => {
+          const pph = p.invoice_id && invPhaseById[p.invoice_id] ? invPhaseById[p.invoice_id] : "mitigation";
+          return pph === ph;
+        });
+        const phCollected = phPayments.filter((p: any) => p.type === 'received' && !p.credit_memo).reduce((s: number, p: any) => s + (p.amount || 0), 0);
+        const phCreditMemos = phPayments.filter((p: any) => p.credit_memo).reduce((s: number, p: any) => s + (p.amount || 0), 0);
+        const phGrossProfit = phCollected - phCosts;
+        byPhase[ph] = {
+          estimateTotal: phEstimate,
+          invoiceTotal: phInvoiceTotal,
+          collected: phCollected,
+          creditMemos: phCreditMemos,
+          totalCosts: phCosts,
+          grossProfit: phGrossProfit,
+          settledAmount, // claim-level, shown on both phases
+          grossMarginPct: phCollected > 0 ? Math.round((phGrossProfit / phCollected) * 100) : 0,
+          outstanding: phInvoiceTotal - phCollected,
+        };
+      }
+
+      result[job.id] = {
+        jobId: job.id,
+        estimateTotal,
+        invoiceTotal,
+        collected,
+        creditMemos,
+        totalCosts,
+        grossProfit,
+        settledAmount,
+        grossMarginPct: collected > 0 ? Math.round(((collected - totalCosts) / collected) * 100) : 0,
+        outstanding: invoiceTotal - collected,
+        byPhase,
+      };
+    }
+    res.json(result);
+  });
+
+  // ── Weekly Billing Report (OWNER ONLY) ────────────────────────────────────
+  // Billed vs Settled vs Collected, bucketed by ISO week (Mon–Sun).
+  const { requireRole, requireStaffAuth } = makeAuthMiddleware(sqlite);
+
+  // ── Notify all employees when a new job is entered ──────────────────────────
+  // Posts an announcement to the team messaging channel AND drops a per-employee
+  // notification into each active employee's inbox. Never throws (best-effort).
+  function notifyNewJob(job: any) {
+    try {
+      if (!job) return;
+      const contact = job.contactId ? storage.getContact(Number(job.contactId)) : undefined;
+      const customerName = (contact as any)?.name || "New customer";
+      const loss = (job.lossType || "").toString();
+      const lossLabel = loss ? loss.charAt(0).toUpperCase() + loss.slice(1) : "General";
+      const addr = job.address ? ` at ${job.address}` : "";
+      const assigned = job.assignedTech ? ` · Assigned: ${job.assignedTech}` : " · Unassigned";
+      const title = `New job ${job.jobNumber} entered`;
+      const body = `${lossLabel} loss for ${customerName}${addr}.${assigned}`;
+      const nowIso = new Date().toISOString();
+
+      // 1) Post to the team messaging channel (general, id=1)
+      const channels = storage.getChannels();
+      const generalChannel = channels.find((c) => c.name === "general" || c.id === 1) || channels[0];
+      if (generalChannel) {
+        const chanMsg = [
+          `🆕 New job entered: ${job.jobNumber}`,
+          `${lossLabel} loss${addr}`,
+          `Customer: ${customerName}${assigned}`,
+          `Status: ${job.status || "lead"}`,
+        ].join("\n");
+        storage.createMessage({ channelId: generalChannel.id, author: "Titan Pro Bot", body: chanMsg });
+      }
+
+      // 2) Per-employee notification for every active employee
+      const insertNote = sqlite.prepare(
+        `INSERT INTO tech_notifications (tech_name, type, title, body, job_id, created_at) VALUES (?, 'new_job', ?, ?, ?, ?)`
+      );
+      const employees = storage.getEmployees().filter((e: any) => {
+        const active = (e.isActive ?? e.is_active);
+        return active === undefined || active === true || active === 1;
+      });
+      for (const emp of employees) {
+        if (!emp?.name) continue;
+        insertNote.run(emp.name, title, body, job.id, nowIso);
+      }
+    } catch (e) {
+      console.error("[jobs] new-job notification failed:", (e as any)?.message || e);
+    }
+  }
+
+  app.get("/api/reports/weekly-billing", requireRole("owner"), (req, res) => {
+    try { sqlite.exec(`ALTER TABLE payments ADD COLUMN credit_memo INTEGER DEFAULT 0`); } catch(_) {}
+
+    // Optional query params: groupBy=week|month (default week), from=YYYY-MM-DD, to=YYYY-MM-DD (inclusive)
+    const groupBy = (String(req.query.groupBy || "week").toLowerCase() === "month") ? "month" : "week";
+    // division=mitigation|reconstruction|both|unassigned|all (default all). Scopes the Brought In / Cost / Net
+    // KPIs, chart, and period table to a single division. 'billed'/'settled' are not division-tagged, so
+    // when a division filter is active those columns show 0 (money-in/out is what's division-aware).
+    const divisionFilterRaw = String(req.query.division || "all").toLowerCase();
+    const divisionFilter = ["mitigation", "reconstruction", "both", "unassigned"].includes(divisionFilterRaw) ? divisionFilterRaw : "all";
+    const fromStr = typeof req.query.from === "string" && req.query.from ? String(req.query.from) : null;
+    const toStr = typeof req.query.to === "string" && req.query.to ? String(req.query.to) : null;
+    const fromDate = fromStr ? new Date(fromStr + "T00:00:00") : null;
+    const toDate = toStr ? new Date(toStr + "T23:59:59") : null;
+    const fromValid = fromDate && !isNaN(fromDate.getTime()) ? fromDate : null;
+    const toValid = toDate && !isNaN(toDate.getTime()) ? toDate : null;
+
+    // Keep dates within the [from, to] range (inclusive). No bound = pass through.
+    function inRange(dateStr: string): boolean {
+      if (!fromValid && !toValid) return true;
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return false;
+      if (fromValid && d < fromValid) return false;
+      if (toValid && d > toValid) return false;
+      return true;
+    }
+
+    const invoices = sqlite.prepare("SELECT total, created_at FROM invoices").all() as any[];
+    const payments = sqlite.prepare("SELECT amount, type, credit_memo, paid_at, job_id FROM payments").all() as any[];
+    const supplements = sqlite.prepare("SELECT amount_approved, status, response_at, submitted_at, created_at FROM supplements").all() as any[];
+    const jobCosts = sqlite.prepare("SELECT total, cost_date, created_at, job_id FROM job_costs").all() as any[];
+
+    // Map each job to its division tag (mitigation | reconstruction | both).
+    // Missing/unknown tags fall into 'unassigned' so nothing is silently dropped.
+    let jobDivRows: any[] = [];
+    try { jobDivRows = sqlite.prepare("SELECT id, division FROM jobs").all() as any[]; } catch (_) { jobDivRows = []; }
+    const jobDivision: Record<number, string> = {};
+    for (const j of jobDivRows) {
+      const d = String(j.division || "").toLowerCase();
+      jobDivision[j.id] = (d === "mitigation" || d === "reconstruction" || d === "both") ? d : "unassigned";
+    }
+    // A 'both' job splits its money 50/50 across the two divisions.
+    const divisions = {
+      mitigation: { collected: 0, cost: 0 },
+      reconstruction: { collected: 0, cost: 0 },
+      unassigned: { collected: 0, cost: 0 },
+    };
+    function addToDivision(jobId: number | null | undefined, field: "collected" | "cost", amount: number) {
+      const div = (jobId != null && jobDivision[jobId]) ? jobDivision[jobId] : "unassigned";
+      if (div === "both") {
+        divisions.mitigation[field] += amount / 2;
+        divisions.reconstruction[field] += amount / 2;
+      } else {
+        (divisions as any)[div][field] += amount;
+      }
+    }
+
+    // Return the Monday (local) that starts the ISO-style week for a date string.
+    function weekStart(dateStr: string): string | null {
+      if (!dateStr) return null;
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return null;
+      const day = d.getDay();               // 0=Sun..6=Sat
+      const diff = (day === 0 ? -6 : 1 - day); // shift back to Monday
+      const monday = new Date(d);
+      monday.setDate(d.getDate() + diff);
+      monday.setHours(0, 0, 0, 0);
+      const y = monday.getFullYear();
+      const m = String(monday.getMonth() + 1).padStart(2, "0");
+      const dd = String(monday.getDate()).padStart(2, "0");
+      return `${y}-${m}-${dd}`;
+    }
+
+    // Return the first-of-month (YYYY-MM-01) that a date falls in.
+    function monthStart(dateStr: string): string | null {
+      if (!dateStr) return null;
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return null;
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      return `${y}-${m}-01`;
+    }
+
+    const periodKey = groupBy === "month" ? monthStart : weekStart;
+
+    // Fresh per-period division accumulator: { mitigation:{collected,cost}, reconstruction:{...}, unassigned:{...} }.
+    function freshDiv() {
+      return {
+        mitigation: { collected: 0, cost: 0 },
+        reconstruction: { collected: 0, cost: 0 },
+        unassigned: { collected: 0, cost: 0 },
+      };
+    }
+    const buckets: Record<string, { periodStart: string; billed: number; settled: number; collected: number; creditMemos: number; cost: number; byDivision: ReturnType<typeof freshDiv> }> = {};
+    function bucket(key: string | null) {
+      if (!key) return null;
+      if (!buckets[key]) buckets[key] = { periodStart: key, billed: 0, settled: 0, collected: 0, creditMemos: 0, cost: 0, byDivision: freshDiv() };
+      return buckets[key];
+    }
+
+    // Route a per-period division amount, splitting 'both' 50/50 like the totals do.
+    function addToPeriodDivision(b: NonNullable<ReturnType<typeof bucket>>, jobId: number | null | undefined, field: "collected" | "cost", amount: number) {
+      const div = (jobId != null && jobDivision[jobId]) ? jobDivision[jobId] : "unassigned";
+      if (div === "both") {
+        b.byDivision.mitigation[field] += amount / 2;
+        b.byDivision.reconstruction[field] += amount / 2;
+      } else {
+        (b.byDivision as any)[div][field] += amount;
+      }
+    }
+
+    // Billed = invoice totals, by invoice creation date
+    for (const inv of invoices) {
+      if (!inv.created_at || !inRange(inv.created_at)) continue;
+      const b = bucket(periodKey(inv.created_at));
+      if (b) b.billed += inv.total || 0;
+    }
+    // Settled = approved/partial supplement amounts, by response date (fallback submitted/created)
+    for (const s of supplements) {
+      if (!(s.status === "approved" || s.status === "partial")) continue;
+      const sDate = s.response_at || s.submitted_at || s.created_at;
+      if (!sDate || !inRange(sDate)) continue;
+      const b = bucket(periodKey(sDate));
+      if (b) b.settled += s.amount_approved || 0;
+    }
+    // Collected = received payments (excluding credit memos), by paid date
+    for (const p of payments) {
+      if (!p.paid_at || !inRange(p.paid_at)) continue;
+      const b = bucket(periodKey(p.paid_at));
+      if (!b) continue;
+      if (p.type === "received" && !p.credit_memo) {
+        b.collected += p.amount || 0;
+        addToDivision(p.job_id, "collected", p.amount || 0);
+        addToPeriodDivision(b, p.job_id, "collected", p.amount || 0);
+      }
+      if (p.credit_memo) b.creditMemos += p.amount || 0;
+    }
+    // Cost = job costs, by cost date (fallback to created date)
+    for (const jc of jobCosts) {
+      const cDate = jc.cost_date || jc.created_at;
+      if (!cDate || !inRange(cDate)) continue;
+      const b = bucket(periodKey(cDate));
+      if (b) { b.cost += jc.total || 0; addToPeriodDivision(b, jc.job_id, "cost", jc.total || 0); }
+      addToDivision(jc.job_id, "cost", jc.total || 0);
+    }
+
+    const rawPeriods = Object.values(buckets).sort((a, b) => (a.periodStart < b.periodStart ? 1 : -1));
+
+    // Resolve a division bucket's collected/cost for the active filter. 'both' isn't a stored bucket
+    // (it's split at write time), so a 'both' filter sums mitigation+reconstruction back together.
+    function divCollectedCost(bd: ReturnType<typeof freshDiv>): { collected: number; cost: number } {
+      if (divisionFilter === "all") return { collected: bd.mitigation.collected + bd.reconstruction.collected + bd.unassigned.collected, cost: bd.mitigation.cost + bd.reconstruction.cost + bd.unassigned.cost };
+      if (divisionFilter === "both") return { collected: bd.mitigation.collected + bd.reconstruction.collected, cost: bd.mitigation.cost + bd.reconstruction.cost };
+      const d = (bd as any)[divisionFilter] as { collected: number; cost: number };
+      return { collected: d.collected, cost: d.cost };
+    }
+
+    // Build the outward-facing periods. When a division filter is active, Brought In / Cost are
+    // scoped to that division and Billed/Settled/Credit Memos zero out (not division-attributable).
+    // Per-period byDivision (rounded) always ships so the chart can draw division trend lines.
+    const periods = rawPeriods.map((r) => {
+      const scoped = divisionFilter === "all"
+        ? { billed: r.billed, settled: r.settled, collected: r.collected, creditMemos: r.creditMemos, cost: r.cost }
+        : (() => { const cc = divCollectedCost(r.byDivision); return { billed: 0, settled: 0, collected: cc.collected, creditMemos: 0, cost: cc.cost }; })();
+      return {
+        periodStart: r.periodStart,
+        billed: Math.round(scoped.billed),
+        settled: Math.round(scoped.settled),
+        collected: Math.round(scoped.collected),
+        creditMemos: Math.round(scoped.creditMemos),
+        cost: Math.round(scoped.cost),
+        byDivision: {
+          mitigation: { collected: Math.round(r.byDivision.mitigation.collected), cost: Math.round(r.byDivision.mitigation.cost), net: Math.round(r.byDivision.mitigation.collected - r.byDivision.mitigation.cost) },
+          reconstruction: { collected: Math.round(r.byDivision.reconstruction.collected), cost: Math.round(r.byDivision.reconstruction.cost), net: Math.round(r.byDivision.reconstruction.collected - r.byDivision.reconstruction.cost) },
+          unassigned: { collected: Math.round(r.byDivision.unassigned.collected), cost: Math.round(r.byDivision.unassigned.cost), net: Math.round(r.byDivision.unassigned.collected - r.byDivision.unassigned.cost) },
+        },
+      };
+    });
+
+    const totals = periods.reduce((t, r) => ({
+      billed: t.billed + r.billed,
+      settled: t.settled + r.settled,
+      collected: t.collected + r.collected,
+      creditMemos: t.creditMemos + r.creditMemos,
+      cost: t.cost + r.cost,
+    }), { billed: 0, settled: 0, collected: 0, creditMemos: 0, cost: 0 });
+
+    // Division profitability breakdown (respects the same date range filter).
+    function divRow(name: string, d: { collected: number; cost: number }) {
+      const collected = Math.round(d.collected);
+      const cost = Math.round(d.cost);
+      const net = collected - cost;
+      return {
+        division: name,
+        collected,
+        cost,
+        net,
+        marginPct: collected > 0 ? Math.round((net / collected) * 100) : 0,
+        profitable: net > 0,
+      };
+    }
+    const divisionBreakdown = [
+      divRow("mitigation", divisions.mitigation),
+      divRow("reconstruction", divisions.reconstruction),
+    ];
+    // Only surface 'unassigned' if it actually carries money (so the UI can prompt tagging).
+    if (divisions.unassigned.collected > 0.5 || divisions.unassigned.cost > 0.5) {
+      divisionBreakdown.push(divRow("unassigned", divisions.unassigned));
+    }
+
+    // `weeks` kept for backward compatibility; add `periods` + `groupBy` for the new UI.
+    const legacyWeeks = periods.map(p => ({ weekStart: p.periodStart, billed: p.billed, settled: p.settled, collected: p.collected, creditMemos: p.creditMemos, cost: p.cost }));
+    res.json({ groupBy, from: fromStr, to: toStr, division: divisionFilter, periods, weeks: legacyWeeks, totals, divisions: divisionBreakdown });
+  });
+
+  app.get("/api/jobs/:id", (req, res) => {
+    const j = storage.getJob(Number(req.params.id));
+    if (!j) return res.status(404).json({ error: "Not found" });
+    res.json(j);
+  });
+  app.post("/api/jobs", (req, res) => {
+    try {
+      const job = storage.createJob(req.body);
+      notifyNewJob(job);
+      res.json(job);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Unable to create job" });
+    }
+  });
+  app.patch("/api/jobs/:id", (req, res, next) => {
+    // Referral payout fields (owed amount + paid date) may only be set by
+    // owner/admin/sales. Techs can update other job fields freely, so we only
+    // enforce a staff session + role when the payout fields are being touched.
+    const touchesPayout = req.body && ("partnerPayoutApplied" in req.body || "partnerPayoutDate" in req.body);
+    if (!touchesPayout) return next();
+    requireRole("owner", "admin", "sales")(req, res, next);
+  }, (req, res) => {
+    const j = storage.updateJob(Number(req.params.id), req.body);
+    if (!j) return res.status(404).json({ error: "Not found" });
+    res.json(j);
+  });
+  app.delete("/api/jobs/:id", (req, res) => {
+    storage.deleteJob(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+  // Add note to job
+  app.post("/api/jobs/:id/notes", (req, res) => {
+    const j = storage.getJob(Number(req.params.id));
+    if (!j) return res.status(404).json({ error: "Not found" });
+    const notes = JSON.parse(j.notes || "[]");
+    notes.push({ ...req.body, id: Date.now(), createdAt: new Date().toISOString() });
+    const updated = storage.updateJob(Number(req.params.id), { notes: JSON.stringify(notes) });
+    res.json(updated);
+  });
+
+  // ── Estimates ─────────────────────────────────────────────────────────────
+  app.get("/api/estimates", (_req, res) => { res.json(storage.getEstimates()); });
+  app.get("/api/estimates/:id", (req, res) => {
+    const e = storage.getEstimate(Number(req.params.id));
+    if (!e) return res.status(404).json({ error: "Not found" });
+    res.json(e);
+  });
+  app.get("/api/jobs/:id/estimates", (req, res) => { res.json(storage.getEstimatesByJob(Number(req.params.id))); });
+  app.post("/api/estimates", (req, res) => {
+    try { res.json(storage.createEstimate(req.body)); }
+    catch (err: any) { res.status(400).json({ error: err?.message || "Unable to create estimate" }); }
+  });
+  app.patch("/api/estimates/:id", (req, res) => {
+    const e = storage.updateEstimate(Number(req.params.id), req.body);
+    if (!e) return res.status(404).json({ error: "Not found" });
+    res.json(e);
+  });
+
+  // Auto-generate rebuttal — now returns state + statutes used
+  app.post("/api/estimates/:id/rebuttal", (req, res) => {
+    const est = storage.getEstimate(Number(req.params.id));
+    if (!est) return res.status(404).json({ error: "Estimate not found" });
+    const job = storage.getJob(est.jobId);
+    const { text: rebuttalText, state, statutesUsed } = generateRebuttal(est, job);
+    const updated = storage.updateEstimate(Number(req.params.id), { rebuttalText });
+    res.json({
+      rebuttalText,
+      state,
+      stateName: state === "SC" ? "South Carolina" : "Georgia",
+      statutesUsed: statutesUsed.map(s => ({ code: s.code, topic: s.topic, rebuttalHook: s.rebuttalHook })),
+      estimate: updated,
+    });
+  });
+
+  // IICRC calculator
+  app.get("/api/iicrc/categories", (_req, res) => { res.json(IICRC_CATEGORIES); });
+  app.get("/api/iicrc/statutes/:state", (req, res) => {
+    const state = req.params.state.toUpperCase() as "SC" | "GA";
+    const lossType = (req.query.lossType as string) || "all";
+    if (!STATUTE_TABLE[state]) return res.status(400).json({ error: "State must be SC or GA" });
+    res.json(selectStatutes(state, lossType));
+  });
+
+  // State detector endpoint
+  app.post("/api/iicrc/detect-state", (req, res) => {
+    const { address } = req.body;
+    const state = detectState(address);
+    res.json({ state, stateName: state === "SC" ? "South Carolina" : "Georgia" });
+  });
+
+  // ── Invoices ──────────────────────────────────────────────────────────────
+  app.get("/api/invoices", (_req, res) => { res.json(storage.getInvoices()); });
+  app.get("/api/invoices/:id", (req, res) => {
+    const inv = storage.getInvoice(Number(req.params.id));
+    if (!inv) return res.status(404).json({ error: "Not found" });
+    res.json(inv);
+  });
+  app.get("/api/jobs/:id/invoices", (req, res) => { res.json(storage.getInvoicesByJob(Number(req.params.id))); });
+  app.post("/api/invoices", (req, res) => {
+    try { res.json(storage.createInvoice(req.body)); }
+    catch (err: any) { res.status(400).json({ error: err?.message || "Unable to create invoice" }); }
+  });
+  app.patch("/api/invoices/:id", (req, res) => {
+    const id = Number(req.params.id);
+    const existing: any = storage.getInvoice(id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+
+    // Whitelist editable fields (never let the client set arbitrary columns).
+    const ALLOWED = [
+      "contactId", "status", "lineItems", "subtotal", "tax", "total",
+      "originalTotal", "adjustment", "adjustmentReason",
+      "dueDate", "paidAt", "notes",
+    ];
+    const body = req.body || {};
+    const updates: any = {};
+    for (const k of ALLOWED) if (k in body) updates[k] = body[k];
+
+    // Settlement math: if an adjustment (insurance reduction) is being applied,
+    // preserve the original invoiced amount and recompute the net total.
+    if ("adjustment" in updates) {
+      const adj = Number(updates.adjustment) || 0;
+      // Capture the pre-reduction amount the first time an adjustment is set.
+      const baseline = existing.originalTotal != null
+        ? Number(existing.originalTotal)
+        : Number(existing.total) || 0;
+      if (updates.originalTotal == null) updates.originalTotal = baseline;
+      if (adj < 0) return res.status(400).json({ error: "Adjustment must be zero or a positive reduction amount." });
+      if (adj > baseline) return res.status(400).json({ error: "Adjustment cannot exceed the original invoice total." });
+      // Net total owed after the reduction.
+      updates.total = Math.max(0, baseline - adj);
+    }
+
+    const inv = storage.updateInvoice(id, updates);
+    if (!inv) return res.status(404).json({ error: "Not found" });
+    res.json(inv);
+  });
+
+  // ── Payments ──────────────────────────────────────────────────────────────
+  app.get("/api/payments", (_req, res) => { res.json(storage.getPayments()); });
+  app.post("/api/payments", (req, res, next) => {
+    // Recording a referral payout is restricted to owner/admin/sales.
+    if (req.body?.type !== "referral_payout") return next();
+    requireRole("owner", "admin", "sales")(req, res, next);
+  }, (req, res) => {
+    res.json(storage.createPayment(req.body));
+  });
+
+  // ── Photos ────────────────────────────────────────────────────────────────
+  app.get("/api/photos", (_req, res) => { res.json(storage.getPhotos()); });
+  app.get("/api/jobs/:id/photos", (req, res) => { res.json(storage.getPhotosByJob(Number(req.params.id))); });
+  app.post("/api/photos", (req, res) => { res.json(storage.createPhoto(req.body)); });
+  app.patch("/api/photos/:id", (req, res) => {
+    const id = Number(req.params.id);
+    const { category, caption } = req.body;
+    const updates: any = {};
+    if (category) updates.category = category;
+    if (caption !== undefined) updates.caption = caption;
+    const updated = sqlite.prepare(`UPDATE photos SET ${Object.keys(updates).map(k => `${k}=?`).join(",")} WHERE id=? RETURNING *`).get(...Object.values(updates), id);
+    res.json(updated || { id });
+  });
+  app.delete("/api/photos/:id", (req, res) => {
+    storage.deletePhoto(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+  // ── Channels & Messages ───────────────────────────────────────────────────
+  app.get("/api/channels", (_req, res) => { res.json(storage.getChannels()); });
+  app.post("/api/channels", (req, res) => { res.json(storage.createChannel(req.body)); });
+  app.get("/api/channels/:id/messages", (req, res) => { res.json(storage.getMessages(Number(req.params.id))); });
+  app.post("/api/channels/:id/messages", (req, res) => {
+    const msg = storage.createMessage({ ...req.body, channelId: Number(req.params.id) });
+    res.json(msg);
+  });
+
+  // ── Parse a channel message into a Job file (AUG / Cola intake) ────────────
+  // Recognizes labeled fields on any line (case-insensitive), e.g.
+  //   Customer: Jane Doe
+  //   Address: 123 Main St
+  //   Loss: water
+  //   Carrier: State Farm / Claim: 12345 / Adjuster: Bob Smith
+  //   Tech: John / Source: referral
+  // The channel (aug/cola) sets the default market + division. Pass
+  // { preview: true } to parse WITHOUT creating anything (returns the draft).
+  app.post("/api/channels/:id/parse-job", (req, res) => {
+    const channelId = Number(req.params.id);
+    const channel = storage.getChannels().find(c => c.id === channelId);
+    const body: string = String(req.body?.body || "");
+    const preview = req.body?.preview === true;
+
+    // ── Market defaults from channel name ──
+    const cname = (channel?.name || "").toLowerCase();
+    let market = "";
+    if (cname.includes("aug")) market = "Augusta, GA";
+    else if (cname.includes("cola")) market = "Columbia, SC";
+
+    // ── Field extraction helpers ──
+    const grab = (labels: string[]): string => {
+      for (const label of labels) {
+        // match "Label: value" or "Label - value", value runs to end of line or next " / " separator
+        const re = new RegExp(`(?:^|[\\n/])\\s*(?:${label})\\s*[:\\-]\\s*([^\\n/]+)`, "i");
+        const m = body.match(re);
+        if (m && m[1].trim()) return m[1].trim();
+      }
+      return "";
+    };
+
+    const customer = grab(["customer", "client", "homeowner", "insured", "name"]);
+    const address = grab(["address", "addr", "property", "location", "loss location"]);
+    let lossRaw = grab(["loss type", "loss", "type", "damage"]).toLowerCase();
+    const carrier = grab(["carrier", "insurance", "insurance carrier"]);
+    const claimNumber = grab(["claim", "claim #", "claim number", "claim no"]);
+    const adjusterName = grab(["adjuster", "adjuster name"]);
+    const adjusterPhone = grab(["adjuster phone", "adj phone"]);
+    const adjusterEmail = grab(["adjuster email", "adj email"]);
+    const policyNumber = grab(["policy", "policy #", "policy number"]);
+    const assignedTech = grab(["tech", "technician", "assigned", "assigned tech"]);
+    let leadSourceRaw = grab(["source", "lead source", "lead", "referred by", "referral"]).toLowerCase();
+
+    // Normalize loss type to allowed values
+    const LOSS = ["water", "fire", "mold", "storm", "biohazard", "reconstruction"];
+    let lossType = LOSS.find(l => lossRaw.includes(l)) || "";
+
+    // Normalize lead source
+    const SOURCES: Record<string, string> = {
+      referral: "referral", refer: "referral", google: "google", web: "google",
+      door: "door_knock", knock: "door_knock", insurance: "insurance_direct",
+      direct: "insurance_direct", repeat: "repeat", return: "repeat",
+    };
+    let leadSource = "";
+    for (const key of Object.keys(SOURCES)) if (leadSourceRaw.includes(key)) { leadSource = SOURCES[key]; break; }
+    const leadSourceDetail = leadSource && leadSourceRaw ? leadSourceRaw : "";
+
+    // ── Validate: need at minimum a customer OR address, plus a loss type ──
+    const hasIdentity = !!(customer || address);
+    const missing: string[] = [];
+    if (!hasIdentity) missing.push("customer or address");
+    if (!lossType) missing.push("loss type (water/fire/mold/storm/biohazard/reconstruction)");
+    const ok = missing.length === 0;
+
+    // ── Generate next job number ──
+    const year = new Date().getFullYear();
+    const jobs = storage.getJobs();
+    let maxSeq = 0;
+    for (const j of jobs) {
+      const m = String(j.jobNumber || "").match(/TP-\d{4}-(\d+)/);
+      if (m) maxSeq = Math.max(maxSeq, parseInt(m[1], 10));
+    }
+    const jobNumber = `TP-${year}-${String(maxSeq + 1).padStart(3, "0")}`;
+
+    const division = lossType === "reconstruction" ? "reconstruction" : "mitigation";
+
+    const draft: Record<string, any> = {
+      jobNumber,
+      lossType: lossType || "water",
+      status: "new",
+      progressStage: "pending_sale",
+      address: address || null,
+      description: customer ? `${customer}${market ? ` — ${market}` : ""}` : (market || null),
+      assignedTech: assignedTech || null,
+      insuranceCarrier: carrier || null,
+      claimNumber: claimNumber || null,
+      adjusterName: adjusterName || null,
+      adjusterPhone: adjusterPhone || null,
+      adjusterEmail: adjusterEmail || null,
+      policyNumber: policyNumber || null,
+      leadSource: leadSource || null,
+      leadSourceDetail: leadSourceDetail || null,
+      division,
+    };
+
+    const parsed = { customer, address, lossType, carrier, claimNumber, adjusterName, adjusterPhone, adjusterEmail, policyNumber, assignedTech, leadSource, market };
+
+    if (preview || !ok) {
+      return res.json({ ok, missing, market, jobNumber, draft, parsed });
+    }
+
+    // ── Create: optionally link/create a customer contact ──
+    let contactId: number | null = null;
+    if (customer) {
+      const existing = storage.getContacts().find(
+        c => (c.type === "customer" || !c.type) && c.name.toLowerCase() === customer.toLowerCase()
+      );
+      if (existing) contactId = existing.id;
+      else {
+        const c = storage.createContact({ name: customer, type: "customer", address: address || null } as any);
+        contactId = c.id;
+      }
+    }
+    draft.contactId = contactId;
+    if (customer && !draft.description) draft.description = customer;
+
+    const job = storage.createJob(draft as any);
+    notifyNewJob(job);
+    res.json({ ok: true, job, parsed, contactId });
+  });
+
+  // ── Emails ────────────────────────────────────────────────────────────────
+  app.get("/api/emails", (req, res) => { res.json(storage.getEmails(req.query.folder as string | undefined)); });
+  app.get("/api/emails/:id", (req, res) => {
+    const e = storage.getEmail(Number(req.params.id));
+    if (!e) return res.status(404).json({ error: "Not found" });
+    res.json(e);
+  });
+  app.post("/api/emails", (req, res) => { res.json(storage.createEmail(req.body)); });
+  app.patch("/api/emails/:id", (req, res) => {
+    const e = storage.updateEmail(Number(req.params.id), req.body);
+    res.json(e);
+  });
+
+  // ── Drying Records (IICRC S500) ───────────────────────────────────────────
+  app.get("/api/jobs/:id/drying-records", (req, res) => {
+    res.json(storage.getDryingRecords(Number(req.params.id)));
+  });
+  app.post("/api/jobs/:id/drying-records", (req, res) => {
+    const record = storage.createDryingRecord({ ...req.body, jobId: Number(req.params.id) });
+    res.json(record);
+  });
+  app.get("/api/drying-records/:id", (req, res) => {
+    const r = storage.getDryingRecord(Number(req.params.id));
+    if (!r) return res.status(404).json({ error: "Not found" });
+    res.json(r);
+  });
+  app.patch("/api/drying-records/:id", (req, res) => {
+    const r = storage.updateDryingRecord(Number(req.params.id), req.body);
+    if (!r) return res.status(404).json({ error: "Not found" });
+    res.json(r);
+  });
+  app.delete("/api/drying-records/:id", (req, res) => {
+    storage.deleteDryingRecord(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+  // ── Moisture Alert Check: called after saving a drying record ─────────────
+  // Scans the last N records for this job, detects WME threshold breaches,
+  // writes a note to the job activity log, and pings #general if 2+ consecutive days wet.
+  app.post("/api/jobs/:id/moisture-alert-check", (req, res) => {
+    const jobId = Number(req.params.id);
+    const job = storage.getJob(jobId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+
+    const records = storage.getDryingRecords(jobId);
+    if (records.length === 0) return res.json({ alerted: false, reason: "No records" });
+
+    // Sort by readingDate asc then dayNumber asc
+    const sorted = [...records].sort((a, b) => {
+      const da = a.readingDate || "";
+      const db = b.readingDate || "";
+      if (da !== db) return da.localeCompare(db);
+      return (a.dayNumber || 0) - (b.dayNumber || 0);
+    });
+
+    // Determine which records have ANY moisture reading above threshold
+    const flaggedRecords = sorted.map(r => {
+      const readings: any[] = JSON.parse(r.moistureReadings || "[]");
+      const wetReadings = readings.filter(m => m.reading > m.target);
+      return { record: r, wetReadings, hasWet: wetReadings.length > 0 };
+    });
+
+    const latestFlagged = flaggedRecords[flaggedRecords.length - 1];
+    if (!latestFlagged.hasWet) return res.json({ alerted: false, reason: "Latest record is at target" });
+
+    // Build wet summary for activity note
+    const wetSummary = latestFlagged.wetReadings
+      .map((m: any) => `${m.location || "Unknown location"} (${m.material}): ${m.reading}% vs target ${m.target}%`)
+      .join("; ");
+
+    // Write critical moisture alert to job activity notes
+    const noteText = `🚨 MOISTURE ALERT — Day ${latestFlagged.record.dayNumber || "?"} (${latestFlagged.record.readingDate}): ${latestFlagged.wetReadings.length} reading(s) above IICRC S500 WME threshold. ${wetSummary}. Logged by ${latestFlagged.record.techName}. Review drying strategy immediately.`;
+    const existingNotes = JSON.parse(job.notes || "[]");
+    existingNotes.push({ id: Date.now(), author: "Titan Pro Bot", text: noteText, tag: job.assignedTech || "Cody Brantley", createdAt: new Date().toISOString(), type: "moisture_alert" });
+    storage.updateJob(jobId, { notes: JSON.stringify(existingNotes) });
+
+    // Check consecutive days: look at last 3 records — if last 2 are both wet, send channel alert
+    const recentFlags = flaggedRecords.slice(-3);
+    const consecutiveWetCount = recentFlags.filter(f => f.hasWet).length;
+    const isConsecutive = recentFlags.length >= 2 && recentFlags[recentFlags.length - 1].hasWet && recentFlags[recentFlags.length - 2].hasWet;
+
+    if (isConsecutive) {
+      const tech = job.assignedTech || "Assigned Technician";
+      const alertMsg = [
+        `🚨 CRITICAL MOISTURE ALERT — ${job.jobNumber} | ${job.address || job.lossType}`,
+        ``,
+        `@${tech}: Moisture readings have exceeded IICRC S500 WME thresholds for 2+ consecutive daily logs.`,
+        ``,
+        `📋 Latest Reading (Day ${latestFlagged.record.dayNumber}, ${latestFlagged.record.readingDate}):`,
+        ...latestFlagged.wetReadings.map((m: any) => `   • ${m.location || "Unknown"} (${m.material}): ${m.reading}% — target ≤${m.target}%`),
+        ``,
+        `⚠️ Per IICRC S500 §12.3, drying strategy must be reassessed when readings stall. Consider:`,
+        `   • Repositioning or adding air movers (S500 §11.4)`,
+        `   • Increasing dehumidification capacity`,
+        `   • Checking for hidden moisture pockets (thermal imaging)`,
+        `   • Escalating to Category/Class upgrade if needed`,
+        ``,
+        `🔗 Job File: https://www.perplexity.ai/computer/a/titan-pro-titan-restoration-ll-w4NT6__oT7.xWA8lbvnc8Q#/jobs/${jobId}`,
+        `📞 Cody Brantley: 706-922-0154`,
+      ].join("\n");
+
+      // Post to general channel (id=1)
+      try {
+        const channels = storage.getChannels();
+        const generalChannel = channels.find(c => c.name === "general" || c.id === 1);
+        if (generalChannel) {
+          storage.createMessage({ channelId: generalChannel.id, author: "Titan Pro Bot", body: alertMsg });
+        }
+      } catch (e) { /* channel may not exist */ }
+
+      return res.json({ alerted: true, consecutive: true, wetCount: latestFlagged.wetReadings.length, message: alertMsg });
+    }
+
+    return res.json({ alerted: true, consecutive: false, wetCount: latestFlagged.wetReadings.length, noteAdded: true });
+  });
+
+  // ── Employees (Gmail linking) ─────────────────────────────────────────────
+  app.get("/api/employees", (_req, res) => { res.json(storage.getEmployees()); });
+  app.get("/api/employees/:name", (req, res) => {
+    const emp = storage.getEmployeeByName(req.params.name);
+    if (!emp) return res.status(404).json({ error: "Not found" });
+    res.json(emp);
+  });
+  app.post("/api/employees", (req, res) => { res.json(storage.createEmployee(req.body)); });
+  app.patch("/api/employees/:id", (req, res) => {
+    const emp = storage.updateEmployee(Number(req.params.id), req.body);
+    if (!emp) return res.status(404).json({ error: "Not found" });
+    res.json(emp);
+  });
+
+  // ── Shifts ────────────────────────────────────────────────────────────────
+  app.get("/api/shifts", (_req, res) => { res.json(storage.getShifts()); });
+  app.get("/api/shifts/:id", (req, res) => {
+    const s = storage.getShift(Number(req.params.id));
+    if (!s) return res.status(404).json({ error: "Not found" });
+    res.json(s);
+  });
+  app.post("/api/shifts", (req, res) => {
+    const shift = storage.createShift(req.body);
+    // Simulate email notification for assigned tech
+    if (shift.jobId) {
+      const job = storage.getJob(shift.jobId);
+      if (job) {
+        const subject = `[Titan Pro] New Job Assignment: ${job.jobNumber}`;
+        const body = `Hi ${shift.techName},\n\nYou have been assigned to a job:\n\nJob #: ${job.jobNumber}\nAddress: ${job.address || "See job file"}\nLoss Type: ${job.lossType.toUpperCase()}\nShift Date: ${shift.shiftDate}\nTime: ${shift.startTime || "TBD"}${shift.endTime ? ` – ${shift.endTime}` : ""}\n\nPlease review the job details in Titan Pro.\n\nTitan Restoration LLC | 706-922-0154`;
+        // Get employee's Gmail if linked
+        const emp = storage.getEmployeeByName(shift.techName);
+        const toEmail = emp?.gmailEmail || `${shift.techName.toLowerCase().replace(/\s/g, "")}@titanrestorationllc.com`;
+        storage.createEmail({ folder: "sent", from: "cody@titanrestorationllc.com", to: toEmail, subject, body, read: 1 });
+      }
+    }
+    res.json(shift);
+  });
+  app.patch("/api/shifts/:id", (req, res) => {
+    const s = storage.updateShift(Number(req.params.id), req.body);
+    if (!s) return res.status(404).json({ error: "Not found" });
+    res.json(s);
+  });
+  app.delete("/api/shifts/:id", (req, res) => {
+    storage.deleteShift(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+  // ── Payout Methods ────────────────────────────────────────────────────────
+  app.get("/api/payout-methods", (req, res) => {
+    const contactId = req.query.contactId ? Number(req.query.contactId) : undefined;
+    res.json(storage.getPayoutMethods(contactId));
+  });
+  app.post("/api/payout-methods", (req, res) => { res.json(storage.createPayoutMethod(req.body)); });
+  app.patch("/api/payout-methods/:id", (req, res) => {
+    const pm = storage.updatePayoutMethod(Number(req.params.id), req.body);
+    res.json(pm);
+  });
+  app.delete("/api/payout-methods/:id", (req, res) => {
+    storage.deletePayoutMethod(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+  // ── Payout Requests ───────────────────────────────────────────────────────
+  app.get("/api/payout-requests", (req, res) => {
+    const contactId = req.query.contactId ? Number(req.query.contactId) : undefined;
+    res.json(storage.getPayoutRequests(contactId));
+  });
+  app.post("/api/payout-requests", (req, res) => { res.json(storage.createPayoutRequest(req.body)); });
+  app.patch("/api/payout-requests/:id", (req, res) => {
+    const pr = storage.updatePayoutRequest(Number(req.params.id), req.body);
+    if (!pr) return res.status(404).json({ error: "Not found" });
+
+    // Auto-apply payout to job on paid/withdrawn
+    if (req.body.status === "paid" && pr && pr.jobId) {
+      storage.updateJob(pr.jobId, {
+        partnerPayoutApplied: pr.amount,
+        partnerPayoutDate: new Date().toISOString(),
+      });
+    }
+    res.json(pr);
+  });
+
+  // ── Partner Portal ────────────────────────────────────────────────────────
+  app.post("/api/portal/login", (req, res) => {
+    const { contactId, pin } = req.body;
+    const contact = storage.getContact(Number(contactId));
+    if (!contact) return res.status(404).json({ error: "Contact not found" });
+    // When a partner has a portal PIN set up (via Business Dev → Partner Portal
+    // Setup), enforce it. Partners without a PIN retain the legacy open access
+    // so existing partners aren't locked out before staff activate them.
+    if (contact.portalPin && String(contact.portalPin) !== String(pin ?? "")) {
+      return res.status(401).json({ error: "Invalid PIN" });
+    }
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    storage.createPortalSession({ contactId: Number(contactId), sessionToken: token, expiresAt });
+    res.json({ token, contact });
+  });
+
+  // ── Portal access control (IDOR defense) ──────────────────────────────────
+  // Portal endpoints receive a contactId/jobId in the URL. Without a check, any
+  // customer could read another customer's jobs, invoices, and claim figures by
+  // changing the number. These helpers verify the caller's portal token owns the
+  // contact (or the job's contact) before returning private data.
+  function getPortalContactId(req: any): number | null {
+    const token = (req.headers.authorization || "").replace("Bearer ", "").trim()
+      || (req.headers["x-portal-token"] as string || "").trim()
+      || (req.query.token as string || "").trim();
+    if (!token) return null;
+    const session: any = sqlite.prepare(
+      "SELECT * FROM portal_sessions WHERE session_token = ? AND expires_at > ?"
+    ).get(token, new Date().toISOString());
+    return session ? Number(session.contact_id) : null;
+  }
+  // Verify the token owns `contactId`. Returns true/false.
+  function portalOwnsContact(req: any, contactId: number): boolean {
+    const owned = getPortalContactId(req);
+    return owned != null && owned === Number(contactId);
+  }
+  // Verify the token owns the contact that a given job belongs to.
+  function portalOwnsJob(req: any, jobId: number): boolean {
+    const owned = getPortalContactId(req);
+    if (owned == null) return false;
+    const job: any = sqlite.prepare("SELECT contact_id FROM jobs WHERE id = ?").get(Number(jobId));
+    return !!job && Number(job.contact_id) === owned;
+  }
+  // True if the request carries a valid, non-expired staff session token.
+  // Staff (admin dashboard) legitimately view any partner's data.
+  function hasValidStaffSession(req: any): boolean {
+    const token = (req.headers.authorization || "").replace("Bearer ", "").trim();
+    if (!token) return false;
+    const session: any = sqlite.prepare(
+      "SELECT 1 FROM staff_sessions WHERE session_token = ? AND expires_at > ?"
+    ).get(token, new Date().toISOString());
+    return !!session;
+  }
+  // Partner endpoints take a contactId in the URL. Allow access only when the
+  // caller's portal token owns that contact, OR when a valid staff session is
+  // present (the admin dashboard reads every partner). Prevents one partner from
+  // reading another partner's leads, balance, jobs, or commission figures.
+  function partnerAccessAllowed(req: any, contactId: number): boolean {
+    return portalOwnsContact(req, contactId) || hasValidStaffSession(req);
+  }
+
+  // ── Customer Portal ───────────────────────────────────────────────────────
+  app.post("/api/customer-portal/login", (req, res) => {
+    const { phone, pin } = req.body;
+    const contacts = storage.getContacts();
+    const contact = contacts.find(c =>
+      c.type === "customer" &&
+      c.portalPin === String(pin) &&
+      (c.phone?.replace(/\D/g, "") === String(phone).replace(/\D/g, "") ||
+       c.name.toLowerCase().includes(String(phone).toLowerCase()))
+    );
+    if (!contact) return res.status(401).json({ error: "Invalid credentials" });
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    storage.createPortalSession({ contactId: contact.id, sessionToken: token, expiresAt });
+    res.json({ token, contact });
+  });
+
+  app.get("/api/customer-portal/jobs/:contactId", (req, res) => {
+    if (!portalOwnsContact(req, Number(req.params.contactId)))
+      return res.status(403).json({ error: "Not authorized to view this account." });
+    const jobs = storage.getJobs().filter(j => j.contactId === Number(req.params.contactId));
+    res.json(jobs);
+  });
+
+  app.get("/api/customer-portal/invoices/:contactId", (req, res) => {
+    if (!portalOwnsContact(req, Number(req.params.contactId)))
+      return res.status(403).json({ error: "Not authorized to view this account." });
+    const invoices = storage.getInvoices().filter(i => i.contactId === Number(req.params.contactId));
+    res.json(invoices);
+  });
+
+
+  // ── Customer Portal — enriched job data (docs, estimates, drying records, notes) ──
+  app.get("/api/customer-portal/job-detail/:jobId", (req, res) => {
+    const jobId = Number(req.params.jobId);
+    if (!portalOwnsJob(req, jobId))
+      return res.status(403).json({ error: "Not authorized to view this job." });
+    const job: any = sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId);
+    if (!job) return res.status(404).json({ error: "Not found" });
+
+    // Public notes only
+    const notes = sqlite.prepare(
+      "SELECT * FROM job_notes WHERE job_id = ? AND is_public = 1 ORDER BY created_at ASC"
+    ).all(jobId);
+
+    // Documents — exclude raw signature/file data to keep payload small; send metadata only
+    const docs = sqlite.prepare(
+      "SELECT id, job_id, doc_type, title, signer_name, signer_role, signed_at, file_name, file_mime_type, file_size, status, created_by, created_at FROM job_documents WHERE job_id = ? ORDER BY created_at DESC"
+    ).all(jobId);
+
+    // Estimates (sent or approved only — not drafts)
+    const estimates = sqlite.prepare(
+      "SELECT id, job_id, title, status, subtotal, tax, total, notes, created_at FROM estimates WHERE job_id = ? AND status IN ('sent','approved') ORDER BY created_at DESC"
+    ).all(jobId);
+
+    // Drying records summary — customer-safe psychrometric fields only.
+    // Includes goal/completion flags so the portal can visualize dry-out progress.
+    const dryingRecords = sqlite.prepare(
+      "SELECT id, job_id, reading_date, reading_time, day_number, water_category, water_class, temp_f, rh_pct, gpp, moisture_readings, equipment, affected_areas, drying_goal_met, structural_drying_complete FROM drying_records WHERE job_id = ? ORDER BY reading_date ASC, day_number ASC"
+    ).all(jobId) as any[];
+
+    // Equipment currently on-site for this job (homeowners like to see the gear working)
+    const equipmentOnSite = sqlite.prepare(
+      "SELECT id, name, category, model, deployed_at FROM equipment WHERE current_job_id = ? AND status = 'deployed' ORDER BY category"
+    ).all(jobId) as any[];
+    // Fall back to deployment log for count if equipment records are sparse
+    const deploymentLog = sqlite.prepare(
+      "SELECT ed.id, ed.deployed_at, ed.returned_at, e.name, e.category, e.model FROM equipment_deployments ed LEFT JOIN equipment e ON e.id = ed.equipment_id WHERE ed.job_id = ? AND ed.returned_at IS NULL ORDER BY ed.deployed_at DESC"
+    ).all(jobId) as any[];
+
+    // Two-way message thread (homeowner <-> Titan)
+    const messages = sqlite.prepare(
+      "SELECT id, job_id, sender, author_name, body, created_at FROM customer_messages WHERE job_id = ? ORDER BY created_at ASC"
+    ).all(jobId) as any[];
+
+    // ── Next Action panel — plain-English "what happens next" per stage ────────
+    const NEXT_ACTION: Record<string, { title: string; detail: string; who: string }> = {
+      new:            { title: "We're preparing your job", detail: "Our team is reviewing your loss and scheduling the first crew visit. You'll get a call to confirm arrival time.", who: "Titan Restoration" },
+      mitigation:     { title: "Emergency mitigation in progress", detail: "We're extracting water and setting drying equipment to prevent further damage. Please keep the equipment running and pets away from it.", who: "Titan crew" },
+      drying:         { title: "Structural drying underway", detail: "We're monitoring moisture daily until your structure is dry to IICRC standards. No action needed — just leave the equipment running.", who: "Titan crew" },
+      reconstruction: { title: "Rebuild phase", detail: "Repairs are underway. Review any estimates in the Reports tab and reach out with color/finish selections when prompted.", who: "You & Titan" },
+      complete:       { title: "Work complete", detail: "Your job is finished. Please review your final documents and settle any open invoice in the Invoices tab.", who: "You" },
+      closed:         { title: "Job closed", detail: "This job is fully closed out. Thank you for trusting Titan Restoration. We'd love a review!", who: "" },
+    };
+    const nextAction = NEXT_ACTION[job.status] || null;
+
+    // Dry-out progress signal derived from latest reading
+    const latestDrying = dryingRecords[dryingRecords.length - 1] || null;
+    const dryingComplete = latestDrying ? Boolean(latestDrying.structural_drying_complete) : false;
+
+    // ── Insurance claim picture (customer-safe carrier figures — NO Titan margins) ──
+    const claimRow: any = sqlite.prepare("SELECT * FROM job_claims WHERE job_id = ?").get(jobId) || null;
+    const claimPayments = sqlite.prepare(
+      "SELECT id, label, kind, amount, status, expected_date, received_date, note FROM claim_payments WHERE job_id = ? ORDER BY sort_order ASC, id ASC"
+    ).all(jobId) as any[];
+    const claim = claimRow ? {
+      status: claimRow.claim_status,
+      dateOfLoss: claimRow.date_of_loss,
+      reportedDate: claimRow.reported_date,
+      deductible: claimRow.deductible,
+      rcv: claimRow.rcv,
+      acv: claimRow.acv,
+      recoverableDepreciation: claimRow.recoverable_depreciation,
+      supplementTotal: claimRow.supplement_total,
+      coverageNotes: claimRow.coverage_notes,
+      carrier: job.insurance_carrier,
+      claimNumber: job.claim_number,
+      policyNumber: job.policy_number,
+      adjusterName: job.adjuster_name,
+      adjusterPhone: job.adjuster_phone,
+      payments: claimPayments,
+    } : null;
+
+    // DocuSketch scan (only expose if complete)
+    const docusketch = job.docusketch_status === "complete"
+      ? {
+          projectName: job.docusketch_project_name,
+          tourUrl: job.docusketch_url,
+          sketchUrl: job.docusketch_sketch_url,
+          completedAt: job.docusketch_completed_at,
+          status: job.docusketch_status,
+        }
+      : null;
+
+    res.json({
+      notes, docs, estimates, dryingRecords, docusketch,
+      equipmentOnSite, deploymentLog, messages, nextAction, dryingComplete, claim,
+    });
+  });
+
+  // ── Customer Portal — two-way messaging ───────────────────────────────────
+  app.get("/api/customer-portal/messages/:jobId", (req, res) => {
+    const jobId = Number(req.params.jobId);
+    if (!portalOwnsJob(req, jobId))
+      return res.status(403).json({ error: "Not authorized to view this job." });
+    const messages = sqlite.prepare(
+      "SELECT id, job_id, sender, author_name, body, created_at FROM customer_messages WHERE job_id = ? ORDER BY created_at ASC"
+    ).all(jobId);
+    // Mark Titan messages as read by customer on fetch
+    sqlite.prepare("UPDATE customer_messages SET read_by_customer = 1 WHERE job_id = ? AND sender = 'titan'").run(jobId);
+    res.json(messages);
+  });
+
+  app.post("/api/customer-portal/messages", (req, res) => {
+    const { jobId, contactId, body, authorName } = req.body || {};
+    if (!jobId || !contactId || !body || !String(body).trim()) {
+      return res.status(400).json({ error: "jobId, contactId and body are required" });
+    }
+    if (!portalOwnsJob(req, Number(jobId)))
+      return res.status(403).json({ error: "Not authorized to post to this job." });
+    const now = new Date().toISOString();
+    const result = sqlite.prepare(
+      "INSERT INTO customer_messages (job_id, contact_id, sender, author_name, body, read_by_staff, read_by_customer, created_at) VALUES (?, ?, 'customer', ?, ?, 0, 1, ?)"
+    ).run(Number(jobId), Number(contactId), authorName || null, String(body).trim(), now);
+    res.json({ id: result.lastInsertRowid, jobId: Number(jobId), sender: "customer", authorName, body: String(body).trim(), created_at: now });
+  });
+
+  app.post("/api/customer-portal/pay", (req, res) => {
+    const { invoiceId, amount, method, contactId } = req.body;
+    if (!portalOwnsContact(req, Number(contactId)))
+      return res.status(403).json({ error: "Not authorized to pay on this account." });
+    const payment = storage.createPayment({
+      invoiceId, amount, method: method || "online", type: "received", contactId,
+      reference: "Customer Portal Payment",
+    });
+    if (invoiceId) storage.updateInvoice(invoiceId, { status: "paid", paidAt: new Date().toISOString() });
+    res.json(payment);
+  });
+
+  // ── Partner Portal — job submission (refer a job through the app) ─────────
+  app.get("/api/partner/:contactId/leads", (req, res) => {
+    const partnerId = Number(req.params.contactId);
+    if (!partnerAccessAllowed(req, partnerId))
+      return res.status(403).json({ error: "Not authorized to view this account." });
+    const leads = sqlite.prepare(
+      "SELECT * FROM partner_leads WHERE partner_id = ? ORDER BY created_at DESC"
+    ).all(partnerId);
+    res.json(leads);
+  });
+
+  app.post("/api/partner/:contactId/leads", (req, res) => {
+    const partnerId = Number(req.params.contactId);
+    if (!partnerAccessAllowed(req, partnerId))
+      return res.status(403).json({ error: "Not authorized to submit leads for this account." });
+    const b = req.body || {};
+    if (!b.customerName || !String(b.customerName).trim()) {
+      return res.status(400).json({ error: "Customer name is required" });
+    }
+    if (!b.customerPhone && !b.lossAddress) {
+      return res.status(400).json({ error: "A phone number or address is required so we can reach the customer" });
+    }
+    const partner: any = sqlite.prepare("SELECT id, name FROM contacts WHERE id = ?").get(partnerId);
+    const now = new Date().toISOString();
+    const result = sqlite.prepare(`
+      INSERT INTO partner_leads
+        (partner_id, partner_name, customer_name, customer_phone, customer_email, loss_address, loss_type, insurance_carrier, claim_number, urgency, description, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', ?)
+    `).run(
+      partnerId,
+      partner?.name || b.partnerName || null,
+      String(b.customerName).trim(),
+      b.customerPhone || null,
+      b.customerEmail || null,
+      b.lossAddress || null,
+      b.lossType || null,
+      b.insuranceCarrier || null,
+      b.claimNumber || null,
+      b.urgency || "standard",
+      b.description || null,
+      now,
+    );
+    const lead = sqlite.prepare("SELECT * FROM partner_leads WHERE id = ?").get(result.lastInsertRowid);
+    res.json(lead);
+  });
+
+  // ── Job Documents (e-sign forms + PDF uploads) ─────────────────────────
+  app.get("/api/jobs/:id/documents", (req, res) => {
+    res.json(storage.getJobDocuments(Number(req.params.id)));
+  });
+
+  app.post("/api/jobs/:id/documents", (req, res) => {
+    const doc = storage.createJobDocument({ ...req.body, jobId: Number(req.params.id) });
+    res.json(doc);
+  });
+
+  app.get("/api/documents/:id", (req, res) => {
+    const doc = storage.getJobDocument(Number(req.params.id));
+    if (!doc) return res.status(404).json({ error: "Not found" });
+    res.json(doc);
+  });
+
+  app.patch("/api/documents/:id", (req, res) => {
+    const doc = storage.updateJobDocument(Number(req.params.id), req.body);
+    if (!doc) return res.status(404).json({ error: "Not found" });
+    res.json(doc);
+  });
+
+  app.delete("/api/documents/:id", (req, res) => {
+    storage.deleteJobDocument(Number(req.params.id));
+    res.json({ success: true });
+  });
+  // ── Equipment ────────────────────────────────────────────────────────────
+  app.get("/api/equipment", (_req, res) => {
+    const rows = sqlite.prepare("SELECT * FROM equipment ORDER BY category, name").all();
+    res.json(rows);
+  });
+  app.post("/api/equipment", (req, res) => {
+    const d = req.body;
+    const now = new Date().toISOString();
+    const row = sqlite.prepare(`INSERT INTO equipment (name, category, serial_number, model, daily_rate, status, notes, created_at) VALUES (?,?,?,?,?,?,?,?) RETURNING *`)
+      .get(d.name, d.category, d.serialNumber||null, d.model||null, d.dailyRate||0, d.status||'available', d.notes||null, now);
+    res.json(row);
+  });
+  app.patch("/api/equipment/:id", (req, res) => {
+    const d = req.body;
+    const fields = Object.keys(d).map(k => {
+      const col = k.replace(/([A-Z])/g, '_$1').toLowerCase();
+      return `${col} = ?`;
+    }).join(', ');
+    const vals = [...Object.values(d), req.params.id];
+    const row = sqlite.prepare(`UPDATE equipment SET ${fields} WHERE id = ? RETURNING *`).get(...vals);
+    res.json(row);
+  });
+  app.delete("/api/equipment/:id", (req, res) => {
+    sqlite.prepare("DELETE FROM equipment WHERE id = ?").run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  // Deploy equipment to job
+  app.post("/api/equipment/:id/deploy", (req, res) => {
+    const { jobId, notes } = req.body;
+    const now = new Date().toISOString();
+    const deployedAt = req.body.deployedAt || now.slice(0,10);
+    sqlite.prepare("UPDATE equipment SET status='deployed', current_job_id=?, deployed_at=? WHERE id=?").run(jobId, deployedAt, req.params.id);
+    const dep = sqlite.prepare(`INSERT INTO equipment_deployments (equipment_id, job_id, deployed_at, notes, created_at) VALUES (?,?,?,?,?) RETURNING *`)
+      .get(req.params.id, jobId, deployedAt, notes||null, now);
+    res.json(dep);
+  });
+  app.post("/api/equipment/:id/return", (req, res) => {
+    const returnedAt = req.body.returnedAt || new Date().toISOString().slice(0,10);
+    const equip = sqlite.prepare("SELECT * FROM equipment WHERE id=?").get(req.params.id) as any;
+    let daysOut = 0;
+    if (equip?.deployed_at) {
+      daysOut = Math.ceil((new Date(returnedAt).getTime() - new Date(equip.deployed_at).getTime()) / (1000*60*60*24));
+    }
+    const billedAmount = daysOut * (equip?.daily_rate || 0);
+    sqlite.prepare("UPDATE equipment SET status='available', current_job_id=NULL, deployed_at=NULL WHERE id=?").run(req.params.id);
+    // Update the open deployment
+    sqlite.prepare(`UPDATE equipment_deployments SET returned_at=?, days_out=?, billed_amount=? WHERE equipment_id=? AND returned_at IS NULL`)
+      .run(returnedAt, daysOut, billedAmount, req.params.id);
+    res.json({ daysOut, billedAmount });
+  });
+  app.get("/api/equipment-deployments", (_req, res) => {
+    const rows = sqlite.prepare("SELECT * FROM equipment_deployments ORDER BY deployed_at DESC").all();
+    res.json(rows);
+  });
+  app.get("/api/jobs/:jobId/equipment", (req, res) => {
+    const rows = sqlite.prepare("SELECT e.*, ed.deployed_at as dep_date FROM equipment e LEFT JOIN equipment_deployments ed ON e.id=ed.equipment_id AND ed.job_id=? WHERE e.current_job_id=?").all(req.params.jobId, req.params.jobId);
+    res.json(rows);
+  });
+
+  // ── Job Costs ─────────────────────────────────────────────────────────────
+  app.get("/api/jobs/:jobId/costs", (req, res) => {
+    const rows = sqlite.prepare("SELECT * FROM job_costs WHERE job_id=? ORDER BY cost_date DESC, created_at DESC").all(req.params.jobId);
+    res.json(rows);
+  });
+  app.post("/api/jobs/:jobId/costs", (req, res) => {
+    const d = req.body;
+    const now = new Date().toISOString();
+    const total = (d.quantity||1) * (d.unitCost||0);
+    const row = sqlite.prepare(`INSERT INTO job_costs (job_id, category, description, quantity, unit_cost, total, vendor, receipt_ref, entered_by, cost_date, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING *`)
+      .get(req.params.jobId, d.category, d.description, d.quantity||1, d.unitCost||0, total, d.vendor||null, d.receiptRef||null, d.enteredBy||null, d.costDate||now.slice(0,10), now);
+    res.json(row);
+  });
+  app.patch("/api/costs/:id", (req, res) => {
+    const d = req.body;
+    const total = (d.quantity||1) * (d.unitCost||0);
+    const row = sqlite.prepare(`UPDATE job_costs SET category=?, description=?, quantity=?, unit_cost=?, total=?, vendor=?, cost_date=? WHERE id=? RETURNING *`)
+      .get(d.category, d.description, d.quantity||1, d.unitCost||0, total, d.vendor||null, d.costDate||null, req.params.id);
+    res.json(row);
+  });
+  app.delete("/api/costs/:id", (req, res) => {
+    sqlite.prepare("DELETE FROM job_costs WHERE id=?").run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  // ── Supplements ───────────────────────────────────────────────────────────
+  app.get("/api/supplements", (_req, res) => {
+    const rows = sqlite.prepare("SELECT * FROM supplements ORDER BY created_at DESC").all();
+    res.json(rows);
+  });
+  app.get("/api/jobs/:jobId/supplements", (req, res) => {
+    const rows = sqlite.prepare("SELECT * FROM supplements WHERE job_id=? ORDER BY created_at DESC").all(req.params.jobId);
+    res.json(rows);
+  });
+  app.post("/api/jobs/:jobId/supplements", (req, res) => {
+    const d = req.body;
+    const now = new Date().toISOString();
+    const row = sqlite.prepare(`INSERT INTO supplements (job_id, title, amount_requested, carrier, adjuster_name, submitted_at, follow_up_due, status, notes, line_items, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING *`)
+      .get(req.params.jobId, d.title, d.amountRequested||0, d.carrier||null, d.adjusterName||null, d.submittedAt||now.slice(0,10), d.followUpDue||null, d.status||'pending', d.notes||null, JSON.stringify(d.lineItems||[]), now);
+    res.json(row);
+  });
+  app.patch("/api/supplements/:id", (req, res) => {
+    const d = req.body;
+    const row = sqlite.prepare(`UPDATE supplements SET title=?, amount_requested=?, amount_approved=?, carrier=?, adjuster_name=?, submitted_at=?, response_at=?, follow_up_due=?, status=?, notes=? WHERE id=? RETURNING *`)
+      .get(d.title, d.amountRequested||0, d.amountApproved||null, d.carrier||null, d.adjusterName||null, d.submittedAt||null, d.responseAt||null, d.followUpDue||null, d.status||'pending', d.notes||null, req.params.id);
+    res.json(row);
+  });
+  app.delete("/api/supplements/:id", (req, res) => {
+    sqlite.prepare("DELETE FROM supplements WHERE id=?").run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  // Carrier scorecard (derived from jobs + supplements + invoices + payments)
+  app.get("/api/carrier-scorecard", (_req, res) => {
+    const jobs = sqlite.prepare("SELECT * FROM jobs WHERE insurance_carrier IS NOT NULL AND insurance_carrier != ''").all() as any[];
+    const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
+    const payments = sqlite.prepare("SELECT * FROM payments WHERE type='received'").all() as any[];
+    const supps = sqlite.prepare("SELECT * FROM supplements").all() as any[];
+
+    const carriers: Record<string, any> = {};
+    for (const job of jobs) {
+      const carrier = job.insurance_carrier;
+      if (!carriers[carrier]) {
+        carriers[carrier] = { carrier, totalJobs: 0, totalRevenue: 0, paidJobs: 0, avgDaysToPay: null, daysToPay: [], supplementsSubmitted: 0, supplementsApproved: 0, supplementsTotalRequested: 0, supplementsTotalApproved: 0, disputes: 0 };
+      }
+      const c = carriers[carrier];
+      c.totalJobs++;
+      // Revenue from invoices for this job
+      const jobInvoices = invoices.filter((i: any) => i.job_id === job.id);
+      const jobRevenue = jobInvoices.reduce((s: number, i: any) => s + (i.total || 0), 0);
+      c.totalRevenue += jobRevenue;
+      // Days to pay
+      for (const inv of jobInvoices) {
+        if (inv.paid_at && inv.created_at) {
+          const days = Math.floor((new Date(inv.paid_at).getTime() - new Date(inv.created_at).getTime()) / (1000*60*60*24));
+          c.daysToPay.push(days);
+          c.paidJobs++;
+        }
+      }
+      // Supplements
+      const jobSupps = supps.filter((s: any) => s.job_id === job.id);
+      c.supplementsSubmitted += jobSupps.length;
+      const approved = jobSupps.filter((s: any) => s.status === 'approved' || s.status === 'partial');
+      c.supplementsApproved += approved.length;
+      c.supplementsTotalRequested += jobSupps.reduce((s: number, x: any) => s + (x.amount_requested||0), 0);
+      c.supplementsTotalApproved += approved.reduce((s: number, x: any) => s + (x.amount_approved||x.amount_requested||0), 0);
+      const denied = jobSupps.filter((s: any) => s.status === 'denied' || s.status === 'disputed');
+      c.disputes += denied.length;
+    }
+    // Compute averages and grade
+    const result = Object.values(carriers).map((c: any) => {
+      c.avgDaysToPay = c.daysToPay.length ? Math.round(c.daysToPay.reduce((a: number,b: number)=>a+b,0)/c.daysToPay.length) : null;
+      delete c.daysToPay;
+      const suppApprovalRate = c.supplementsSubmitted > 0 ? Math.round((c.supplementsApproved/c.supplementsSubmitted)*100) : null;
+      c.suppApprovalRate = suppApprovalRate;
+      // Grade: A=fast pay + high supp approval, F=slow pay + denied supps
+      let score = 50;
+      if (c.avgDaysToPay !== null) score += c.avgDaysToPay <= 30 ? 25 : c.avgDaysToPay <= 60 ? 10 : -20;
+      if (suppApprovalRate !== null) score += suppApprovalRate >= 80 ? 20 : suppApprovalRate >= 50 ? 5 : -15;
+      if (c.disputes > 0) score -= c.disputes * 5;
+      c.grade = score >= 90 ? 'A' : score >= 75 ? 'B' : score >= 60 ? 'C' : score >= 45 ? 'D' : 'F';
+      c.score = Math.max(0, Math.min(100, score));
+      return c;
+    });
+    res.json(result.sort((a: any, b: any) => b.score - a.score));
+  });
+
+  // ── Follow-Up Sequences ───────────────────────────────────────────────────
+  app.get("/api/follow-ups", (_req, res) => {
+    const rows = sqlite.prepare("SELECT * FROM follow_up_sequences ORDER BY scheduled_at ASC").all();
+    res.json(rows);
+  });
+  app.post("/api/follow-ups", (req, res) => {
+    const d = req.body;
+    const now = new Date().toISOString();
+    const row = sqlite.prepare(`INSERT INTO follow_up_sequences (job_id, contact_id, sequence_type, scheduled_at, status, email_subject, email_body, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?) RETURNING *`)
+      .get(d.jobId, d.contactId, d.sequenceType, d.scheduledAt, d.status||'pending', d.emailSubject||null, d.emailBody||null, d.notes||null, now);
+    res.json(row);
+  });
+  app.patch("/api/follow-ups/:id", (req, res) => {
+    const d = req.body;
+    const row = sqlite.prepare(`UPDATE follow_up_sequences SET status=?, sent_at=?, email_subject=?, email_body=?, notes=? WHERE id=? RETURNING *`)
+      .get(d.status, d.sentAt||null, d.emailSubject||null, d.emailBody||null, d.notes||null, req.params.id);
+    res.json(row);
+  });
+  app.delete("/api/follow-ups/:id", (req, res) => {
+    sqlite.prepare("DELETE FROM follow_up_sequences WHERE id=?").run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  // Auto-schedule follow-ups when job completes
+  app.post("/api/jobs/:jobId/schedule-follow-ups", (req, res) => {
+    const job = sqlite.prepare("SELECT * FROM jobs WHERE id=?").get(req.params.jobId) as any;
+    if (!job || !job.contact_id) return res.json({ ok: false, reason: "no contact" });
+    const now = new Date();
+    const sequences = [
+      { type: 'post_job_30d', days: 30, subject: 'How is everything at your property?', body: `Hi ${job.address ? 'valued customer' : 'there'},
+
+We hope your property has fully recovered. It has been 30 days since Titan Restoration LLC completed work at ${job.address}. Please don't hesitate to reach out if you notice anything that needs attention.
+
+Also, if you were happy with our service, a Google review would mean the world to us!
+
+Titan Restoration LLC
+706-922-0154` },
+      { type: 'post_job_6mo', days: 180, subject: 'Seasonal check-in from Titan Restoration', body: `Hi there,
+
+It's been about 6 months since we completed your restoration project at ${job.address}. Spring/Fall is a great time to have your property inspected for any moisture, mold, or storm vulnerabilities.
+
+Call us anytime for a free inspection: 706-922-0154
+
+Titan Restoration LLC` },
+      { type: 'annual', days: 365, subject: 'Annual storm season reminder — Titan Restoration', body: `Hi there,
+
+Hurricane and storm season is approaching. As a previous Titan Restoration client, we want to make sure your property is protected.
+
+We offer free storm preparedness inspections for past clients. Call 706-922-0154 to schedule.
+
+Titan Restoration LLC | Augusta, GA` },
+    ];
+    const created = [];
+    for (const seq of sequences) {
+      const scheduledAt = new Date(now.getTime() + seq.days * 24*60*60*1000).toISOString().slice(0,10);
+      const existing = sqlite.prepare("SELECT id FROM follow_up_sequences WHERE job_id=? AND sequence_type=?").get(job.id, seq.type);
+      if (!existing) {
+        const row = sqlite.prepare(`INSERT INTO follow_up_sequences (job_id, contact_id, sequence_type, scheduled_at, status, email_subject, email_body, created_at) VALUES (?,?,?,?,?,?,?,?) RETURNING *`)
+          .get(job.id, job.contact_id, seq.type, scheduledAt, 'pending', seq.subject, seq.body, now.toISOString());
+        created.push(row);
+      }
+    }
+    res.json({ created });
+  });
+
+  // ── Safety Incidents ──────────────────────────────────────────────────────
+  app.get("/api/safety-incidents", (_req, res) => {
+    const rows = sqlite.prepare("SELECT * FROM safety_incidents ORDER BY incident_date DESC").all();
+    res.json(rows);
+  });
+  app.get("/api/jobs/:jobId/safety-incidents", (req, res) => {
+    const rows = sqlite.prepare("SELECT * FROM safety_incidents WHERE job_id=? ORDER BY incident_date DESC").all(req.params.jobId);
+    res.json(rows);
+  });
+  app.post("/api/safety-incidents", (req, res) => {
+    const d = req.body;
+    const now = new Date().toISOString();
+    const row = sqlite.prepare(`INSERT INTO safety_incidents (job_id, incident_type, severity, reported_by, incident_date, description, persons_involved, corrective_action, osha_recordable, follow_up_date, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *`)
+      .get(d.jobId||null, d.incidentType, d.severity||'low', d.reportedBy, d.incidentDate, d.description, d.personsInvolved||null, d.correctiveAction||null, d.oshaRecordable||0, d.followUpDate||null, d.status||'open', now);
+    res.json(row);
+  });
+  app.patch("/api/safety-incidents/:id", (req, res) => {
+    const d = req.body;
+    const row = sqlite.prepare(`UPDATE safety_incidents SET incident_type=?, severity=?, description=?, corrective_action=?, osha_recordable=?, follow_up_date=?, closed_at=?, status=? WHERE id=? RETURNING *`)
+      .get(d.incidentType, d.severity, d.description, d.correctiveAction||null, d.oshaRecordable||0, d.followUpDate||null, d.closedAt||null, d.status, req.params.id);
+    res.json(row);
+  });
+  app.delete("/api/safety-incidents/:id", (req, res) => {
+    sqlite.prepare("DELETE FROM safety_incidents WHERE id=?").run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  // ── Lead source attribution report ────────────────────────────────────────
+  app.get("/api/reports/lead-attribution", (_req, res) => {
+    const jobs = sqlite.prepare("SELECT * FROM jobs").all() as any[];
+    const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
+    const payments = sqlite.prepare("SELECT * FROM payments WHERE type='received'").all() as any[];
+    const contacts = sqlite.prepare("SELECT * FROM contacts").all() as any[];
+
+    const sources: Record<string, any> = {};
+    for (const job of jobs) {
+      const src = job.lead_source || 'unknown';
+      if (!sources[src]) sources[src] = { source: src, jobCount: 0, totalRevenue: 0, paidRevenue: 0, jobs: [] };
+      sources[src].jobCount++;
+      const jobInvs = invoices.filter((i: any) => i.job_id === job.id);
+      const rev = jobInvs.reduce((s: number, i: any) => s + (i.total||0), 0);
+      const paid = payments.filter((p: any) => jobInvs.some((i: any) => i.id === p.invoice_id)).reduce((s: number, p: any) => s + p.amount, 0);
+      sources[src].totalRevenue += rev;
+      sources[src].paidRevenue += paid;
+      sources[src].jobs.push({ jobNumber: job.job_number, address: job.address, revenue: rev });
+    }
+    res.json(Object.values(sources).sort((a: any, b: any) => b.totalRevenue - a.totalRevenue));
+  });
+
+  // ── Referral Partner ROI ──────────────────────────────────────────────────
+  app.get("/api/reports/partner-roi", (_req, res) => {
+    const contacts = sqlite.prepare("SELECT * FROM contacts WHERE type='referral'").all() as any[];
+    const jobs = sqlite.prepare("SELECT * FROM jobs").all() as any[];
+    const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
+    const payouts = sqlite.prepare("SELECT * FROM payout_requests").all() as any[];
+    const warrantyCalls = sqlite.prepare("SELECT * FROM warranty_calls").all() as any[];
+
+    const result = contacts.map((c: any) => {
+      const referredJobs = jobs.filter((j: any) =>
+        j.referral_partner_id === c.id ||
+        (j.lead_source === 'referral' && j.lead_source_detail && j.lead_source_detail.toLowerCase().includes(c.name.toLowerCase())) ||
+        (j.insurance_carrier && c.company && j.insurance_carrier.toLowerCase().includes(c.company.toLowerCase()))
+      );
+      const totalRevenue = referredJobs.reduce((sum: number, j: any) => {
+        const inv = invoices.filter((i: any) => i.job_id === j.id).reduce((s: number, i: any) => s + (i.total||0), 0);
+        return sum + inv;
+      }, 0);
+      const partnerPayouts = payouts.filter((p: any) => p.contact_id === c.id);
+      const totalPaid = partnerPayouts.filter((p: any) => p.status === 'paid').reduce((s: number, p: any) => s + (p.amount||0), 0);
+      const totalPending = partnerPayouts.filter((p: any) => p.status !== 'paid').reduce((s: number, p: any) => s + (p.amount||0), 0);
+      // Warranty calls for this partner
+      const partnerWarrantyCalls = warrantyCalls.filter((w: any) =>
+        w.partner_id === c.id || referredJobs.some((j: any) => j.id === w.job_id)
+      );
+      const warrantyCost = partnerWarrantyCalls.reduce((s: number, w: any) => s + (w.total_cost||0), 0);
+      const warrantyCount = partnerWarrantyCalls.length;
+      const roi = totalPaid > 0 ? (totalRevenue / totalPaid) : null;
+      // Net value = revenue generated minus cost absorbed (payouts + warranty)
+      const netValue = totalRevenue - totalPaid - warrantyCost;
+      return {
+        partnerId: c.id,
+        partner: c.name,
+        company: c.company,
+        referralRate: c.referral_rate,
+        jobsReferred: referredJobs.length,
+        totalRevenue,
+        totalPaid,
+        totalPending,
+        warrantyCost,
+        warrantyCount,
+        netValue,
+        roi,
+        jobs: referredJobs.map((j: any) => {
+          const jobInvoiceTotal = invoices.filter((i: any) => i.job_id === j.id).reduce((s: number, i: any) => s + (i.total||0), 0);
+          const jobWarrantyCalls = partnerWarrantyCalls.filter((w: any) => w.job_id === j.id);
+          return {
+            jobNumber: j.job_number,
+            address: j.address,
+            status: j.status,
+            revenue: jobInvoiceTotal,
+            warrantyCalls: jobWarrantyCalls.length,
+            warrantyCost: jobWarrantyCalls.reduce((s: number, w: any) => s + (w.total_cost||0), 0),
+          };
+        }),
+        warrantyCalls: partnerWarrantyCalls.map((w: any) => {
+          const job = jobs.find((j: any) => j.id === w.job_id);
+          return { ...w, jobNumber: job?.job_number, jobAddress: job?.address };
+        }),
+      };
+    });
+    res.json(result.sort((a: any, b: any) => b.totalRevenue - a.totalRevenue));
+  });
+
+
+  // ── Line Item Library ─────────────────────────────────────────────────────
+  app.get("/api/line-items", (req, res) => {
+    res.json(storage.getLineItems(req.query.category as string | undefined));
+  });
+  app.post("/api/line-items", (req, res) => { res.json(storage.createLineItem(req.body)); });
+  app.patch("/api/line-items/:id", (req, res) => {
+    res.json(storage.updateLineItem(Number(req.params.id), req.body));
+  });
+  app.delete("/api/line-items/:id", (req, res) => {
+    storage.deleteLineItem(Number(req.params.id)); res.json({ ok: true });
+  });
+
+  // ── Adjusters ─────────────────────────────────────────────────────────────
+  app.get("/api/adjusters", (_req, res) => { res.json(storage.getAdjusters()); });
+  app.post("/api/adjusters", (req, res) => { res.json(storage.createAdjuster(req.body)); });
+  app.patch("/api/adjusters/:id", (req, res) => {
+    res.json(storage.updateAdjuster(Number(req.params.id), req.body));
+  });
+  app.delete("/api/adjusters/:id", (req, res) => {
+    storage.deleteAdjuster(Number(req.params.id)); res.json({ ok: true });
+  });
+
+  // ── Adjuster Meetings ─────────────────────────────────────────────────────
+  app.get("/api/adjuster-meetings", (req, res) => {
+    const jobId = req.query.jobId ? Number(req.query.jobId) : undefined;
+    res.json(storage.getAdjusterMeetings(jobId));
+  });
+  app.get("/api/jobs/:jobId/adjuster-meetings", (req, res) => {
+    res.json(storage.getAdjusterMeetings(Number(req.params.jobId)));
+  });
+  app.post("/api/adjuster-meetings", (req, res) => { res.json(storage.createAdjusterMeeting(req.body)); });
+  app.patch("/api/adjuster-meetings/:id", (req, res) => {
+    res.json(storage.updateAdjusterMeeting(Number(req.params.id), req.body));
+  });
+  app.delete("/api/adjuster-meetings/:id", (req, res) => {
+    storage.deleteAdjusterMeeting(Number(req.params.id)); res.json({ ok: true });
+  });
+
+  // ── Inspection Checklists ─────────────────────────────────────────────────
+  app.get("/api/jobs/:jobId/inspections", (req, res) => {
+    res.json(storage.getInspectionChecklists(Number(req.params.jobId)));
+  });
+  app.post("/api/jobs/:jobId/inspections", (req, res) => {
+    res.json(storage.createInspectionChecklist({ ...req.body, jobId: Number(req.params.jobId) }));
+  });
+  app.patch("/api/inspections/:id", (req, res) => {
+    res.json(storage.updateInspectionChecklist(Number(req.params.id), req.body));
+  });
+
+  // ── Review Requests ───────────────────────────────────────────────────────
+  app.get("/api/review-requests", (_req, res) => { res.json(storage.getReviewRequests()); });
+  app.get("/api/jobs/:jobId/review-requests", (req, res) => {
+    res.json(storage.getReviewRequests(Number(req.params.jobId)));
+  });
+  app.post("/api/review-requests", (req, res) => { res.json(storage.createReviewRequest(req.body)); });
+  app.patch("/api/review-requests/:id", (req, res) => {
+    res.json(storage.updateReviewRequest(Number(req.params.id), req.body));
+  });
+
+  // ── Certifications ────────────────────────────────────────────────────────
+  app.get("/api/certifications", (req, res) => {
+    res.json(storage.getCertifications(req.query.employee as string | undefined));
+  });
+  app.post("/api/certifications", (req, res) => { res.json(storage.createCertification(req.body)); });
+  app.patch("/api/certifications/:id", (req, res) => {
+    res.json(storage.updateCertification(Number(req.params.id), req.body));
+  });
+  app.delete("/api/certifications/:id", (req, res) => {
+    storage.deleteCertification(Number(req.params.id)); res.json({ ok: true });
+  });
+
+  // ── A/R Aging Report ──────────────────────────────────────────────────────
+  app.get("/api/reports/ar-aging", (_req, res) => {
+    const invoices = storage.getInvoices() as any[];
+    const contacts = storage.getContacts() as any[];
+    const jobs = storage.getJobs() as any[];
+    const now = new Date();
+    const buckets: Record<string, any[]> = { "0-30": [], "31-60": [], "61-90": [], "90+": [] };
+    let totalOutstanding = 0;
+    invoices.filter((inv: any) => inv.status !== "paid" && inv.status !== "void").forEach((inv: any) => {
+      const due = inv.dueDate ? new Date(inv.dueDate) : new Date(inv.createdAt);
+      const days = Math.floor((now.getTime() - due.getTime()) / (1000 * 60 * 60 * 24));
+      const contact = contacts.find((c: any) => c.id === inv.contactId);
+      const job = jobs.find((j: any) => j.id === inv.jobId);
+      const entry = { ...inv, daysOverdue: Math.max(0, days), contactName: contact?.name, jobNumber: job?.jobNumber, carrier: job?.insuranceCarrier };
+      totalOutstanding += inv.total || 0;
+      if (days <= 30) buckets["0-30"].push(entry);
+      else if (days <= 60) buckets["31-60"].push(entry);
+      else if (days <= 90) buckets["61-90"].push(entry);
+      else buckets["90+"].push(entry);
+    });
+    res.json({ buckets, totalOutstanding, generatedAt: now.toISOString() });
+  });
+
+  // ── Profitability Report ──────────────────────────────────────────────────
+  app.get("/api/reports/profitability", (_req, res) => {
+    const jobs = storage.getJobs() as any[];
+    const invoices = storage.getInvoices() as any[];
+    const payments = storage.getPayments() as any[];
+    const allCosts = sqlite.prepare("SELECT * FROM job_costs").all() as any[];
+    const result = jobs.map((job: any) => {
+      const jobInvoices = invoices.filter((inv: any) => inv.jobId === job.id);
+      const totalInvoiced = jobInvoices.reduce((s: number, inv: any) => s + (inv.total || 0), 0);
+      const totalCollected = payments.filter((p: any) => p.jobId === job.id && p.type === "received").reduce((s: number, p: any) => s + (p.amount || 0), 0);
+      const totalCosts = allCosts.filter((c: any) => c.job_id === job.id).reduce((s: number, c: any) => s + (c.actual_cost || 0), 0);
+      const grossMargin = totalInvoiced > 0 ? ((totalInvoiced - totalCosts) / totalInvoiced * 100) : 0;
+      return { jobId: job.id, jobNumber: job.jobNumber, address: job.address, lossType: job.lossType, assignedTech: job.assignedTech, insuranceCarrier: job.insuranceCarrier, totalInvoiced, totalCollected, totalCosts, grossMargin: Math.round(grossMargin * 10) / 10, status: job.status };
+    });
+    res.json(result);
+  });
+
+  // ── Supplement Auto-Draft ─────────────────────────────────────────────────
+  app.post("/api/supplements/:id/auto-draft", (req, res) => {
+    const allSupplements = sqlite.prepare("SELECT * FROM supplements WHERE id = ?").get(Number(req.params.id)) as any;
+    if (!allSupplements) return res.status(404).json({ message: "Supplement not found" });
+    const job = storage.getJob(allSupplements.job_id) as any;
+    const state = job?.address?.includes("SC") ? "SC" : "GA";
+    const statute = state === "SC"
+      ? "S.C. Code Ann. § 38-59-20 (Unfair Claims Settlement Practices Act) requires carriers to acknowledge and act reasonably on all supplement requests within 30 days."
+      : "O.C.G.A. § 33-6-34 (Unfair Claims Settlement Practices) prohibits carriers from refusing to pay claims without conducting a reasonable investigation.";
+    const draft = `RE: Supplement Request — ${job?.job_number || "Job"} — ${allSupplements.supplement_type || "General Supplement"}
+
+Dear ${job?.adjuster_name || "Adjuster"},
+
+Pursuant to ${statute}
+
+We respectfully submit this supplement for the following scope item(s) identified during the restoration process but not included in the initial estimate:
+
+Item: ${allSupplements.description || allSupplements.supplement_type}
+Amount Requested: $${allSupplements.requested_amount || "0.00"}
+IICRC S500 Standard Reference: Section 9 — Drying Standards and Documentation Requirements
+
+The additional work was necessary to meet IICRC S500 standards and restore the property to pre-loss condition. Supporting documentation including drying logs, moisture readings, and photo evidence is attached.
+
+We request your review and approval within 15 business days per applicable state insurance regulations.
+
+Respectfully,
+Titan Restoration LLC
+706-922-0154
+cody@titanrestorationllc.com`;
+    res.json({ draft, statute, state });
+  });
+
+  // ── Health check ─────────────────────────────────────────────────────────
+  app.get("/api/health", (_req, res) => {
+    try {
+      const jobs = (sqlite.prepare("SELECT COUNT(*) as c FROM jobs").get() as any).c;
+      const contacts = (sqlite.prepare("SELECT COUNT(*) as c FROM contacts").get() as any).c;
+      const invoices = (sqlite.prepare("SELECT COUNT(*) as c FROM invoices").get() as any).c;
+      const walMode = (sqlite.prepare("PRAGMA journal_mode").get() as any).journal_mode;
+      res.json({ status: "ok", jobs, contacts, invoices, db: walMode, ts: new Date().toISOString() });
+    } catch (e: any) {
+      res.status(500).json({ status: "error", error: e?.message });
+    }
+  });
+
+  // Missing top-level collection GET routes (health scan + pages need these)
+  app.get("/api/job-costs", (_req, res) => {
+    try {
+      const rows = sqlite.prepare("SELECT * FROM job_costs ORDER BY cost_date DESC, created_at DESC").all();
+      res.json(rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.get("/api/drying-records", (_req, res) => {
+    try {
+      const rows = sqlite.prepare("SELECT * FROM drying_records ORDER BY reading_date DESC").all();
+      res.json(rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.get("/api/job-documents", (_req, res) => {
+    try {
+      const rows = sqlite.prepare("SELECT * FROM job_documents ORDER BY created_at DESC").all();
+      res.json(rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SUITE 3 ROUTES
+  // ═══════════════════════════════════════════════════════════════════════
+
+// ── Activity Log ─────────────────────────────────────────────────────────────
+  app.get("/api/activity-log", (_req, res) => {
+  const logs = sqlite.prepare("SELECT * FROM activity_log ORDER BY created_at DESC LIMIT 200").all();
+  res.json(logs);
+  });
+  app.get("/api/activity-log/job/:jobId", (req, res) => {
+  const logs = sqlite.prepare("SELECT * FROM activity_log WHERE job_id = ? ORDER BY created_at DESC").all(Number(req.params.jobId));
+  res.json(logs);
+  });
+  app.post("/api/activity-log", (req, res) => {
+  const { jobId, entityType, entityId, action, actor, description, metadata } = req.body;
+  const now = new Date().toISOString();
+  const result = sqlite.prepare(`INSERT INTO activity_log (job_id, entity_type, entity_id, action, actor, description, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(jobId || null, entityType || "job", entityId || null, action, actor || "System", description, JSON.stringify(metadata || {}), now);
+  res.json({ id: result.lastInsertRowid });
+  });
+
+// ── SMS Messages ──────────────────────────────────────────────────────────────
+  app.get("/api/sms", (_req, res) => {
+  const msgs = sqlite.prepare("SELECT * FROM sms_messages ORDER BY created_at DESC").all();
+  res.json(msgs);
+  });
+  app.get("/api/sms/job/:jobId", (req, res) => {
+  const msgs = sqlite.prepare("SELECT * FROM sms_messages WHERE job_id = ? ORDER BY created_at ASC").all(Number(req.params.jobId));
+  res.json(msgs);
+  });
+  app.get("/api/sms/contact/:contactId", (req, res) => {
+  const msgs = sqlite.prepare("SELECT * FROM sms_messages WHERE contact_id = ? ORDER BY created_at ASC").all(Number(req.params.contactId));
+  res.json(msgs);
+  });
+  app.post("/api/sms", (req, res) => {
+  const { jobId, contactId, direction, from, to, body } = req.body;
+  if (!body || !to) return res.status(400).json({ error: "body and to required" });
+  const now = new Date().toISOString();
+  // In production this would call Twilio; for now we persist the message directly
+  const result = sqlite.prepare(`INSERT INTO sms_messages (job_id, contact_id, direction, "from", "to", body, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'sent', ?)`).run(jobId || null, contactId || null, direction || "outbound", from || "Titan Restoration (706-922-0154)", to, body, now);
+  // Also log activity
+  if (jobId) {
+    sqlite.prepare(`INSERT INTO activity_log (job_id, entity_type, action, actor, description, created_at) VALUES (?, 'sms', 'sms_sent', 'System', ?, ?)`).run(jobId, `SMS sent to ${to}: "${body.substring(0, 60)}${body.length > 60 ? '...' : ''}"`, now);
+  }
+  res.json({ id: result.lastInsertRowid, status: "sent" });
+  });
+
+// ── Job Templates ─────────────────────────────────────────────────────────────
+  app.get("/api/job-templates", (_req, res) => {
+  const templates = sqlite.prepare("SELECT * FROM job_templates ORDER BY loss_type, name").all();
+  res.json(templates);
+  });
+  app.get("/api/job-templates/:id", (req, res) => {
+  const tmpl = sqlite.prepare("SELECT * FROM job_templates WHERE id = ?").get(Number(req.params.id));
+  if (!tmpl) return res.status(404).json({ error: "Template not found" });
+  res.json(tmpl);
+  });
+  app.post("/api/job-templates", (req, res) => {
+  const { name, lossType, description, defaultScope, defaultEquipment, iicrcProtocol, estimatedDays } = req.body;
+  const now = new Date().toISOString();
+  const result = sqlite.prepare(`INSERT INTO job_templates (name, loss_type, description, default_scope, default_equipment, iicrc_protocol, estimated_days, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(name, lossType, description || null, JSON.stringify(defaultScope || []), JSON.stringify(defaultEquipment || []), iicrcProtocol || null, estimatedDays || null, now);
+  res.json({ id: result.lastInsertRowid });
+  });
+  app.put("/api/job-templates/:id", (req, res) => {
+  const { name, lossType, description, defaultScope, defaultEquipment, iicrcProtocol, estimatedDays } = req.body;
+  sqlite.prepare(`UPDATE job_templates SET name=?, loss_type=?, description=?, default_scope=?, default_equipment=?, iicrc_protocol=?, estimated_days=? WHERE id=?`).run(name, lossType, description || null, JSON.stringify(defaultScope || []), JSON.stringify(defaultEquipment || []), iicrcProtocol || null, estimatedDays || null, Number(req.params.id));
+  res.json({ ok: true });
+  });
+  app.delete("/api/job-templates/:id", (req, res) => {
+  sqlite.prepare("DELETE FROM job_templates WHERE id = ?").run(Number(req.params.id));
+  res.json({ ok: true });
+  });
+
+// ── Tech Notifications ────────────────────────────────────────────────────────
+  app.get("/api/tech-notifications/:techName", (req, res) => {
+  const notes = sqlite.prepare("SELECT * FROM tech_notifications WHERE tech_name = ? ORDER BY created_at DESC LIMIT 50").all(req.params.techName);
+  res.json(notes);
+  });
+  app.get("/api/tech-notifications/:techName/unread-count", (req, res) => {
+  const row = sqlite.prepare("SELECT COUNT(*) as count FROM tech_notifications WHERE tech_name = ? AND read = 0").get(req.params.techName) as any;
+  res.json({ count: row.count });
+  });
+  app.post("/api/tech-notifications", (req, res) => {
+  const { techName, type, title, body, jobId } = req.body;
+  const now = new Date().toISOString();
+  const result = sqlite.prepare(`INSERT INTO tech_notifications (tech_name, type, title, body, job_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(techName, type || "general", title, body, jobId || null, now);
+  res.json({ id: result.lastInsertRowid });
+  });
+  app.patch("/api/tech-notifications/:id/read", (req, res) => {
+  sqlite.prepare("UPDATE tech_notifications SET read = 1 WHERE id = ?").run(Number(req.params.id));
+  res.json({ ok: true });
+  });
+  app.patch("/api/tech-notifications/:techName/read-all", (req, res) => {
+  sqlite.prepare("UPDATE tech_notifications SET read = 1 WHERE tech_name = ?").run(req.params.techName);
+  res.json({ ok: true });
+  });
+
+// ── Adjuster Portal ───────────────────────────────────────────────────────────
+  app.get("/api/adjuster-portal/sessions", (_req, res) => {
+  const sessions = sqlite.prepare("SELECT * FROM adjuster_portal_sessions ORDER BY created_at DESC").all();
+  res.json(sessions);
+  });
+  app.post("/api/adjuster-portal/sessions", (req, res) => {
+  const { adjusterId, adjusterName, carrier, jobIds, expiresInDays } = req.body;
+  if (!adjusterName || !carrier) return res.status(400).json({ error: "adjusterName and carrier required" });
+  const token = Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2) + Date.now().toString(36);
+  const expiresAt = new Date(Date.now() + ((expiresInDays || 30) * 24 * 60 * 60 * 1000)).toISOString();
+  const now = new Date().toISOString();
+  const result = sqlite.prepare(`INSERT INTO adjuster_portal_sessions (adjuster_id, adjuster_name, carrier, access_token, job_ids, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(adjusterId || null, adjusterName, carrier, token, JSON.stringify(jobIds || []), expiresAt, now);
+  res.json({ id: result.lastInsertRowid, accessToken: token, expiresAt });
+  });
+  app.get("/api/adjuster-portal/access/:token", (req, res) => {
+  const session = sqlite.prepare("SELECT * FROM adjuster_portal_sessions WHERE access_token = ? AND expires_at > ?").get(req.params.token, new Date().toISOString()) as any;
+  if (!session) return res.status(401).json({ error: "Invalid or expired access token" });
+  // Update last accessed
+  sqlite.prepare("UPDATE adjuster_portal_sessions SET last_accessed_at = ? WHERE id = ?").run(new Date().toISOString(), session.id);
+  const jobIds: number[] = JSON.parse(session.job_ids || "[]");
+  const jobs = jobIds.length > 0 ? sqlite.prepare(`SELECT * FROM jobs WHERE id IN (${jobIds.map(() => "?").join(",")}) `).all(...jobIds) : [];
+  // Company-level IICRC credentials (non-private — shows firm is qualified)
+  const credentials = sqlite.prepare(
+    "SELECT employee_name, cert_type, cert_number, issued_by, expiration_date, status FROM certifications WHERE status = 'active' ORDER BY cert_type"
+  ).all();
+  // For each job, attach drying records, photos, equipment log, estimates, supplements
+  const enriched = (jobs as any[]).map((job: any) => {
+    const drying = sqlite.prepare("SELECT * FROM drying_records WHERE job_id = ? ORDER BY reading_date ASC").all(job.id);
+    const photos = sqlite.prepare("SELECT id, filename, data_url, caption, category, taken_at FROM photos WHERE job_id = ? ORDER BY taken_at ASC, id ASC").all(job.id);
+    const estimates = sqlite.prepare("SELECT id, title, status, total, created_at FROM estimates WHERE job_id = ?").all(job.id);
+    const equipmentLog = sqlite.prepare(`
+      SELECT ed.id, ed.deployed_at, ed.returned_at, ed.days_out, e.name, e.category, e.model
+      FROM equipment_deployments ed LEFT JOIN equipment e ON e.id = ed.equipment_id
+      WHERE ed.job_id = ? ORDER BY ed.deployed_at ASC
+    `).all(job.id);
+    const equipmentOnSite = sqlite.prepare("SELECT id, name, category, model, deployed_at FROM equipment WHERE current_job_id = ? AND status = 'deployed'").all(job.id);
+    const supplements = sqlite.prepare(
+      "SELECT id, title, amount_requested, amount_approved, status, submitted_at, response_at, notes, line_items FROM supplements WHERE job_id = ? ORDER BY submitted_at DESC"
+    ).all(job.id);
+    return { ...job, dryingRecords: drying, photos, photoCount: photos.length, estimates, equipmentLog, equipmentOnSite, supplements };
+  });
+  res.json({ adjusterName: session.adjuster_name, carrier: session.carrier, credentials, jobs: enriched });
+  });
+
+  // Adjuster responds to a supplement (approve / partial / request info) — read-only portal action
+  app.post("/api/adjuster-portal/supplement-response", (req, res) => {
+    const { token, supplementId, decision, amountApproved, note } = req.body || {};
+    const session = sqlite.prepare("SELECT * FROM adjuster_portal_sessions WHERE access_token = ? AND expires_at > ?").get(token, new Date().toISOString()) as any;
+    if (!session) return res.status(401).json({ error: "Invalid or expired access token" });
+    const supp = sqlite.prepare("SELECT * FROM supplements WHERE id = ?").get(Number(supplementId)) as any;
+    if (!supp) return res.status(404).json({ error: "Supplement not found" });
+    const jobIds: number[] = JSON.parse(session.job_ids || "[]");
+    if (!jobIds.includes(supp.job_id)) return res.status(403).json({ error: "Not authorized for this job" });
+    const now = new Date().toISOString();
+    const statusMap: Record<string, string> = { approved: "approved", partial: "partial", info: "info_requested", denied: "denied" };
+    const newStatus = statusMap[decision] || "info_requested";
+    const approved = decision === "approved" ? supp.amount_requested
+      : decision === "partial" ? (Number(amountApproved) || 0)
+      : null;
+    const stamp = `[${session.adjuster_name} · ${session.carrier} · ${new Date(now).toLocaleDateString()}] ${decision.toUpperCase()}${note ? ": " + note : ""}`;
+    const mergedNotes = supp.notes ? `${supp.notes}\n${stamp}` : stamp;
+    sqlite.prepare("UPDATE supplements SET status = ?, amount_approved = ?, response_at = ?, notes = ? WHERE id = ?")
+      .run(newStatus, approved, now, mergedNotes, supp.id);
+    res.json({ ok: true, status: newStatus, amountApproved: approved });
+  });
+  app.delete("/api/adjuster-portal/sessions/:id", (req, res) => {
+  sqlite.prepare("DELETE FROM adjuster_portal_sessions WHERE id = ?").run(Number(req.params.id));
+  res.json({ ok: true });
+  });
+
+// ── AI Estimate Review ────────────────────────────────────────────────────────
+
+  // ── AI Scope-to-Estimate Generator ──────────────────────────────────────────
+  app.post("/api/estimates/:id/scope-generate", (req, res) => {
+    try {
+      const estimate = sqlite.prepare("SELECT * FROM estimates WHERE id = ?").get(Number(req.params.id)) as any;
+      if (!estimate) return res.status(404).json({ error: "Estimate not found" });
+      const job = sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(estimate.job_id) as any;
+
+      const { scope, lossType: scopeLossType, squareFootage, affectedRooms } = req.body;
+      if (!scope) return res.status(400).json({ error: "scope text required" });
+
+      const text = scope.toLowerCase();
+      const sqft = Number(squareFootage) || 0;
+      const lossType = (scopeLossType || job?.loss_type || "").toLowerCase();
+
+      // ── Parsing helpers ───────────────────────────────────────────────────
+      const has = (...terms: string[]) => terms.some(t => text.includes(t));
+      const num = (pattern: RegExp, fallback: number) => {
+        const m = text.match(pattern);
+        return m ? parseFloat(m[1]) : fallback;
+      };
+
+      // Extract key quantities from scope text
+      const mentionedSqft   = num(/([\d,]+)\s*(?:sq\.?\s*f(?:ee)?t|sf)/i, sqft);
+      const mentionedLF     = num(/([\d,]+)\s*(?:linear\s*f(?:ee)?t|lf)/i, 0);
+      const mentionedRooms  = num(/([\d]+)\s*rooms?/i, affectedRooms || 1);
+      const mentionedDays   = num(/([\d]+)\s*days?/i, 3);
+      const mentionedFloors = num(/([\d]+)\s*fl(?:oors?)?/i, 1);
+      const area = mentionedSqft || 400;
+      const rooms = mentionedRooms || 1;
+      const days = mentionedDays || 3;
+
+      // Detect specific materials / conditions
+      const hasHardwood   = has("hardwood", "wood floor", "engineered wood", "oak", "maple");
+      const hasCarpet     = has("carpet", "carpeting", "rug");
+      const hasDrywall    = has("drywall", "sheetrock", "gypsum", "wall", "ceiling");
+      const hasInsulation = has("insulation", "batt", "blown-in");
+      const hasCabinets   = has("cabinet", "kitchen", "vanity");
+      const hasSubfloor   = has("subfloor", "sub-floor", "osb");
+      const hasCat1       = has("category 1", "cat 1", "clean water", "supply line", "pipe break");
+      const hasCat2       = has("category 2", "cat 2", "grey water", "dishwasher", "washing machine", "toilet overflow");
+      const hasCat3       = has("category 3", "cat 3", "black water", "sewage", "sewer", "flood", "groundwater");
+      const hasMold       = has("mold", "mould", "microbial", "fungal", "spore");
+      const hasAsbestos   = has("asbestos", "popcorn ceiling", "vermiculite");
+      const hasOdor       = has("odor", "odour", "smoke smell", "soot smell", "deodorize", "hydroxyl", "ozone");
+      const hasContents   = has("contents", "furniture", "pack out", "pack-out", "belongings");
+      const hasRoof       = has("roof", "shingle", "tarp", "decking", "fascia", "soffit");
+      const hasWindow     = has("window", "glass", "frame", "sill");
+      const hasElectrical = has("electrical", "wiring", "outlet", "panel", "breaker");
+      const hasPlumbing   = has("plumbing", "pipe", "drain", "fixture", "toilet");
+      const hasHvac       = has("hvac", "ductwork", "duct", "air handler", "furnace");
+      const hasSoot       = has("soot", "char", "smoke", "scorch");
+      const hasDemo       = has("demo", "demolition", "tear out", "removal", "remove");
+      const hasEmergency  = has("emergency", "immediate", "urgent", "burst", "broken pipe");
+      const hasBoardUp    = has("board up", "board-up", "secure", "tarping");
+      const hasMoisture   = has("moisture", "wet", "saturated", "soaked", "readings");
+      const hasContainment = has("containment", "barrier", "negative air", "plastic");
+      const hasClearance  = has("clearance", "post-remediation", "post remediation", "testing", "air sample");
+      const hasRecon      = has("reconstruction", "rebuild", "repair", "replace", "install", "drywall");
+      const hasBasement   = has("basement", "crawl space", "crawlspace");
+      const hasBathroom   = has("bathroom", "bath", "lavatory", "shower");
+      const hasKitchen    = has("kitchen");
+
+      // Water category determination
+      const waterCat = hasCat3 ? 3 : hasCat2 ? 2 : hasCat1 ? 1 : 1;
+      const extractionRate = waterCat === 1 ? 0.35 : waterCat === 2 ? 0.45 : 0.65;
+      const antimicrobialRate = waterCat === 2 ? 0.35 : waterCat === 3 ? 0.55 : 0;
+
+      // ── Line item builder ─────────────────────────────────────────────────
+      const items: Array<{
+        description: string; category: string; qty: number;
+        unit: string; unitPrice: number; total: number; iicrcRef?: string;
+      }> = [];
+
+      let id = Date.now();
+      const add = (description: string, category: string, qty: number, unit: string, unitPrice: number, iicrcRef?: string) => {
+        const total = parseFloat((qty * unitPrice).toFixed(2));
+        items.push({ id: id++, description, category, qty: parseFloat(qty.toFixed(2)), unit, unitPrice, total, iicrcRef });
+      };
+
+      // ════════════════════════════════════════════════════════════════════
+      // WATER DAMAGE
+      // ════════════════════════════════════════════════════════════════════
+      const isWater = has("water", "flood", "leak", "moisture", "wet", "burst", "pipe") || lossType.includes("water");
+
+      if (isWater || lossType === "water") {
+        if (hasEmergency) add("Emergency Response / Mobilization", "emergency", 1, "LS", 495, "IICRC S500 §5.1");
+        add(`Water Extraction – Category ${waterCat}`, "extraction", area, "SF", extractionRate, `IICRC S500 §7.3.${waterCat}`);
+        if (hasHardwood) {
+          add("Structural Drying – Hardwood Floor (inject/float)", "drying", area * 0.6, "SF", 1.95, "IICRC S500 §10.4");
+          add("Floor Mat System – Hardwood Drying", "equipment", Math.ceil(area / 50), "EA", 45, "IICRC S500 §10.4");
+        }
+        if (hasCarpet) {
+          add("Carpet Floating & Reinstall", "extraction", area * 0.4, "SF", 0.55, "IICRC S500 §8.2");
+          add("Carpet Pad – Remove & Dispose", "demo", area * 0.4, "SF", 0.45, "IICRC S500 §8.2");
+        }
+        add(`Commercial LGR Dehumidifier – ${days} days`, "equipment", Math.ceil(area / 500) * days, "days", 85, "IICRC S500 §9.2");
+        add(`Commercial Air Mover – ${days} days`, "equipment", Math.ceil(area / 100) * days, "days", 25, "IICRC S500 §9.3");
+        if (hasMoisture) add("Moisture Mapping / Daily Monitoring Visits", "documentation", days, "visit", 135, "IICRC S500 §6.4");
+        if (antimicrobialRate > 0) add(`Antimicrobial Application – Category ${waterCat}`, "treatment", area, "SF", antimicrobialRate, "IICRC S500 §12.3");
+        if (hasHvac) add("HVAC Duct Cleaning – Contaminated System", "treatment", 1, "LS", 950, "IICRC S500 §11.5");
+        if (hasBasement) {
+          add("Basement/Crawlspace Dewatering Pump", "equipment", 1, "LS", 350, "IICRC S500 §7.1");
+          add("Crawlspace Encapsulation – Vapor Barrier", "treatment", area * 0.5, "SF", 1.25, "IICRC S500 §12.4");
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // DEMO / TEAR-OUT
+      // ════════════════════════════════════════════════════════════════════
+      if (hasDemo || hasDrywall || isWater) {
+        if (hasDrywall) {
+          add("Drywall Removal – Non-Salvageable (flood cut)", "demo", area * 0.5, "SF", 0.65, "IICRC S500 §12.1");
+          if (hasInsulation) add("Batt Insulation – Remove & Bag", "demo", area * 0.5, "SF", 0.55, "IICRC S520 §7.2");
+        }
+        if (hasSubfloor) add("Subfloor Removal – Water Damaged OSB/Plywood", "demo", area * 0.3, "SF", 1.85, "IICRC S500 §12.1");
+        if (hasCabinets) add("Cabinet Removal (Salvage)", "demo", rooms, "EA", 185, "Xactimate CAB-DEMO");
+        if (hasAsbestos) {
+          add("Asbestos Bulk Sampling (per sample)", "testing", 3, "EA", 285, "OSHA 1926.1101");
+          add("Asbestos Abatement – Full Containment", "abatement", area, "SF", 4.50, "OSHA 1926.1101");
+        }
+        add("Debris Removal – Haul Off (Dumpster)", "demo", Math.ceil(area / 200), "load", 465, "Xactimate DEBRIS");
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // MOLD REMEDIATION
+      // ════════════════════════════════════════════════════════════════════
+      const isMold = hasMold || lossType.includes("mold");
+      if (isMold) {
+        add("Mold Remediation – Initial Assessment & Protocol", "mold", 1, "LS", 850, "IICRC S520 §5");
+        if (hasContainment) {
+          add("Containment Setup – Full Poly Barrier", "mold", rooms, "EA", 450, "IICRC S520 §7.3");
+          add("Negative Air Machine / HEPA Air Scrubber", "equipment", rooms * days, "days", 95, "IICRC S520 §8.1");
+        }
+        add("Mold-Affected Material Removal & Bagging", "mold", area * 0.4, "SF", 2.25, "IICRC S520 §9.1");
+        add("HEPA Vacuuming – All Affected Surfaces", "mold", area, "SF", 0.55, "IICRC S520 §9.3");
+        add("Antimicrobial / Fungicide Application", "treatment", area, "SF", 0.65, "IICRC S520 §9.4");
+        if (hasClearance) add("Post-Remediation Air Sampling & Clearance Testing", "mold", 1, "LS", 650, "IICRC S520 §11");
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // FIRE / SMOKE
+      // ════════════════════════════════════════════════════════════════════
+      const isFire = has("fire", "smoke", "soot", "char", "burn") || lossType.includes("fire");
+      if (isFire) {
+        if (hasEmergency || hasBoardUp) add("Emergency Board-Up & Site Security", "emergency", 1, "LS", 685, "IICRC S770 §4");
+        if (hasRoof)  add("Emergency Roof Tarping", "emergency", Math.ceil(area / 100), "SQ", 235, "IICRC S770 §4.2");
+        if (hasSoot) {
+          add("Dry Sponge Cleaning – Walls & Ceilings", "cleaning", area * 1.3, "SF", 0.65, "IICRC S770 §8");
+          add("Smoke/Soot Cleaning – Hard Surfaces", "cleaning", area, "SF", 1.25, "IICRC S770 §8.2");
+          add("Chemical Sponge – Smoke Residue Removal", "cleaning", area * 0.5, "SF", 0.85, "IICRC S770 §8.3");
+        }
+        if (hasOdor) {
+          add("Hydroxyl Generator – Odor Neutralization", "odor", days, "days", 285, "IICRC S770 §10");
+          add("Thermal Fogging – Smoke Odor", "odor", area, "SF", 0.45, "IICRC S770 §10.2");
+          add("Ozone Treatment (sealed area)", "odor", 1, "LS", 395, "IICRC S770 §10.3");
+        }
+        if (hasDrywall) add("Smoke-Damaged Drywall – Remove & Replace", "demo", area * 0.6, "SF", 0.65, "IICRC S770 §7");
+        if (hasInsulation) add("Smoke-Saturated Insulation – Remove & Bag", "demo", area * 0.5, "SF", 0.55, "IICRC S770 §7.1");
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // STORM DAMAGE
+      // ════════════════════════════════════════════════════════════════════
+      const isStorm = has("storm", "hail", "wind", "tornado", "hurricane", "tree") || lossType.includes("storm");
+      if (isStorm) {
+        if (hasRoof) {
+          add("Emergency Roof Tarping", "emergency", Math.ceil(area / 100), "SQ", 235, "IICRC S770");
+          add("Roof Decking – Remove & Replace (OSB)", "reconstruction", area * 0.5, "SF", 2.85, "Xactimate RFG");
+          add("Roof Shingles – 3-Tab / Architectural", "reconstruction", Math.ceil(area / 100), "SQ", 385, "Xactimate RFG");
+          add("Drip Edge / Flashing Replacement", "reconstruction", mentionedLF || 80, "LF", 4.25, "Xactimate RFG");
+          add("Gutters & Downspouts – Replace", "reconstruction", mentionedLF || 60, "LF", 12.50, "Xactimate EXT");
+        }
+        if (hasWindow) {
+          add("Window – Remove & Replace (Vinyl Double-Pane)", "reconstruction", Math.ceil(rooms / 2), "EA", 485, "Xactimate WND");
+          add("Window Frame Repair", "reconstruction", Math.ceil(rooms / 2), "EA", 95, "Xactimate WND");
+        }
+        if (hasBoardUp) add("Emergency Board-Up – Windows & Openings", "emergency", rooms, "EA", 185, "IICRC S770 §4");
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // RECONSTRUCTION (always runs if scope mentions rebuild/repair)
+      // ════════════════════════════════════════════════════════════════════
+      if (hasRecon && !isStorm) {
+        if (hasDrywall) {
+          add("Drywall Hang & Tape - New (1/2 in)", "reconstruction", area * 0.5, "SF", 1.85, "Xactimate DRW");
+          add("Drywall Finish – Level 4 (paint-ready)", "reconstruction", area * 0.5, "SF", 0.95, "Xactimate DRW");
+          add("Texture – Match Existing", "reconstruction", area * 0.5, "SF", 0.65, "Xactimate DRW");
+          add("Interior Paint – Walls & Ceiling (2 coat)", "reconstruction", area * 1.3, "SF", 0.95, "Xactimate PNT");
+        }
+        if (hasSubfloor) add("Subfloor - OSB 3/4 in Install", "reconstruction", area * 0.3, "SF", 2.25, "Xactimate FLR");
+        if (hasHardwood) add("Hardwood Flooring – Reinstall & Finish", "reconstruction", area * 0.5, "SF", 6.50, "Xactimate FLR");
+        if (hasCarpet) {
+          add("Carpet – Furnish & Install (mid-grade)", "reconstruction", area * 0.4, "SF", 3.85, "Xactimate FLR");
+          add("Carpet Pad – 6lb Rebond", "reconstruction", area * 0.4, "SF", 0.65, "Xactimate FLR");
+        }
+        if (hasCabinets) {
+          add("Kitchen Cabinets – Stock Replacement (per LF)", "reconstruction", mentionedLF || 12, "LF", 185, "Xactimate CAB");
+          add("Countertop – Laminate Replacement", "reconstruction", mentionedLF || 10, "LF", 55, "Xactimate CAB");
+        }
+        if (hasInsulation) add("Batt Insulation – R-19 (walls)", "reconstruction", area * 0.5, "SF", 1.05, "Xactimate INS");
+        if (hasElectrical) add("Electrical – Rough-In Repair (allowance)", "reconstruction", 1, "LS", 1250, "Xactimate ELE");
+        if (hasPlumbing) add("Plumbing – Repair / Reconnect (allowance)", "reconstruction", 1, "LS", 950, "Xactimate PLB");
+        if (hasHvac) add("HVAC – Duct Repair & Reconnect (allowance)", "reconstruction", 1, "LS", 1100, "Xactimate HVC");
+        if (hasBathroom) {
+          add("Bathroom – Reset Toilet", "reconstruction", 1, "EA", 145, "Xactimate PLB");
+          add("Bathroom – Vanity & Sink Replacement", "reconstruction", 1, "EA", 485, "Xactimate PLB");
+        }
+        if (hasKitchen) {
+          add("Kitchen – Appliance Disconnect & Reconnect", "reconstruction", 1, "LS", 275, "Xactimate APP");
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════════════
+      // CONTENTS & ADDITIONAL SERVICES (any loss type)
+      // ════════════════════════════════════════════════════════════════════
+      if (hasContents) {
+        add("Contents Pack-Out & Inventory", "contents", rooms, "room", 385, "Xactimate CNT");
+        add("Contents Storage – Off-Site (per month)", "contents", 1, "month", 285, "Xactimate CNT");
+        add("Contents Cleaning – Restore vs Replace Assessment", "contents", 1, "LS", 650, "Xactimate CNT");
+      }
+
+      // ── Standard add-ons always included on mitigation jobs ────────────────
+      if (isWater || isFire || isMold) {
+        add("Overhead & Profit (O&P) – 20%", "op", 1, "LS",
+          parseFloat((items.reduce((s, i) => s + i.total, 0) * 0.20).toFixed(2)),
+          "IICRC + O&P Doctrine (Mee v. Safeco)"
+        );
+      }
+
+      // ── Final totals ──────────────────────────────────────────────────────
+      const subtotal = parseFloat(items.reduce((s, i) => s + i.total, 0).toFixed(2));
+
+      res.json({
+        items,
+        subtotal,
+        total: subtotal,
+        detectedScope: {
+          lossType: isFire ? "fire" : isMold ? "mold" : isStorm ? "storm" : "water",
+          waterCategory: isWater ? waterCat : null,
+          squareFootage: area,
+          rooms,
+          days,
+          flags: [
+            hasAsbestos && "⚠️ Asbestos suspected — requires licensed abatement before demo",
+            hasCat3 && "⚠️ Category 3 (black water) — full PPE and EPA-compliant disposal required",
+            hasMold && "⚠️ Mold present — IICRC S520 protocol applies; clearance testing recommended",
+          ].filter(Boolean),
+        },
+        message: `Generated ${items.length} line items from scope. Review quantities and adjust before sending.`,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/estimates/:id/ai-review", (req, res) => {
+  const estimate = sqlite.prepare("SELECT * FROM estimates WHERE id = ?").get(Number(req.params.id)) as any;
+  if (!estimate) return res.status(404).json({ error: "Estimate not found" });
+  const job = sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(estimate.job_id) as any;
+  const state = job?.address?.includes(", SC") ? "SC" : "GA";
+  let lineItems: any[] = [];
+  try { lineItems = JSON.parse(estimate.line_items || "[]"); } catch {}
+
+  // Carrier-specific denial patterns based on historical data
+  const carrierFlags: Record<string, string[]> = {
+    "State Farm": ["Contents Pack-Out", "Ozone Machine", "Mold Assessment"],
+    "Allstate": ["Emergency Response/Mobilization", "Hydroxyl Generator", "Containment Setup"],
+    "Nationwide": ["Moisture Monitoring", "Full Containment", "Clearance Testing"],
+    "USAA": ["Debris Removal", "General Cleanup"],
+  };
+  const carrier = job?.insuranceCarrier || "";
+  const flaggedItems = carrierFlags[carrier] || [];
+
+  const flags: any[] = [];
+  lineItems.forEach((item: any) => {
+    const desc = item.description || "";
+    const isAtRisk = flaggedItems.some(f => desc.toLowerCase().includes(f.toLowerCase()));
+    if (isAtRisk) {
+      flags.push({
+        lineItem: desc,
+        risk: "high",
+        carrier,
+        suggestion: `${carrier} frequently disputes "${desc}". Strengthen with IICRC S500 Section reference, daily log documentation, and photo evidence. Add note: "Required per IICRC S500 §9 to achieve drying goals as documented in daily moisture logs."`,
+        statute: state === "SC"
+          ? "S.C. Code Ann. § 38-59-20 — Insurer must conduct reasonable investigation before denying any claim line item."
+          : "O.C.G.A. § 33-6-34 — Prohibits insurers from refusing to pay claims without conducting a reasonable investigation based on all available information.",
+      });
+    }
+    // Flag pricing outliers
+    if (item.unitPrice && item.unit === "SF" && item.unitPrice > 2.5) {
+      flags.push({
+        lineItem: desc,
+        risk: "medium",
+        carrier,
+        suggestion: `Unit price of $${item.unitPrice}/SF may be flagged as above Xactimate regional pricing for ${job?.address?.includes("GA") ? "Augusta, GA" : "SC"}. Consider adding documentation supporting the higher rate.`,
+        statute: null,
+      });
+    }
+  });
+
+  const overallScore = Math.max(0, 100 - (flags.filter(f => f.risk === "high").length * 20) - (flags.filter(f => f.risk === "medium").length * 10));
+  const summary = flags.length === 0
+    ? `This estimate looks strong for ${carrier || "the carrier"}. No high-risk line items detected. ${state} insurance regulations support all documented scope items.`
+    : `Found ${flags.filter(f => f.risk === "high").length} high-risk and ${flags.filter(f => f.risk === "medium").length} medium-risk items for ${carrier || "this carrier"}. Review flagged items and add supporting documentation before submission.`;
+
+  res.json({ estimateId: estimate.id, carrier, state, overallScore, flags, summary, reviewedAt: new Date().toISOString() });
+  });
+
+// ── Completion Certificate (backend generation info) ──────────────────────────
+  app.get("/api/jobs/:id/completion-packet", (req, res) => {
+  const job = sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(Number(req.params.id)) as any;
+  if (!job) return res.status(404).json({ error: "Job not found" });
+  const contact = job.contact_id ? sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(job.contact_id) : null;
+  const drying = sqlite.prepare("SELECT * FROM drying_records WHERE job_id = ? ORDER BY reading_date ASC").all(job.id);
+  const documents = sqlite.prepare("SELECT * FROM job_documents WHERE job_id = ?").all(job.id);
+  const estimates = sqlite.prepare("SELECT * FROM estimates WHERE job_id = ?").all(job.id);
+  const invoices = sqlite.prepare("SELECT * FROM invoices WHERE job_id = ?").all(job.id);
+  const photoCt = (sqlite.prepare("SELECT COUNT(*) as c FROM photos WHERE job_id = ?").get(job.id) as any).c;
+  res.json({ job, contact, dryingRecords: drying, documents, estimates, invoices, photoCount: photoCt });
+  });
+
+
+
+  // ── Auth Routes ──────────────────────────────────────────────────────────────
+  registerAuthRoutes(app, sqlite);
+
+  // ── Job Notes Routes ────────────────────────────────────────────────────────
+  // Ensure table exists on startup (safe migration)
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS job_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL,
+      author TEXT NOT NULL DEFAULT 'Titan Team',
+      body TEXT NOT NULL,
+      is_public INTEGER NOT NULL DEFAULT 0,
+      tag TEXT,
+      edited_at TEXT,
+      created_at TEXT NOT NULL DEFAULT ''
+    )
+  `);
+
+  // GET all notes for a job (internal: all; public param: only public)
+  app.get("/api/jobs/:jobId/notes", (req, res) => {
+    const jobId = Number(req.params.jobId);
+    const publicOnly = req.query.public === "true";
+    try {
+      const rows = publicOnly
+        ? sqlite.prepare("SELECT * FROM job_notes WHERE job_id = ? AND is_public = 1 ORDER BY created_at ASC").all(jobId)
+        : sqlite.prepare("SELECT * FROM job_notes WHERE job_id = ? ORDER BY created_at ASC").all(jobId);
+      res.json(rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST — create new note
+  app.post("/api/jobs/:jobId/notes", (req, res) => {
+    const jobId = Number(req.params.jobId);
+    const { author, body, isPublic, tag } = req.body;
+    if (!body?.trim()) return res.status(400).json({ error: "body is required" });
+    try {
+      const now = new Date().toISOString();
+      const result = sqlite.prepare(
+        "INSERT INTO job_notes (job_id, author, body, is_public, tag, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(jobId, author || "Titan Team", body.trim(), isPublic ? 1 : 0, tag || null, now);
+      const note = sqlite.prepare("SELECT * FROM job_notes WHERE id = ?").get(result.lastInsertRowid);
+      res.status(201).json(note);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // PATCH — edit note body, visibility, or tag
+  app.patch("/api/jobs/:jobId/notes/:noteId", (req, res) => {
+    const noteId = Number(req.params.noteId);
+    const { body, isPublic, tag, author } = req.body;
+    try {
+      const existing: any = sqlite.prepare("SELECT * FROM job_notes WHERE id = ?").get(noteId);
+      if (!existing) return res.status(404).json({ error: "Note not found" });
+      const now = new Date().toISOString();
+      sqlite.prepare(
+        `UPDATE job_notes SET
+          body = ?, is_public = ?, tag = ?, author = ?, edited_at = ?
+         WHERE id = ?`
+      ).run(
+        body !== undefined ? body.trim() : existing.body,
+        isPublic !== undefined ? (isPublic ? 1 : 0) : existing.is_public,
+        tag !== undefined ? tag : existing.tag,
+        author !== undefined ? author : existing.author,
+        now,
+        noteId
+      );
+      const updated = sqlite.prepare("SELECT * FROM job_notes WHERE id = ?").get(noteId);
+      res.json(updated);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // DELETE — remove a note
+  app.delete("/api/jobs/:jobId/notes/:noteId", (req, res) => {
+    const noteId = Number(req.params.noteId);
+    try {
+      sqlite.prepare("DELETE FROM job_notes WHERE id = ?").run(noteId);
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // GET /api/notes (top-level) — for health scan
+  app.get("/api/notes", (_req, res) => {
+    try {
+      const rows = sqlite.prepare("SELECT * FROM job_notes ORDER BY created_at DESC LIMIT 100").all();
+      res.json(rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Server-side auth guard for suite/ramp/route-planner APIs ────────────────
+  // These modules register their routes without per-route auth. Since the app can
+  // run on a network-reachable host, we require a valid staff session for every
+  // one of their endpoints by mounting requireStaffAuth on each path prefix before
+  // the routes themselves are registered. This gates ~129 endpoints in one place.
+  const SUITE_AUTH_PREFIXES = [
+    // suite4
+    "/api/carrier-ar", "/api/comm-timeline", "/api/compliance-checklists",
+    "/api/drone-assessments", "/api/emergency-intakes", "/api/equipment-maintenance",
+    "/api/iicrc-checklist-items", "/api/iot-readings", "/api/iot-sensors",
+    "/api/reports", "/api/storm-campaigns", "/api/subrogation", "/api/tpa-programs",
+    // suite5
+    "/api/appointment-reminders", "/api/ar-followup", "/api/ar-followup-log",
+    "/api/ar-followup-rules", "/api/departure-checklists", "/api/hazmat-flags",
+    "/api/lien-waivers", "/api/qb-sync", "/api/qb-sync-log", "/api/time-clock",
+    // suite6
+    "/api/adjuster-courses", "/api/adjuster-enrollments", "/api/approved-claims",
+    "/api/general-conditions", "/api/op-rebuttal", "/api/supplement-tracker",
+    "/api/vehicle-maintenance", "/api/vehicles", "/api/xact-audit",
+    // ramp
+    "/api/ramp-transactions",
+    // route planner
+    "/api/route-stops", "/api/routes", "/api/trips",
+  ];
+  for (const prefix of SUITE_AUTH_PREFIXES) {
+    app.use(prefix, requireStaffAuth);
+  }
+
+  // ── Suite 5 Routes ──────────────────────────────────────────────────────────────
+  registerSuite5Routes(app, sqlite);
+  registerSuite6Routes(app, sqlite);
+  registerAIAgentRoutes(app, sqlite);
+
+  // ── Marketing AI Routes (additive: custom + seasonal posts + learning) ──────
+  registerMarketingAIRoutes(app, sqlite);
+
+  // ── Team Presence & Activity (additive: heartbeat + OWNER-ONLY reporting) ───
+  registerPresenceRoutes(app, sqlite);
+
+  // ── Suite 4 Routes ─────────────────────────────────────────────────────────
+  registerSuite4Routes(app, sqlite);
+
+  // ── Ramp Routes ─────────────────────────────────────────────────────────────
+  registerRampRoutes(app, sqlite);
+
+  // ── Route Planner Routes ───────────────────────────────────────────────────
+  registerRoutePlannerRoutes(app, sqlite);
+
+
+  // ── Withdrawal Requests ───────────────────────────────────────────────────
+  // Migrate table
+  const wdCols = sqlite.prepare("PRAGMA table_info(withdrawal_requests)").all().map((c: any) => c.name);
+  if (!wdCols.includes("id")) {
+    sqlite.exec(`CREATE TABLE IF NOT EXISTS withdrawal_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      contact_id INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      payout_method_id INTEGER,
+      method_snapshot TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      partner_note TEXT,
+      admin_note TEXT,
+      requested_at TEXT NOT NULL DEFAULT '',
+      processed_at TEXT
+    )`);
+  }
+
+  // GET all withdrawal requests (admin) or by contactId (partner)
+  app.get("/api/withdrawal-requests", (req, res) => {
+    try {
+      const contactId = req.query.contactId ? Number(req.query.contactId) : null;
+      const rows = contactId
+        ? sqlite.prepare("SELECT * FROM withdrawal_requests WHERE contact_id = ? ORDER BY requested_at DESC").all(contactId)
+        : sqlite.prepare("SELECT * FROM withdrawal_requests ORDER BY requested_at DESC").all();
+      res.json(rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST — partner submits withdrawal request
+  app.post("/api/withdrawal-requests", (req, res) => {
+    try {
+      const { contactId, amount, payoutMethodId, partnerNote } = req.body;
+      if (!contactId || !amount || amount <= 0) return res.status(400).json({ error: "contactId and positive amount required" });
+
+      // Verify partner has sufficient available balance
+      const allPayouts: any[] = sqlite.prepare("SELECT * FROM payout_requests WHERE contact_id = ? AND status = 'paid'").all(Number(contactId));
+      const allWithdrawals: any[] = sqlite.prepare("SELECT * FROM withdrawal_requests WHERE contact_id = ? AND status NOT IN ('rejected')").all(Number(contactId));
+      const totalEarned = allPayouts.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+      const totalWithdrawn = allWithdrawals.reduce((s: number, w: any) => s + (w.amount || 0), 0);
+      const available = totalEarned - totalWithdrawn;
+
+      if (amount > available + 0.01) {
+        return res.status(400).json({ error: `Insufficient balance. Available: $${available.toFixed(2)}` });
+      }
+
+      // Snapshot the payout method at time of request
+      let methodSnapshot = null;
+      if (payoutMethodId) {
+        const method: any = sqlite.prepare("SELECT * FROM payout_methods WHERE id = ?").get(Number(payoutMethodId));
+        if (method) methodSnapshot = JSON.stringify({ method: method.method, handle: method.handle });
+      }
+
+      const now = new Date().toISOString();
+      const result: any = sqlite.prepare(
+        "INSERT INTO withdrawal_requests (contact_id, amount, payout_method_id, method_snapshot, status, partner_note, requested_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)"
+      ).run(Number(contactId), Number(amount), payoutMethodId || null, methodSnapshot, partnerNote || null, now);
+
+      const row = sqlite.prepare("SELECT * FROM withdrawal_requests WHERE id = ?").get(result.lastInsertRowid);
+
+      // Post notification to internal messaging
+      const contact: any = sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(Number(contactId));
+      const partnerName = contact?.name || "Partner";
+      const methodParsed = methodSnapshot ? JSON.parse(methodSnapshot) : null;
+      const methodStr = methodParsed ? `${methodParsed.method.replace("_"," ")} (${methodParsed.handle})` : "No method on file";
+      sqlite.prepare(
+        "INSERT INTO messages (channel_id, author, body, created_at) VALUES (1, 'Titan Pro Bot', ?, ?)"
+      ).run(
+        `💸 WITHDRAWAL REQUEST
+${partnerName} has requested a withdrawal of $${Number(amount).toFixed(2)} via ${methodStr}.
+Approve in Partner Portal → Admin View.
+📞 706-922-0154`,
+        now
+      );
+
+      res.json(row);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // PATCH — admin updates status (approve / processing / paid / rejected)
+  app.patch("/api/withdrawal-requests/:id", (req, res) => {
+    try {
+      const { status, adminNote } = req.body;
+      const now = new Date().toISOString();
+      const isDone = status === "paid" || status === "rejected";
+      sqlite.prepare(
+        "UPDATE withdrawal_requests SET status = ?, admin_note = ?, processed_at = ? WHERE id = ?"
+      ).run(status, adminNote || null, isDone ? now : null, Number(req.params.id));
+      const row = sqlite.prepare("SELECT * FROM withdrawal_requests WHERE id = ?").get(Number(req.params.id));
+      res.json(row);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // GET available balance for a partner
+  app.get("/api/partner/:contactId/balance", (req, res) => {
+    try {
+      const contactId = Number(req.params.contactId);
+      if (!partnerAccessAllowed(req, contactId))
+        return res.status(403).json({ error: "Not authorized to view this account." });
+      const allPayouts: any[] = sqlite.prepare("SELECT amount FROM payout_requests WHERE contact_id = ? AND status = 'paid'").all(contactId);
+      const allWithdrawals: any[] = sqlite.prepare("SELECT amount FROM withdrawal_requests WHERE contact_id = ? AND status NOT IN ('rejected')").all(contactId);
+      const totalEarned = allPayouts.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+      const totalWithdrawn = allWithdrawals.reduce((s: number, w: any) => s + (w.amount || 0), 0);
+      const available = Math.max(0, totalEarned - totalWithdrawn);
+      res.json({ totalEarned, totalWithdrawn, available });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Referral Company Portal Summary ────────────────────────────────────────
+  // For a referral COMPANY contact, aggregate everything Titan has actually PAID
+  // out (payments of type 'referral_payout') to the company itself AND to every
+  // referral tech attached to it (contacts.parent_company_id = companyId).
+  // Returns a company total plus a per-tech breakdown. Access is limited to the
+  // company's own portal token or a valid staff session.
+  app.get("/api/partner/:contactId/company-summary", (req, res) => {
+    try {
+      const companyId = Number(req.params.contactId);
+      if (!partnerAccessAllowed(req, companyId))
+        return res.status(403).json({ error: "Not authorized to view this account." });
+      const company: any = sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(companyId);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+
+      // The company contact + all attached referral techs.
+      const techs: any[] = sqlite.prepare(
+        "SELECT * FROM contacts WHERE parent_company_id = ? ORDER BY name ASC"
+      ).all(companyId);
+      const memberIds = [companyId, ...techs.map((t: any) => t.id)];
+      const placeholders = memberIds.map(() => "?").join(",");
+
+      // All referral payouts paid to any member.
+      const payouts: any[] = sqlite.prepare(
+        `SELECT * FROM payments WHERE type = 'referral_payout' AND contact_id IN (${placeholders}) ORDER BY paid_at DESC`
+      ).all(...memberIds);
+
+      const jobs: any[] = sqlite.prepare("SELECT id, job_number, address FROM jobs").all();
+      const jobById: Record<number, any> = {};
+      jobs.forEach((j: any) => { jobById[j.id] = j; });
+
+      const sumFor = (cid: number) =>
+        payouts.filter((p: any) => p.contact_id === cid)
+          .reduce((s: number, p: any) => s + (p.amount || 0), 0);
+
+      const perTech = [
+        { id: company.id, name: company.name + " (company direct)", email: company.email, paid: sumFor(company.id), isCompany: true },
+        ...techs.map((t: any) => ({ id: t.id, name: t.name, email: t.email, paid: sumFor(t.id), isCompany: false })),
+      ];
+
+      const totalPaid = payouts.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+      const payments = payouts.map((p: any) => {
+        const payee = memberIds.includes(p.contact_id)
+          ? (p.contact_id === companyId ? company.name : (techs.find((t: any) => t.id === p.contact_id)?.name || ""))
+          : "";
+        const job = p.job_id ? jobById[p.job_id] : null;
+        return {
+          id: p.id, amount: p.amount, method: p.method, reference: p.reference,
+          paidAt: p.paid_at, payee, jobNumber: job?.job_number || null, jobAddress: job?.address || null,
+        };
+      });
+
+      res.json({
+        company: { id: company.id, name: company.name, email: company.email, phone: company.phone },
+        totalPaid,
+        techCount: techs.length,
+        perTech,
+        payments,
+      });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+
+  // ── Referral Partner Jobs API ─────────────────────────────────────────────
+  // Migrate: add referral_partner_id to jobs if missing
+  const jobColsForPartner = sqlite.prepare("PRAGMA table_info(jobs)").all().map((c: any) => c.name);
+  if (!jobColsForPartner.includes("referral_partner_id")) {
+    sqlite.exec("ALTER TABLE jobs ADD COLUMN referral_partner_id INTEGER");
+  }
+
+  // GET /api/partner/:contactId/jobs — all jobs linked to this partner
+  // Matches via: referral_partner_id OR payout_requests link OR lead_source_detail name match
+  app.get("/api/partner/:contactId/jobs", (req, res) => {
+    try {
+      const contactId = Number(req.params.contactId);
+      if (!partnerAccessAllowed(req, contactId))
+        return res.status(403).json({ error: "Not authorized to view this account." });
+      const contact: any = sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(contactId);
+      if (!contact) return res.status(404).json({ error: "Partner not found" });
+
+      // All jobs
+      const allJobs: any[] = sqlite.prepare("SELECT * FROM jobs ORDER BY created_at DESC").all();
+
+      // All payout requests for this partner
+      const myPayouts: any[] = sqlite.prepare("SELECT * FROM payout_requests WHERE contact_id = ?").all(contactId);
+      const payoutJobIds = new Set(myPayouts.filter((p: any) => p.job_id).map((p: any) => p.job_id));
+
+      // All public notes per job
+      const allPublicNotes: any[] = sqlite.prepare(
+        "SELECT * FROM job_notes WHERE is_public = 1 ORDER BY created_at ASC"
+      ).all();
+
+      // All invoices for revenue
+      const allInvoices: any[] = sqlite.prepare("SELECT * FROM invoices").all();
+
+      // Match jobs to this partner
+      const partnerJobs = allJobs.filter((j: any) => {
+        if (j.referral_partner_id === contactId) return true;
+        if (payoutJobIds.has(j.id)) return true;
+        if (
+          j.lead_source === "referral" &&
+          j.lead_source_detail &&
+          contact.name &&
+          j.lead_source_detail.toLowerCase().includes(contact.name.toLowerCase())
+        ) return true;
+        return false;
+      });
+
+      // Enrich each job
+      const enriched = partnerJobs.map((j: any) => {
+        const jobPayouts = myPayouts.filter((p: any) => p.job_id === j.id);
+        const jobInvoices = allInvoices.filter((inv: any) => inv.job_id === j.id);
+        const totalInvoiced = jobInvoices.reduce((s: number, inv: any) => s + (inv.total || 0), 0);
+        const pendingPayout = jobPayouts.find((p: any) => p.status === "pending" || p.status === "approved");
+        const paidPayout = jobPayouts.filter((p: any) => p.status === "paid").reduce((s: number, p: any) => s + (p.amount || 0), 0);
+        const publicNotes = allPublicNotes.filter((n: any) => n.job_id === j.id);
+
+        return {
+          id: j.id,
+          jobNumber: j.job_number,
+          address: j.address,
+          lossType: j.loss_type,
+          status: j.status,
+          progressStage: j.progress_stage,
+          assignedTech: j.assigned_tech,
+          insuranceCarrier: j.insurance_carrier,
+          createdAt: j.created_at,
+          jobComplete: j.job_complete,
+          mitigationStart: j.mitigation_start,
+          totalInvoiced,
+          pendingPayoutAmount: pendingPayout ? pendingPayout.amount : null,
+          pendingPayoutStatus: pendingPayout ? pendingPayout.status : null,
+          pendingPayoutId: pendingPayout ? pendingPayout.id : null,
+          paidToDate: paidPayout,
+          publicNotes: publicNotes.map((n: any) => ({
+            id: n.id, author: n.author, body: n.body, createdAt: n.created_at, tag: n.tag,
+          })),
+        };
+      });
+
+      // Summary totals
+      const totalEarned = myPayouts.filter((p: any) => p.status === "paid").reduce((s: number, p: any) => s + (p.amount || 0), 0);
+      const totalPending = myPayouts.filter((p: any) => p.status === "pending" || p.status === "approved").reduce((s: number, p: any) => s + (p.amount || 0), 0);
+      const totalInvoicedAll = enriched.reduce((s: number, j: any) => s + j.totalInvoiced, 0);
+
+      // Warranty call totals for this partner
+      const myWarrantyCalls: any[] = sqlite.prepare("SELECT * FROM warranty_calls WHERE partner_id = ?").all(contactId);
+      const totalWarrantyCost = myWarrantyCalls.reduce((s: number, w: any) => s + (w.total_cost || 0), 0);
+      const totalWarrantyCount = myWarrantyCalls.length;
+
+      // Partnership start date: use partner_since if set, else earliest referred job, else contact row creation
+      const earliestJob = enriched.length > 0
+        ? enriched.reduce((a: any, b: any) => (a.createdAt < b.createdAt ? a : b))
+        : null;
+      const partnerSince = contact.partner_since || (earliestJob ? earliestJob.createdAt : null);
+
+      const totalJobsCount = enriched.length;
+      const activeJobsCount = enriched.filter((j: any) => j.status !== "complete" && j.status !== "closed").length;
+      const completedJobsCount = enriched.filter((j: any) => j.status === "complete").length;
+
+      // ── Capacity indicator ────────────────────────────────────────────────
+      // Soft target of concurrent active jobs Titan can comfortably service for this partner
+      const capacityTarget = 8;
+      const capacityPct = Math.min(100, Math.round((activeJobsCount / capacityTarget) * 100));
+      const capacityLabel = capacityPct >= 90 ? "At capacity" : capacityPct >= 60 ? "Filling up" : "Ready for more";
+
+      // ── Derived lifetime metrics ──────────────────────────────────────────
+      const avgJobValue = totalJobsCount > 0 ? Math.round(totalInvoicedAll / totalJobsCount) : 0;
+      const closeRate = totalJobsCount > 0 ? Math.round((completedJobsCount / totalJobsCount) * 100) : 0;
+      const nowYear = new Date().getFullYear();
+      const jobsThisYear = enriched.filter((j: any) => j.createdAt && new Date(j.createdAt).getFullYear() === nowYear).length;
+      // Goodwill = value Titan absorbed on partner's behalf (warranty visits + complimentary work)
+      const goodwillValue = totalWarrantyCost;
+
+      res.json({
+        partner: { id: contact.id, name: contact.name, company: contact.company, type: contact.type, partnerSince },
+        jobs: enriched,
+        summary: {
+          totalJobs: totalJobsCount,
+          activeJobs: activeJobsCount,
+          completedJobs: completedJobsCount,
+          totalInvoiced: totalInvoicedAll,
+          totalEarned,
+          totalPending,
+          totalWarrantyCost,
+          totalWarrantyCount,
+          partnerSince,
+          capacityTarget,
+          capacityPct,
+          capacityLabel,
+          avgJobValue,
+          closeRate,
+          jobsThisYear,
+          goodwillValue,
+        },
+      });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // PATCH /api/jobs/:id/referral-partner — assign a referral partner to a job (admin)
+  app.patch("/api/jobs/:id/referral-partner", (req, res) => {
+    try {
+      const { referralPartnerId } = req.body;
+      sqlite.prepare("UPDATE jobs SET referral_partner_id = ? WHERE id = ?").run(
+        referralPartnerId || null,
+        Number(req.params.id)
+      );
+      const job: any = sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(Number(req.params.id));
+      res.json(job);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+
+  // ── Job Sketches ─────────────────────────────────────────────────────────
+  // Migrate table on startup
+  const sketchCols = sqlite.prepare("PRAGMA table_info(job_sketches)").all().map((c: any) => c.name);
+  if (!sketchCols.includes("id")) {
+    sqlite.exec(`CREATE TABLE IF NOT EXISTS job_sketches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL,
+      sketch_data TEXT NOT NULL DEFAULT '{}',
+      updated_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT ''
+    )`);
+  }
+
+  app.get("/api/jobs/:jobId/sketch", (req, res) => {
+    try {
+      const jobId = Number(req.params.jobId);
+      const row: any = sqlite.prepare("SELECT * FROM job_sketches WHERE job_id = ?").get(jobId);
+      if (!row) return res.json({ sketchData: null });
+      res.json({ id: row.id, jobId: row.job_id, sketchData: row.sketch_data, updatedAt: row.updated_at });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post("/api/jobs/:jobId/sketch", (req, res) => {
+    try {
+      const jobId = Number(req.params.jobId);
+      const { sketchData } = req.body;
+      if (!sketchData) return res.status(400).json({ error: "sketchData required" });
+      const now = new Date().toISOString();
+      const existing: any = sqlite.prepare("SELECT id FROM job_sketches WHERE job_id = ?").get(jobId);
+      if (existing) {
+        sqlite.prepare("UPDATE job_sketches SET sketch_data = ?, updated_at = ? WHERE job_id = ?").run(sketchData, now, jobId);
+      } else {
+        sqlite.prepare("INSERT INTO job_sketches (job_id, sketch_data, updated_at, created_at) VALUES (?, ?, ?, ?)").run(jobId, sketchData, now, now);
+      }
+      const row: any = sqlite.prepare("SELECT * FROM job_sketches WHERE job_id = ?").get(jobId);
+      res.json({ id: row.id, jobId: row.job_id, sketchData: row.sketch_data, updatedAt: row.updated_at });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete("/api/jobs/:jobId/sketch", (req, res) => {
+    try {
+      sqlite.prepare("DELETE FROM job_sketches WHERE job_id = ?").run(Number(req.params.jobId));
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+
+  // ── BD Calendar Events ──────────────────────────────────────────────────────
+  // Ensure table exists
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS bd_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      event_type TEXT NOT NULL DEFAULT 'meeting',
+      date TEXT NOT NULL,
+      start_time TEXT NOT NULL,
+      end_time TEXT,
+      location TEXT,
+      notes TEXT,
+      contact_id INTEGER,
+      contact_email TEXT,
+      contact_name TEXT,
+      notify_partner INTEGER DEFAULT 1,
+      notified INTEGER DEFAULT 0,
+      created_by TEXT DEFAULT 'Cody Brantley',
+      created_at TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT ''
+    )
+  `);
+
+  app.get("/api/bd-events", (_req, res) => {
+    res.json(storage.getBdEvents());
+  });
+
+  app.get("/api/bd-events/:id", (req, res) => {
+    const ev = storage.getBdEvent(Number(req.params.id));
+    if (!ev) return res.status(404).json({ error: "Not found" });
+    res.json(ev);
+  });
+
+  app.post("/api/bd-events", (req, res) => {
+    const ev = storage.createBdEvent(req.body);
+    // Send email notification to partner if requested
+    if (ev.notifyPartner && ev.contactEmail) {
+      const eventTypeLabel = (ev.eventType || "meeting").replace(/_/g, " ");
+      const dateStr = ev.date;
+      const timeStr = ev.startTime + (ev.endTime ? ` – ${ev.endTime}` : "");
+      const subject = `You're Invited: ${ev.title} — ${dateStr}`;
+      const body = `Hi ${ev.contactName || "Partner"},\n\nTitan Restoration LLC has scheduled a ${eventTypeLabel} with you:\n\n📅 ${ev.title}\n🗓 Date: ${dateStr}\n⏰ Time: ${timeStr}\n📍 Location: ${ev.location || "TBD"}\n\n${ev.notes ? `Notes: ${ev.notes}\n\n` : ""}If you have any questions please reach out to us at 706-922-0154 or reply to this message.\n\nLooking forward to connecting!\n\nCody Brantley\nTitan Restoration LLC\n706-922-0154\ntitanrestorationllc.com`;
+      storage.createEmail({
+        folder: "sent",
+        from: "cody@titanrestorationllc.com",
+        to: ev.contactEmail,
+        subject,
+        body,
+        read: 1,
+      });
+      storage.updateBdEvent(ev.id, { notified: 1 });
+      ev.notified = 1;
+    }
+    res.json(ev);
+  });
+
+  app.patch("/api/bd-events/:id", (req, res) => {
+    const ev = storage.updateBdEvent(Number(req.params.id), req.body);
+    if (!ev) return res.status(404).json({ error: "Not found" });
+    // Re-send notification if email/notify changed
+    if (req.body.notifyPartner && ev.contactEmail && !ev.notified) {
+      const eventTypeLabel = (ev.eventType || "meeting").replace(/_/g, " ");
+      const timeStr = ev.startTime + (ev.endTime ? ` – ${ev.endTime}` : "");
+      const subject = `Updated Invite: ${ev.title} — ${ev.date}`;
+      const body = `Hi ${ev.contactName || "Partner"},\n\nYour scheduled ${eventTypeLabel} with Titan Restoration has been updated:\n\n📅 ${ev.title}\n🗓 Date: ${ev.date}\n⏰ Time: ${timeStr}\n📍 Location: ${ev.location || "TBD"}\n\n${ev.notes ? `Notes: ${ev.notes}\n\n` : ""}Questions? Call 706-922-0154.\n\nCody Brantley\nTitan Restoration LLC`;
+      storage.createEmail({ folder: "sent", from: "cody@titanrestorationllc.com", to: ev.contactEmail, subject, body, read: 1 });
+      storage.updateBdEvent(ev.id, { notified: 1 });
+    }
+    res.json(ev);
+  });
+
+  app.delete("/api/bd-events/:id", (req, res) => {
+    storage.deleteBdEvent(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+
+  // ── Warranty Calls ──────────────────────────────────────────────────────────
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS warranty_calls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL,
+      partner_id INTEGER,
+      partner_name TEXT,
+      issue_description TEXT NOT NULL,
+      resolution TEXT,
+      tech_assigned TEXT,
+      visit_date TEXT NOT NULL,
+      labor_hours REAL DEFAULT 0,
+      labor_rate REAL DEFAULT 65,
+      material_cost REAL DEFAULT 0,
+      total_cost REAL DEFAULT 0,
+      charged_to_partner INTEGER DEFAULT 0,
+      internal_note TEXT,
+      partner_note TEXT,
+      notify_partner INTEGER DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT ''
+    )
+  `);
+
+  app.get("/api/warranty-calls", (req, res) => {
+    const jobId = req.query.jobId ? Number(req.query.jobId) : undefined;
+    const partnerId = req.query.partnerId ? Number(req.query.partnerId) : undefined;
+    res.json(storage.getWarrantyCalls(jobId, partnerId));
+  });
+
+  app.post("/api/warranty-calls", (req, res) => {
+    const wc = storage.createWarrantyCall(req.body);
+    // Post internal messaging notification
+    const cost = (wc.totalCost || 0).toFixed(2);
+    const partnerTag = wc.partnerName ? ` | Partner: ${wc.partnerName}` : "";
+    storage.createMessage({
+      channelId: 1,
+      author: "Titan Pro Bot",
+      body: `🔧 WARRANTY CALL LOGGED — Job #${wc.jobId}${partnerTag}\nIssue: ${wc.issueDescription}\nVisit: ${wc.visitDate} | Tech: ${wc.techAssigned || "TBD"}\nCost absorbed: $${cost} (Labor: ${wc.laborHours}h × $${wc.laborRate}/hr + Materials: $${(wc.materialCost||0).toFixed(2)})\nCharged to partner: $0.00 (complimentary)`,
+      createdAt: new Date().toISOString(),
+    });
+    res.json(wc);
+  });
+
+  app.patch("/api/warranty-calls/:id", (req, res) => {
+    const wc = storage.updateWarrantyCall(Number(req.params.id), req.body);
+    if (!wc) return res.status(404).json({ error: "Not found" });
+    res.json(wc);
+  });
+
+  app.delete("/api/warranty-calls/:id", (req, res) => {
+    storage.deleteWarrantyCall(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+  // Partner warranty summary (for partner portal — shows partner their own records)
+  app.get("/api/partner/:contactId/warranty-calls", (req, res) => {
+    if (!partnerAccessAllowed(req, Number(req.params.contactId)))
+      return res.status(403).json({ error: "Not authorized to view this account." });
+    const calls = storage.getWarrantyCalls(undefined, Number(req.params.contactId));
+    const jobs = sqlite.prepare("SELECT * FROM jobs").all() as any[];
+    const enriched = calls.map((wc: any) => {
+      const job = jobs.find((j: any) => j.id === wc.jobId);
+      return {
+        ...wc,
+        jobNumber: job?.job_number || `#${wc.jobId}`,
+        jobAddress: job?.address || "Unknown",
+      };
+    });
+    const totalCostAbsorbed = enriched.reduce((s: number, w: any) => s + (w.totalCost || 0), 0);
+    const totalCalls = enriched.length;
+    res.json({ calls: enriched, totalCalls, totalCostAbsorbed });
+  });
+
+
+  // ── Partner Since migration ─────────────────────────────────────────────────
+  try { sqlite.exec(`ALTER TABLE contacts ADD COLUMN partner_since TEXT`); } catch(_) {}
+  // DocuSketch column migrations
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN docusketch_url TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN docusketch_project_name TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN docusketch_status TEXT DEFAULT 'none'`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN docusketch_sketch_url TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN docusketch_notes TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN docusketch_completed_at TEXT`); } catch(_) {}
+
+
+  // ── DocuSketch integration per job ──────────────────────────────────────────
+  app.patch("/api/jobs/:id/docusketch", wrapAsync((req, res) => {
+    const jobId = parseInt(req.params.id);
+    const { docusketchUrl, docusketchProjectName, docusketchStatus, docusketchSketchUrl, docusketchNotes } = req.body;
+    const job: any = sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+
+    const completedAt = docusketchStatus === "complete" && job.docusketch_status !== "complete"
+      ? new Date().toISOString()
+      : (docusketchStatus === "complete" ? job.docusketch_completed_at : null);
+
+    sqlite.prepare(`UPDATE jobs SET
+      docusketch_url = ?,
+      docusketch_project_name = ?,
+      docusketch_status = ?,
+      docusketch_sketch_url = ?,
+      docusketch_notes = ?,
+      docusketch_completed_at = ?
+      WHERE id = ?`).run(
+        docusketchUrl ?? job.docusketch_url,
+        docusketchProjectName ?? job.docusketch_project_name,
+        docusketchStatus ?? job.docusketch_status,
+        docusketchSketchUrl ?? job.docusketch_sketch_url,
+        docusketchNotes ?? job.docusketch_notes,
+        completedAt,
+        jobId
+    );
+    const updated: any = sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId);
+    res.json(updated);
+  }));
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // RAMP INTEGRATION — Bill Pay for partner/sub payouts
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // Store Ramp config in a simple kv table
+  try { sqlite.exec(`CREATE TABLE IF NOT EXISTS integrations (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)`); } catch(_) {}
+  try { sqlite.exec(`CREATE TABLE IF NOT EXISTS ramp_payments (id INTEGER PRIMARY KEY AUTOINCREMENT, payout_request_id INTEGER, contact_name TEXT, amount REAL, method TEXT, ramp_bill_id TEXT, status TEXT DEFAULT 'pending', submitted_at TEXT, error TEXT, created_at TEXT)`); } catch(_) {}
+  try { sqlite.exec(`CREATE TABLE IF NOT EXISTS qb_invoices (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id INTEGER, qb_invoice_id TEXT, qb_customer_id TEXT, status TEXT DEFAULT 'synced', synced_at TEXT, qb_link TEXT)`); } catch(_) {}
+  try { sqlite.exec(`CREATE TABLE IF NOT EXISTS qb_payments (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id INTEGER, qb_payment_id TEXT, amount REAL, received_at TEXT, created_at TEXT)`); } catch(_) {}
+  // Stripe Checkout sessions (test mode). status: open | paid | expired. payout_status: pending | in_transit | paid
+  try { sqlite.exec(`CREATE TABLE IF NOT EXISTS stripe_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT UNIQUE, invoice_id INTEGER, contact_id INTEGER, amount REAL, currency TEXT DEFAULT 'usd', status TEXT DEFAULT 'open', payment_intent TEXT, card_brand TEXT, card_last4 TEXT, payout_status TEXT DEFAULT 'pending', payout_arrival TEXT, paid_at TEXT, created_at TEXT)`); } catch(_) {}
+
+  // GET integration settings (owner/admin only — returns masked token)
+  app.get("/api/integrations/:key", wrapAsync((req, res) => {
+    const row: any = sqlite.prepare("SELECT * FROM integrations WHERE key = ?").get(req.params.key);
+    if (!row) return res.json({ configured: false });
+    const val = JSON.parse(row.value || "{}");
+    // Mask sensitive fields
+    if (val.apiKey) val.apiKeyMasked = "•".repeat(val.apiKey.length - 6) + val.apiKey.slice(-6);
+    delete val.apiKey;
+    if (val.clientSecret) { val.clientSecretMasked = "••••••" + val.clientSecret.slice(-4); delete val.clientSecret; }
+    res.json({ configured: true, ...val, updatedAt: row.updated_at });
+  }));
+
+  // PATCH integration settings — save API keys
+  app.patch("/api/integrations/:key", wrapAsync((req, res) => {
+    const existing: any = sqlite.prepare("SELECT value FROM integrations WHERE key = ?").get(req.params.key);
+    const current = existing ? JSON.parse(existing.value || "{}") : {};
+    const merged = { ...current, ...req.body };
+    sqlite.prepare("INSERT INTO integrations (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+      .run(req.params.key, JSON.stringify(merged), new Date().toISOString());
+    res.json({ ok: true });
+  }));
+
+  // POST /api/ramp/pay — submit a payout request to Ramp Bill Pay
+  app.post("/api/ramp/pay", wrapAsync(async (req, res) => {
+    const { payoutRequestId } = req.body;
+    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'ramp'").get();
+    if (!cfg) return res.status(400).json({ error: "Ramp not configured. Add API key in Settings → Integrations." });
+    const { apiKey, entityId, bankAccountId } = JSON.parse(cfg.value || "{}");
+    if (!apiKey) return res.status(400).json({ error: "Ramp API key not set." });
+
+    const pr: any = sqlite.prepare("SELECT * FROM payout_requests WHERE id = ?").get(payoutRequestId);
+    if (!pr) return res.status(404).json({ error: "Payout request not found" });
+    const contact: any = sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(pr.contact_id);
+    const now = new Date().toISOString();
+
+    // Create a Ramp bill via their API
+    try {
+      const resp = await fetch("https://api.ramp.com/developer/v1/bills", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          entity_id: entityId,
+          source_bank_account_id: bankAccountId,
+          amount: { amount: Math.round((pr.amount || 0) * 100), currency_code: "USD" },
+          vendor_name: contact?.name || "Partner",
+          memo: `Titan Pro payout — Job #${pr.job_id || "N/A"} — ${contact?.name || "Partner"}`,
+          idempotency_key: `titan-payout-${payoutRequestId}-${Date.now()}`,
+          line_items: [{ amount: { amount: Math.round((pr.amount || 0) * 100), currency_code: "USD" }, memo: `Referral/sub payout` }],
+        }),
+      });
+      const data = await resp.json() as any;
+      if (!resp.ok) throw new Error(data.message || JSON.stringify(data));
+
+      sqlite.prepare("INSERT INTO ramp_payments (payout_request_id, contact_name, amount, method, ramp_bill_id, status, submitted_at, created_at) VALUES (?, ?, ?, ?, ?, 'submitted', ?, ?)")
+        .run(payoutRequestId, contact?.name, pr.amount, pr.method, data.id, now, now);
+      sqlite.prepare("UPDATE payout_requests SET status = 'approved', notes = ? WHERE id = ?")
+        .run(`Submitted to Ramp — Bill ID: ${data.id}`, payoutRequestId);
+
+      res.json({ ok: true, rampBillId: data.id, status: "submitted" });
+    } catch (err: any) {
+      sqlite.prepare("INSERT INTO ramp_payments (payout_request_id, contact_name, amount, status, error, submitted_at, created_at) VALUES (?, ?, ?, 'failed', ?, ?, ?)")
+        .run(payoutRequestId, contact?.name, pr.amount, err.message, now, now);
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  // GET /api/ramp/payments — list all Ramp payment submissions
+  app.get("/api/ramp/payments", wrapAsync((req, res) => {
+    const rows = sqlite.prepare("SELECT * FROM ramp_payments ORDER BY created_at DESC LIMIT 100").all();
+    res.json(rows);
+  }));
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // QUICKBOOKS INTEGRATION — Invoice sync + payment receive
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // Reusable helper: push a Titan invoice to QuickBooks (Accounts Receivable).
+  // Returns { ok, qbInvoiceId, qbLink } or throws with a friendly message.
+  async function syncInvoiceToQb(invoiceId: number): Promise<{ ok: true; qbInvoiceId: string; qbLink: string; alreadySynced?: boolean }> {
+    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
+    if (!cfg) throw new Error("QuickBooks not configured. Add credentials in Settings → Integrations.");
+    const { accessToken, realmId } = JSON.parse(cfg.value || "{}");
+    if (!accessToken || !realmId) throw new Error("QuickBooks not fully connected. Please complete OAuth setup.");
+
+    // Idempotent: if already synced, return the existing link.
+    const existing: any = sqlite.prepare("SELECT * FROM qb_invoices WHERE invoice_id = ?").get(invoiceId);
+    if (existing?.qb_invoice_id) return { ok: true, qbInvoiceId: existing.qb_invoice_id, qbLink: existing.qb_link, alreadySynced: true };
+
+    const inv: any = sqlite.prepare("SELECT * FROM invoices WHERE id = ?").get(invoiceId);
+    if (!inv) throw new Error("Invoice not found");
+    const contact: any = inv.contact_id ? sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(inv.contact_id) : null;
+    const lineItems: any[] = JSON.parse(inv.line_items || "[]");
+    const now = new Date().toISOString();
+    const baseUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}`;
+
+    // Build QBO Invoice payload. If the contact has an email, attach it so QBO
+    // can email the invoice, and enable online (card/ACH) payment on the invoice.
+    const qbInvoice: any = {
+      Line: lineItems.length > 0 ? lineItems.map((li: any, i: number) => ({
+        LineNum: i + 1,
+        Amount: parseFloat(li.total || li.amount || 0),
+        DetailType: "SalesItemLineDetail",
+        SalesItemLineDetail: {
+          ItemRef: { value: "1", name: li.description || "Service" },
+          Qty: li.quantity || 1,
+          UnitPrice: li.unitPrice || li.total || 0,
+        },
+      })) : [{ Amount: inv.total || 0, DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: "1", name: "Restoration Services" }, Qty: 1, UnitPrice: inv.total || 0 } }],
+      CustomerRef: { value: contact?.qb_customer_id || "1", name: contact?.name || "Customer" },
+      DocNumber: inv.invoice_number,
+      DueDate: inv.due_date,
+      CustomerMemo: { value: `Titan Restoration LLC — ${inv.invoice_number}` },
+      AllowOnlineCreditCardPayment: true,
+      AllowOnlineACHPayment: true,
+    };
+    if (contact?.email) qbInvoice.BillEmail = { Address: contact.email };
+
+    const resp = await fetch(`${baseUrl}/invoice?minorversion=65`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(qbInvoice),
+    });
+    const data = await resp.json() as any;
+    if (!resp.ok) throw new Error(data?.Fault?.Error?.[0]?.Message || JSON.stringify(data));
+
+    const qbInvId = data?.Invoice?.Id;
+    const qbLink = `https://app.qbo.intuit.com/app/invoice?txnId=${qbInvId}`;
+    sqlite.prepare("INSERT INTO qb_invoices (invoice_id, qb_invoice_id, qb_customer_id, status, synced_at, qb_link) VALUES (?, ?, ?, 'synced', ?, ?) ON CONFLICT DO NOTHING")
+      .run(invoiceId, qbInvId, contact?.qb_customer_id, now, qbLink);
+    return { ok: true, qbInvoiceId: qbInvId, qbLink };
+  }
+
+  // Reusable helper: email a synced QBO invoice to the customer via QuickBooks'
+  // native send endpoint. Returns { sent, sentTo } or throws.
+  async function sendQbInvoiceEmail(invoiceId: number, overrideEmail?: string): Promise<{ sent: boolean; sentTo?: string }> {
+    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
+    const { accessToken, realmId } = JSON.parse(cfg?.value || "{}");
+    if (!accessToken || !realmId) throw new Error("QuickBooks not connected.");
+    const qbRow: any = sqlite.prepare("SELECT * FROM qb_invoices WHERE invoice_id = ?").get(invoiceId);
+    if (!qbRow?.qb_invoice_id) throw new Error("Invoice not yet synced to QuickBooks.");
+    const inv: any = sqlite.prepare("SELECT * FROM invoices WHERE id = ?").get(invoiceId);
+    const contact: any = inv?.contact_id ? sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(inv.contact_id) : null;
+    const email = overrideEmail || contact?.email;
+    if (!email) return { sent: false }; // no email on file — nothing to send to
+    const baseUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}`;
+    const resp = await fetch(`${baseUrl}/invoice/${qbRow.qb_invoice_id}/send?sendTo=${encodeURIComponent(email)}&minorversion=65`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/octet-stream", "Accept": "application/json" },
+    });
+    const data = await resp.json() as any;
+    if (!resp.ok) throw new Error(data?.Fault?.Error?.[0]?.Message || "QuickBooks send failed");
+    sqlite.prepare("UPDATE qb_invoices SET status = 'sent' WHERE invoice_id = ?").run(invoiceId);
+    return { sent: true, sentTo: email };
+  }
+
+  // POST /api/qb/sync-invoice — push a Titan invoice to QuickBooks
+  app.post("/api/qb/sync-invoice", wrapAsync(async (req, res) => {
+    try {
+      const result = await syncInvoiceToQb(Number(req.body.invoiceId));
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }));
+
+  // POST /api/qb/create-and-send — create a Titan invoice, sync it to QuickBooks,
+  // and email it to the customer from QuickBooks, all in one step.
+  // Always creates the invoice even if QB is unavailable (graceful degradation).
+  // body: same as POST /api/invoices, plus optional { sendToCustomer: true }
+  app.post("/api/qb/create-and-send", wrapAsync(async (req, res) => {
+    const { sendToCustomer = true, ...invoiceData } = req.body || {};
+    // 1) Create the Titan invoice (single source of truth)
+    const invoice: any = storage.createInvoice(invoiceData);
+    const out: any = { invoice, synced: false, sent: false, qbLink: null, warnings: [] as string[] };
+
+    // 2) Sync to QuickBooks
+    try {
+      const sync = await syncInvoiceToQb(invoice.id);
+      out.synced = true;
+      out.qbLink = sync.qbLink;
+    } catch (err: any) {
+      out.warnings.push(`Invoice created, but not synced to QuickBooks: ${err.message}`);
+      return res.json(out); // can't send if not synced
+    }
+
+    // 3) Email it to the customer from QuickBooks
+    if (sendToCustomer) {
+      try {
+        const sent = await sendQbInvoiceEmail(invoice.id);
+        out.sent = sent.sent;
+        out.sentTo = sent.sentTo;
+        if (!sent.sent) out.warnings.push("Invoice synced to QuickBooks, but the customer has no email on file — add one to their contact to send automatically.");
+      } catch (err: any) {
+        out.warnings.push(`Invoice synced, but QuickBooks couldn't email it: ${err.message}`);
+      }
+    }
+    res.json(out);
+  }));
+
+  // POST /api/qb/send-invoice — email an already-synced invoice to the customer
+  app.post("/api/qb/send-invoice", wrapAsync(async (req, res) => {
+    try {
+      // Sync first if needed, then send
+      await syncInvoiceToQb(Number(req.body.invoiceId));
+      const sent = await sendQbInvoiceEmail(Number(req.body.invoiceId), req.body.email);
+      if (!sent.sent) return res.status(400).json({ error: "No email on file for this customer. Add an email to their contact first." });
+      res.json({ ok: true, sent: true, sentTo: sent.sentTo });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }));
+
+  // POST /api/qb/send-payment-link — send QB payment link to customer email
+  app.post("/api/qb/send-payment-link", wrapAsync(async (req, res) => {
+    const { invoiceId } = req.body;
+    const qbRow: any = sqlite.prepare("SELECT * FROM qb_invoices WHERE invoice_id = ?").get(invoiceId);
+    if (!qbRow) return res.status(400).json({ error: "Invoice not yet synced to QuickBooks. Sync first." });
+    // In production: use QBO email endpoint. Here we return the link for manual send or email module.
+    res.json({ ok: true, paymentLink: qbRow.qb_link, message: "Share this link with your customer to pay via QuickBooks." });
+  }));
+
+  // GET /api/qb/invoices — list synced invoices
+  app.get("/api/qb/invoices", wrapAsync((req, res) => {
+    const rows = sqlite.prepare("SELECT qi.*, i.invoice_number, i.total, i.status FROM qb_invoices qi LEFT JOIN invoices i ON qi.invoice_id = i.id ORDER BY qi.synced_at DESC").all();
+    res.json(rows);
+  }));
+
+  // GET /api/qb/invoice-status — per-invoice QB sync + payment state for the Invoices UI
+  app.get("/api/qb/invoice-status", wrapAsync((req, res) => {
+    const rows = sqlite.prepare("SELECT invoice_id, qb_invoice_id, qb_link, status FROM qb_invoices").all() as any[];
+    const pays = sqlite.prepare("SELECT invoice_id, amount, received_at FROM qb_payments").all() as any[];
+    const map: Record<string, any> = {};
+    rows.forEach(r => { map[r.invoice_id] = { synced: true, qbInvoiceId: r.qb_invoice_id, qbLink: r.qb_link, qbStatus: r.status }; });
+    pays.forEach(p => { if (map[p.invoice_id]) { map[p.invoice_id].paidInQb = true; map[p.invoice_id].paidAmount = p.amount; map[p.invoice_id].receivedAt = p.received_at; } });
+    res.json(map);
+  }));
+
+  // Refresh a QuickBooks access token using the stored refresh token. Returns the
+  // (possibly refreshed) access token, or null if QB isn't fully connected.
+  async function qbAccessToken(): Promise<{ accessToken: string; realmId: string } | null> {
+    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
+    if (!cfg) return null;
+    const v = JSON.parse(cfg.value || "{}");
+    if (!v.realmId || !v.refreshToken || !v.clientId || !v.clientSecret) {
+      return v.accessToken && v.realmId ? { accessToken: v.accessToken, realmId: v.realmId } : null;
+    }
+    try {
+      const r = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", {
+        method: "POST",
+        headers: {
+          "Authorization": "Basic " + Buffer.from(`${v.clientId}:${v.clientSecret}`).toString("base64"),
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Accept": "application/json",
+        },
+        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: v.refreshToken }).toString(),
+      });
+      const t = await r.json() as any;
+      if (!r.ok || !t.access_token) return v.accessToken ? { accessToken: v.accessToken, realmId: v.realmId } : null;
+      const updated = { ...v, accessToken: t.access_token, refreshToken: t.refresh_token || v.refreshToken, connectedAt: new Date().toISOString() };
+      sqlite.prepare("INSERT INTO integrations (key, value, updated_at) VALUES ('quickbooks', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+        .run(JSON.stringify(updated), new Date().toISOString());
+      return { accessToken: t.access_token, realmId: v.realmId };
+    } catch {
+      return v.accessToken ? { accessToken: v.accessToken, realmId: v.realmId } : null;
+    }
+  }
+
+  // POST /api/qb/receive-payment — pull payment status from QuickBooks for a synced
+  // invoice. If QB shows it paid (balance 0), record a `received` payment in Titan
+  // and mark the invoice paid. This is how customer payments made in QuickBooks
+  // (card/ACH via the QBO pay link) flow back into Titan Pro.
+  app.post("/api/qb/receive-payment", wrapAsync(async (req, res) => {
+    const { invoiceId } = req.body;
+    const qbRow: any = sqlite.prepare("SELECT * FROM qb_invoices WHERE invoice_id = ?").get(invoiceId);
+    if (!qbRow || !qbRow.qb_invoice_id) return res.status(400).json({ error: "Invoice not yet synced to QuickBooks. Sync it first." });
+
+    const auth = await qbAccessToken();
+    if (!auth) return res.status(400).json({ error: "QuickBooks not connected. Connect it in Settings \u2192 Integrations." });
+
+    const inv: any = sqlite.prepare("SELECT * FROM invoices WHERE id = ?").get(invoiceId);
+    if (!inv) return res.status(404).json({ error: "Invoice not found" });
+
+    try {
+      // Read the invoice back from QBO to check its outstanding Balance.
+      const url = `https://quickbooks.api.intuit.com/v3/company/${auth.realmId}/invoice/${qbRow.qb_invoice_id}?minorversion=65`;
+      const r = await fetch(url, { headers: { "Authorization": `Bearer ${auth.accessToken}`, "Accept": "application/json" } });
+      const data = await r.json() as any;
+      if (!r.ok) throw new Error(data?.Fault?.Error?.[0]?.Message || `QuickBooks returned ${r.status}`);
+
+      const qbInv = data?.Invoice || {};
+      const totalAmt = Number(qbInv.TotalAmt ?? inv.total ?? 0);
+      const balance = Number(qbInv.Balance ?? totalAmt);
+      const paidAmount = Math.round((totalAmt - balance) * 100) / 100;
+
+      if (balance > 0.005) {
+        // Not fully paid yet — report current state without recording anything.
+        return res.json({ ok: true, paid: false, balance, totalAmt, paidAmount, message: paidAmount > 0 ? `Partially paid in QuickBooks ($${paidAmount.toLocaleString()} of $${totalAmt.toLocaleString()}). Balance $${balance.toLocaleString()} still due.` : "No payment recorded in QuickBooks yet." });
+      }
+
+      // Fully paid in QB — reconcile into Titan (idempotent: skip if already recorded).
+      const already: any = sqlite.prepare("SELECT * FROM qb_payments WHERE invoice_id = ?").get(invoiceId);
+      const now = new Date().toISOString();
+      if (!already) {
+        storage.createPayment({
+          invoiceId, amount: totalAmt, method: "quickbooks", type: "received",
+          contactId: inv.contact_id || null, jobId: inv.job_id || null,
+          reference: `QuickBooks payment \u2014 ${inv.invoice_number}`,
+        } as any);
+        sqlite.prepare("INSERT INTO qb_payments (invoice_id, qb_payment_id, amount, received_at, created_at) VALUES (?, ?, ?, ?, ?)")
+          .run(invoiceId, qbInv.Id || null, totalAmt, now, now);
+        sqlite.prepare("UPDATE qb_invoices SET status = 'paid' WHERE invoice_id = ?").run(invoiceId);
+      }
+      storage.updateInvoice(invoiceId, { status: "paid", paidAt: now });
+
+      res.json({ ok: true, paid: true, amount: totalAmt, alreadyRecorded: !!already, message: already ? "Payment was already reconciled from QuickBooks." : `Payment of $${totalAmt.toLocaleString()} received from QuickBooks and recorded.` });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  // POST /api/qb/oauth/start — initiate QuickBooks OAuth flow
+  app.get("/api/qb/oauth/start", (req, res) => {
+    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
+    if (!cfg) return res.status(400).json({ error: "QuickBooks client ID not configured." });
+    const { clientId } = JSON.parse(cfg.value || "{}");
+    if (!clientId) return res.status(400).json({ error: "QuickBooks client ID not set." });
+    const redirectUri = encodeURIComponent(`${req.protocol}://${req.get("host")}/api/qb/oauth/callback`);
+    const scope = encodeURIComponent("com.intuit.quickbooks.accounting");
+    const state = "titan_pro_qb";
+    const authUrl = `https://appcenter.intuit.com/connect/oauth2?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}&state=${state}`;
+    res.json({ authUrl });
+  });
+
+  // GET /api/qb/oauth/callback
+  app.get("/api/qb/oauth/callback", wrapAsync(async (req, res) => {
+    const { code, realmId } = req.query as any;
+    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
+    if (!cfg) return res.status(400).send("QuickBooks not configured");
+    const { clientId, clientSecret } = JSON.parse(cfg.value || "{}");
+    const redirectUri = `${req.protocol}://${req.get("host")}/api/qb/oauth/callback`;
+
+    try {
+      const tokenResp = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", {
+        method: "POST",
+        headers: {
+          "Authorization": "Basic " + Buffer.from(`${clientId}:${clientSecret}`).toString("base64"),
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Accept": "application/json",
+        },
+        body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: redirectUri }).toString(),
+      });
+      const tokens = await tokenResp.json() as any;
+      const existing: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
+      const current = existing ? JSON.parse(existing.value) : {};
+      const updated = { ...current, accessToken: tokens.access_token, refreshToken: tokens.refresh_token, realmId, connectedAt: new Date().toISOString() };
+      sqlite.prepare("INSERT INTO integrations (key, value, updated_at) VALUES ('quickbooks', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+        .run(JSON.stringify(updated), new Date().toISOString());
+      res.send(`<html><body><script>window.close();</script><p>QuickBooks connected! You can close this window.</p></body></html>`);
+    } catch (err: any) {
+      res.status(500).send("OAuth error: " + err.message);
+    }
+  }));
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // STRIPE CHECKOUT — Customer-portal "Pay Now" (TEST MODE)
+  // ------------------------------------------------------------------------
+  // Set STRIPE_SECRET_KEY (sk_test_...) in the environment to use the REAL
+  // Stripe Checkout API. When absent, the app runs a faithful *simulated*
+  // Stripe Checkout so the entire experience is testable end-to-end. Swapping
+  // to live/real Stripe is a one-line change (add the env key) — the rest of
+  // the flow (session create → hosted checkout → verify → record payment →
+  // payout timeline) is identical.
+  // ══════════════════════════════════════════════════════════════════════════
+  const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || "";
+  const STRIPE_LIVE = STRIPE_KEY.startsWith("sk_");
+  const fmtUsd = (n: number) => (n || 0).toLocaleString("en-US", { style: "currency", currency: "USD" });
+
+  // POST /api/customer-portal/stripe/create-checkout
+  // body: { invoiceId, contactId }  → returns { checkoutUrl, sessionId, simulated }
+  app.post("/api/customer-portal/stripe/create-checkout", wrapAsync(async (req, res) => {
+    const { invoiceId, contactId } = req.body || {};
+    if (!portalOwnsContact(req, Number(contactId)))
+      return res.status(403).json({ error: "Not authorized to pay on this account." });
+    const invoice: any = sqlite.prepare("SELECT * FROM invoices WHERE id = ?").get(Number(invoiceId));
+    if (!invoice) return res.status(404).json({ error: "Invoice not found." });
+    if (invoice.status === "paid") return res.status(400).json({ error: "This invoice is already paid." });
+    const amount = Number(invoice.total || 0);
+    if (!(amount > 0)) return res.status(400).json({ error: "Invoice has no balance due." });
+    const now = new Date().toISOString();
+    const origin = `${req.protocol}://${req.get("host")}`;
+
+    if (STRIPE_LIVE) {
+      // Real Stripe Checkout Session
+      const params = new URLSearchParams();
+      params.append("mode", "payment");
+      params.append("line_items[0][price_data][currency]", "usd");
+      params.append("line_items[0][price_data][product_data][name]", `Invoice ${invoice.invoice_number || invoiceId} — Titan Restoration`);
+      params.append("line_items[0][price_data][unit_amount]", String(Math.round(amount * 100)));
+      params.append("line_items[0][quantity]", "1");
+      params.append("metadata[invoiceId]", String(invoiceId));
+      params.append("metadata[contactId]", String(contactId));
+      params.append("success_url", `${origin}/api/customer-portal/stripe/return?session_id={CHECKOUT_SESSION_ID}`);
+      params.append("cancel_url", `${origin}/api/customer-portal/stripe/return?session_id={CHECKOUT_SESSION_ID}&canceled=1`);
+      const sResp = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${STRIPE_KEY}`, "Content-Type": "application/x-www-form-urlencoded" },
+        body: params.toString(),
+      });
+      const s = await sResp.json() as any;
+      if (s.error) return res.status(400).json({ error: s.error.message });
+      sqlite.prepare("INSERT INTO stripe_sessions (session_id, invoice_id, contact_id, amount, status, created_at) VALUES (?, ?, ?, ?, 'open', ?)")
+        .run(s.id, Number(invoiceId), Number(contactId), amount, now);
+      return res.json({ checkoutUrl: s.url, sessionId: s.id, simulated: false });
+    }
+
+    // Simulated Stripe Checkout — create a session and point to our hosted checkout page
+    const sessionId = `cs_test_sim_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    sqlite.prepare("INSERT INTO stripe_sessions (session_id, invoice_id, contact_id, amount, status, created_at) VALUES (?, ?, ?, ?, 'open', ?)")
+      .run(sessionId, Number(invoiceId), Number(contactId), amount, now);
+    const checkoutUrl = `${origin}/api/customer-portal/stripe/checkout?session_id=${sessionId}`;
+    res.json({ checkoutUrl, sessionId, simulated: true });
+  }));
+
+  // GET /api/customer-portal/stripe/checkout?session_id=...
+  // Simulated Stripe-hosted checkout page (test mode). Renders a Stripe-like
+  // card form; on submit it marks the session paid and redirects back.
+  app.get("/api/customer-portal/stripe/checkout", (req, res) => {
+    const sessionId = String(req.query.session_id || "");
+    const s: any = sqlite.prepare("SELECT * FROM stripe_sessions WHERE session_id = ?").get(sessionId);
+    if (!s) return res.status(404).send("Checkout session not found.");
+    const inv: any = sqlite.prepare("SELECT * FROM invoices WHERE id = ?").get(s.invoice_id);
+    const invNum = inv?.invoice_number || `#${s.invoice_id}`;
+    const amt = fmtUsd(s.amount);
+    const origin = `${req.protocol}://${req.get("host")}`;
+    const alreadyPaid = s.status === "paid";
+    res.set("Content-Type", "text/html").send(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Checkout — Titan Restoration</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f6f9fc;color:#30313d;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:32px 16px}
+  .wrap{width:100%;max-width:420px}
+  .test-banner{background:#0a2540;color:#fff;font-size:12px;font-weight:600;text-align:center;padding:7px;border-radius:8px 8px 0 0;letter-spacing:.02em}
+  .card{background:#fff;border:1px solid #e6e6e6;border-top:none;border-radius:0 0 12px 12px;box-shadow:0 4px 24px rgba(0,0,0,.06);overflow:hidden}
+  .head{padding:24px 28px 8px}
+  .merchant{font-size:13px;color:#6b7280;font-weight:600}
+  .amt{font-size:30px;font-weight:700;margin-top:2px;color:#0a2540}
+  .desc{font-size:13px;color:#6b7280;margin-top:2px}
+  form{padding:8px 28px 28px}
+  label{display:block;font-size:12px;font-weight:600;color:#4b5563;margin:14px 0 5px}
+  .inp{width:100%;padding:11px 12px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;outline:none;transition:border .15s,box-shadow .15s}
+  .inp:focus{border-color:#635bff;box-shadow:0 0 0 3px rgba(99,91,255,.15)}
+  .row{display:flex;gap:10px}.row .inp{flex:1}
+  .pay{width:100%;margin-top:20px;padding:12px;background:#635bff;color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;transition:background .15s}
+  .pay:hover{background:#4d47cc}.pay:disabled{opacity:.6;cursor:not-allowed}
+  .hint{font-size:11px;color:#8792a2;margin-top:14px;line-height:1.5;text-align:center}
+  .lock{font-size:11px;color:#6b7280;text-align:center;margin-top:16px}
+  .powered{font-size:11px;color:#8792a2;text-align:center;margin-top:10px}
+  .powered b{color:#635bff}
+  .fill{background:#f0eeff;border-color:#635bff}
+  .cancel{display:block;text-align:center;margin-top:14px;font-size:13px;color:#635bff;text-decoration:none}
+</style></head>
+<body><div class="wrap">
+  <div class="test-banner">TEST MODE — No real charge will be made</div>
+  <div class="card">
+    <div class="head">
+      <div class="merchant">Titan Restoration LLC</div>
+      <div class="amt">${amt}</div>
+      <div class="desc">Invoice ${invNum}</div>
+    </div>
+    <form id="f">
+      <label>Email</label>
+      <input class="inp" id="email" type="email" placeholder="you@example.com" value="customer@example.com">
+      <label>Card information</label>
+      <input class="inp" id="card" inputmode="numeric" placeholder="4242 4242 4242 4242">
+      <div class="row" style="margin-top:8px">
+        <input class="inp" id="exp" placeholder="MM / YY">
+        <input class="inp" id="cvc" placeholder="CVC">
+      </div>
+      <label>Name on card</label>
+      <input class="inp" id="name" placeholder="Full name" value="Test Customer">
+      <button class="pay" id="pay" type="submit">${alreadyPaid ? "Already paid — return" : "Pay " + amt}</button>
+      <div class="hint">Use test card <b>4242 4242 4242 4242</b>, any future expiry, any CVC.<br>Tap "Autofill test card" to fill it in.</div>
+      <a class="cancel" href="${origin}/api/customer-portal/stripe/return?session_id=${sessionId}&canceled=1">Cancel and return</a>
+      <div class="powered">Powered by <b>stripe</b> · Terms · Privacy</div>
+    </form>
+  </div>
+</div>
+<script>
+  var card=document.getElementById('card'),exp=document.getElementById('exp'),cvc=document.getElementById('cvc');
+  // Autofill helper: clicking the hint fills the test card
+  document.querySelector('.hint').addEventListener('click',function(){card.value='4242 4242 4242 4242';exp.value='12 / 34';cvc.value='123';card.classList.add('fill');exp.classList.add('fill');cvc.classList.add('fill');});
+  card.addEventListener('input',function(e){var v=e.target.value.replace(/\\D/g,'').slice(0,16);e.target.value=v.replace(/(.{4})/g,'$1 ').trim();});
+  exp.addEventListener('input',function(e){var v=e.target.value.replace(/\\D/g,'').slice(0,4);e.target.value=v.length>2?v.slice(0,2)+' / '+v.slice(2):v;});
+  cvc.addEventListener('input',function(e){e.target.value=e.target.value.replace(/\\D/g,'').slice(0,4);});
+  document.getElementById('f').addEventListener('submit',function(ev){
+    ev.preventDefault();
+    var btn=document.getElementById('pay');
+    var num=card.value.replace(/\\s/g,'');
+    if(${alreadyPaid ? "true" : "false"}){window.location.href='${origin}/api/customer-portal/stripe/return?session_id=${sessionId}';return;}
+    if(num.length<15){card.classList.add('fill');card.focus();card.style.borderColor='#df1b41';return;}
+    btn.disabled=true;btn.textContent='Processing…';
+    fetch('${origin}/api/customer-portal/stripe/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:'${sessionId}',card:num})})
+      .then(function(r){return r.json();})
+      .then(function(d){window.location.href='${origin}/api/customer-portal/stripe/return?session_id=${sessionId}';})
+      .catch(function(){btn.disabled=false;btn.textContent='Pay ${amt}';});
+  });
+</script>
+</body></html>`);
+  });
+
+  // POST /api/customer-portal/stripe/complete  (simulated card submission)
+  // body: { session_id, card } → marks the session paid (idempotent)
+  app.post("/api/customer-portal/stripe/complete", (req, res) => {
+    const { session_id, card } = req.body || {};
+    const s: any = sqlite.prepare("SELECT * FROM stripe_sessions WHERE session_id = ?").get(String(session_id));
+    if (!s) return res.status(404).json({ error: "Session not found." });
+    if (s.status === "paid") return res.json({ ok: true, alreadyPaid: true });
+    const last4 = String(card || "4242424242424242").replace(/\D/g, "").slice(-4) || "4242";
+    const now = new Date().toISOString();
+    // Simulated payout arrival: Stripe standard payout ~2 business days
+    const arrival = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
+    sqlite.prepare("UPDATE stripe_sessions SET status='paid', payment_intent=?, card_brand='visa', card_last4=?, paid_at=?, payout_status='pending', payout_arrival=? WHERE session_id=?")
+      .run(`pi_test_sim_${Date.now()}`, last4, now, arrival, String(session_id));
+    res.json({ ok: true });
+  });
+
+  // Shared helper: finalize a paid session → record payment + mark invoice paid (idempotent)
+  function finalizeStripeSession(s: any): { recorded: boolean } {
+    const existing: any = sqlite.prepare("SELECT id FROM payments WHERE reference = ?").get(`stripe:${s.session_id}`);
+    if (existing) return { recorded: false };
+    storage.createPayment({
+      invoiceId: s.invoice_id, jobId: null, contactId: s.contact_id,
+      type: "received", amount: s.amount, method: "credit_card",
+      reference: `stripe:${s.session_id}`,
+      notes: `Stripe Checkout${STRIPE_LIVE ? "" : " (test mode)"} · card ending ${s.card_last4 || "4242"}`,
+      paidAt: s.paid_at || new Date().toISOString(),
+    } as any);
+    if (s.invoice_id) storage.updateInvoice(s.invoice_id, { status: "paid", paidAt: s.paid_at || new Date().toISOString() });
+    return { recorded: true };
+  }
+
+  // GET /api/customer-portal/stripe/return?session_id=...  (redirect target)
+  // Verifies session, finalizes payment, and renders a tiny page that signals
+  // the opener (portal) and closes, or shows a status if opened directly.
+  app.get("/api/customer-portal/stripe/return", (req, res) => {
+    const sessionId = String(req.query.session_id || "");
+    const canceled = String(req.query.canceled || "") === "1";
+    const s: any = sqlite.prepare("SELECT * FROM stripe_sessions WHERE session_id = ?").get(sessionId);
+    let outcome = "error";
+    if (s) {
+      if (s.status === "paid") { finalizeStripeSession(s); outcome = "paid"; }
+      else if (canceled) outcome = "canceled";
+      else outcome = "pending";
+    }
+    const msg = outcome === "paid" ? "Payment successful" : outcome === "canceled" ? "Payment canceled" : "Returning to portal…";
+    res.set("Content-Type", "text/html").send(`<!doctype html><html><head><meta charset="utf-8">
+<style>body{font-family:-apple-system,sans-serif;background:#f6f9fc;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;color:#0a2540}.b{text-align:center}.c{font-size:44px}</style></head>
+<body><div class="b"><div class="c">${outcome === "paid" ? "✅" : outcome === "canceled" ? "↩️" : "⏳"}</div><p>${msg}</p><p style="font-size:13px;color:#6b7280">You can close this window.</p></div>
+<script>try{if(window.opener){window.opener.postMessage({type:'stripe-checkout',outcome:'${outcome}',sessionId:'${sessionId}'},'*');setTimeout(function(){window.close();},900);}}catch(e){}</script>
+</body></html>`);
+  });
+
+  // GET /api/customer-portal/stripe/session/:sessionId — poll session status
+  app.get("/api/customer-portal/stripe/session/:sessionId", (req, res) => {
+    const s: any = sqlite.prepare("SELECT * FROM stripe_sessions WHERE session_id = ?").get(String(req.params.sessionId));
+    if (!s) return res.status(404).json({ error: "Session not found." });
+    if (s.status === "paid") finalizeStripeSession(s);
+    res.json({
+      sessionId: s.session_id, status: s.status, amount: s.amount,
+      invoiceId: s.invoice_id, cardLast4: s.card_last4, paidAt: s.paid_at,
+      payoutStatus: s.payout_status, payoutArrival: s.payout_arrival, simulated: !STRIPE_LIVE,
+    });
+  });
+
+  // GET /api/customer-portal/stripe/payouts/:contactId — payout timeline for this customer's payments
+  app.get("/api/customer-portal/stripe/payouts/:contactId", (req, res) => {
+    const contactId = Number(req.params.contactId);
+    if (!portalOwnsContact(req, contactId))
+      return res.status(403).json({ error: "Not authorized to view this account." });
+    const rows = sqlite.prepare("SELECT * FROM stripe_sessions WHERE contact_id = ? AND status = 'paid' ORDER BY paid_at DESC").all(contactId) as any[];
+    res.json(rows.map((r) => stripePayoutView(r)));
+  });
+
+  // GET /api/stripe/payouts — owner-facing: ALL Stripe payouts to the company bank
+  app.get("/api/stripe/payouts", (req, res) => {
+    const rows = sqlite.prepare("SELECT * FROM stripe_sessions WHERE status = 'paid' ORDER BY paid_at DESC").all() as any[];
+    const views = rows.map((r) => stripePayoutView(r));
+    const totals = views.reduce((acc: any, v: any) => {
+      acc.gross += v.amount; acc.fee += v.fee; acc.net += v.net;
+      acc[v.payoutStatus] = (acc[v.payoutStatus] || 0) + v.net;
+      return acc;
+    }, { gross: 0, fee: 0, net: 0 });
+    res.json({ payouts: views, totals, simulated: !STRIPE_LIVE });
+  });
+
+  // Compute a payout view for a paid session, auto-advancing the simulated
+  // payout status over time (pending → in_transit → paid) like real Stripe payouts.
+  function stripePayoutView(r: any) {
+    const paidAtMs = r.paid_at ? new Date(r.paid_at).getTime() : Date.now();
+    const ageHrs = (Date.now() - paidAtMs) / 36e5;
+    // Simulated timeline: funds captured now → in transit after ~24h → deposited after ~48h
+    let payoutStatus = r.payout_status || "pending";
+    if (!STRIPE_LIVE) {
+      if (ageHrs >= 48) payoutStatus = "paid";
+      else if (ageHrs >= 24) payoutStatus = "in_transit";
+      else payoutStatus = "pending";
+      if (payoutStatus !== r.payout_status) {
+        try { sqlite.prepare("UPDATE stripe_sessions SET payout_status=? WHERE id=?").run(payoutStatus, r.id); } catch (_) {}
+      }
+    }
+    const fee = Math.round((r.amount * 0.029 + 0.30) * 100) / 100; // Stripe 2.9% + $0.30
+    const net = Math.round((r.amount - fee) * 100) / 100;
+    const inv: any = sqlite.prepare("SELECT invoice_number FROM invoices WHERE id = ?").get(r.invoice_id);
+    return {
+      sessionId: r.session_id, invoiceId: r.invoice_id, invoiceNumber: inv?.invoice_number || null,
+      amount: r.amount, fee, net, cardLast4: r.card_last4, paidAt: r.paid_at,
+      payoutStatus, payoutArrival: r.payout_arrival,
+    };
+  }
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PAYMENT REMINDERS — email dunning engine (cadence-driven)
+  // Sends escalating reminder emails on unpaid invoices as they age past their
+  // due date. Cadence is configurable; each send is logged to invoice_reminders
+  // (deduped per invoice+step) and mirrored into the Emails "sent" folder.
+  // ══════════════════════════════════════════════════════════════════════════
+  try {
+    sqlite.exec(`CREATE TABLE IF NOT EXISTS invoice_reminders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      invoice_id INTEGER NOT NULL,
+      contact_id INTEGER,
+      step_days INTEGER NOT NULL,
+      days_overdue INTEGER NOT NULL,
+      amount REAL,
+      channel TEXT DEFAULT 'email',
+      to_email TEXT,
+      subject TEXT,
+      body TEXT,
+      status TEXT DEFAULT 'sent',
+      sent_at TEXT NOT NULL
+    )`);
+  } catch (_) {}
+
+  // Default cadence: days-past-due at which each escalating reminder fires.
+  const DEFAULT_REMINDER_SETTINGS = {
+    enabled: true,
+    steps: [
+      { days: 7,  tone: "friendly",  label: "Friendly reminder" },
+      { days: 14, tone: "firm",      label: "Second notice" },
+      { days: 30, tone: "urgent",    label: "Past-due notice" },
+      { days: 45, tone: "final",     label: "Final notice" },
+    ],
+    fromEmail: "cody@titanrestorationllc.com",
+    companyName: "Titan Restoration LLC",
+    companyPhone: "706-922-0154",
+  };
+
+  function readReminderSettings(): any {
+    try {
+      const row: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'reminder_settings'").get();
+      if (row && row.value) return { ...DEFAULT_REMINDER_SETTINGS, ...JSON.parse(row.value) };
+    } catch (_) {}
+    return DEFAULT_REMINDER_SETTINGS;
+  }
+
+  function money(n: number): string {
+    return "$" + (Number(n) || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  // Compute the effective "clock start" for overdue math: prefer due date,
+  // fall back to created date. Returns days past that date (can be negative).
+  function invoiceDaysOverdue(inv: any): number {
+    const base = inv.due_date ? new Date(inv.due_date).getTime()
+               : (inv.created_at ? new Date(inv.created_at).getTime() : null);
+    if (!base) return -9999;
+    return Math.floor((Date.now() - base) / 86400000);
+  }
+
+  // Build the reminder email content for a given step tone.
+  function buildReminderEmail(inv: any, contact: any, step: any, daysOverdue: number, s: any) {
+    const name = contact?.name || "Valued Customer";
+    const num = inv.invoice_number || `#${inv.id}`;
+    const amt = money(inv.total);
+    const portal = "your customer portal";
+    const sign = `\n\nThank you,\n${s.companyName}\n${s.companyPhone}`;
+    let subject: string, body: string;
+    switch (step.tone) {
+      case "firm":
+        subject = `Second notice: Invoice ${num} (${amt}) is ${daysOverdue} days past due`;
+        body = `Hi ${name},\n\nWe wanted to follow up on invoice ${num} for ${amt}, which is now ${daysOverdue} days past due. If payment is already on its way, thank you — please disregard. Otherwise you can pay securely online through ${portal}.` + sign;
+        break;
+      case "urgent":
+        subject = `Past-due: Invoice ${num} (${amt}) — ${daysOverdue} days overdue`;
+        body = `Hi ${name},\n\nInvoice ${num} for ${amt} is now ${daysOverdue} days past due. Please arrange payment at your earliest convenience to keep your account in good standing. You can pay online through ${portal}, or call us to make arrangements.` + sign;
+        break;
+      case "final":
+        subject = `FINAL NOTICE: Invoice ${num} (${amt}) — ${daysOverdue} days overdue`;
+        body = `Hi ${name},\n\nThis is a final notice regarding invoice ${num} for ${amt}, now ${daysOverdue} days past due. Please remit payment immediately to avoid further collection steps. If you believe this is in error or need to discuss a payment plan, contact us right away at ${s.companyPhone}.` + sign;
+        break;
+      default: // friendly
+        subject = `Friendly reminder: Invoice ${num} (${amt}) is due`;
+        body = `Hi ${name},\n\nJust a friendly reminder that invoice ${num} for ${amt} is now ${daysOverdue} days past its due date. You can pay securely online through ${portal} whenever it's convenient. Thanks for your business!` + sign;
+    }
+    return { subject, body };
+  }
+
+  // Determine, for each unpaid non-draft invoice, the highest cadence step it
+  // qualifies for that has NOT yet been sent.
+  function computeReminderQueue() {
+    const s = readReminderSettings();
+    const steps = [...(s.steps || [])].sort((a: any, b: any) => a.days - b.days);
+    const invoices = sqlite.prepare(
+      "SELECT * FROM invoices WHERE status != 'paid' AND status != 'draft'"
+    ).all() as any[];
+    const contacts = sqlite.prepare("SELECT * FROM contacts").all() as any[];
+    const queue: any[] = [];
+    for (const inv of invoices) {
+      const daysOverdue = invoiceDaysOverdue(inv);
+      if (daysOverdue < (steps[0]?.days ?? 7)) continue;
+      // Highest step whose threshold has passed.
+      const eligible = steps.filter((st: any) => daysOverdue >= st.days);
+      if (!eligible.length) continue;
+      const step = eligible[eligible.length - 1];
+      const already = sqlite.prepare(
+        "SELECT id FROM invoice_reminders WHERE invoice_id = ? AND step_days = ?"
+      ).get(inv.id, step.days);
+      const contact = contacts.find((c: any) => c.id === inv.contact_id);
+      queue.push({
+        invoiceId: inv.id,
+        invoiceNumber: inv.invoice_number,
+        contactId: inv.contact_id,
+        contactName: contact?.name || null,
+        toEmail: contact?.email || null,
+        amount: inv.total,
+        dueDate: inv.due_date,
+        daysOverdue,
+        step,
+        alreadySent: !!already,
+      });
+    }
+    // Sort most overdue first.
+    queue.sort((a, b) => b.daysOverdue - a.daysOverdue);
+    return { settings: s, queue };
+  }
+
+  // Send one reminder for a specific invoice + step. Records email + log row.
+  function sendOneReminder(item: any, s: any) {
+    const inv: any = sqlite.prepare("SELECT * FROM invoices WHERE id = ?").get(item.invoiceId);
+    if (!inv) throw new Error("Invoice not found");
+    const contact: any = item.contactId ? sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(item.contactId) : null;
+    const toEmail = contact?.email || null;
+    const { subject, body } = buildReminderEmail(inv, contact, item.step, item.daysOverdue, s);
+    const nowIso = new Date().toISOString();
+    const status = toEmail ? "sent" : "skipped_no_email";
+    if (toEmail) {
+      try {
+        storage.createEmail({ folder: "sent", from: s.fromEmail, to: toEmail, subject, body, read: 1 } as any);
+      } catch (_) {}
+    }
+    sqlite.prepare(
+      `INSERT INTO invoice_reminders (invoice_id, contact_id, step_days, days_overdue, amount, channel, to_email, subject, body, status, sent_at)
+       VALUES (?, ?, ?, ?, ?, 'email', ?, ?, ?, ?, ?)`
+    ).run(inv.id, item.contactId || null, item.step.days, item.daysOverdue, inv.total, toEmail, subject, body, status, nowIso);
+    return { invoiceId: inv.id, invoiceNumber: inv.invoice_number, step: item.step, status, toEmail, subject };
+  }
+
+  // GET settings
+  app.get("/api/reminders/settings", requireRole("owner", "admin"), (_req, res) => {
+    res.json(readReminderSettings());
+  });
+  // PUT settings
+  app.put("/api/reminders/settings", requireRole("owner", "admin"), (req, res) => {
+    const merged = { ...readReminderSettings(), ...req.body };
+    sqlite.prepare(
+      "INSERT INTO integrations (key, value, updated_at) VALUES ('reminder_settings', ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
+    ).run(JSON.stringify(merged), new Date().toISOString());
+    res.json(merged);
+  });
+
+  // GET the current reminder queue (who is due for what step, and whether sent)
+  app.get("/api/reminders/queue", requireRole("owner", "admin"), (_req, res) => {
+    res.json(computeReminderQueue());
+  });
+
+  // GET reminder history (log)
+  app.get("/api/reminders/history", requireRole("owner", "admin"), (_req, res) => {
+    const rows = sqlite.prepare(
+      `SELECT r.*, i.invoice_number, c.name as contact_name
+       FROM invoice_reminders r
+       LEFT JOIN invoices i ON r.invoice_id = i.id
+       LEFT JOIN contacts c ON r.contact_id = c.id
+       ORDER BY r.sent_at DESC LIMIT 200`
+    ).all();
+    res.json(rows);
+  });
+
+  // POST send a single reminder for a specific invoice + step
+  app.post("/api/reminders/send", requireRole("owner", "admin"), (req, res) => {
+    const { invoiceId, stepDays } = req.body || {};
+    if (!invoiceId) return res.status(400).json({ error: "invoiceId required" });
+    const { settings, queue } = computeReminderQueue();
+    const item = queue.find((q: any) => q.invoiceId === Number(invoiceId) && (stepDays == null || q.step.days === Number(stepDays)));
+    if (!item) return res.status(404).json({ error: "No pending reminder for that invoice" });
+    if (item.alreadySent) return res.status(409).json({ error: "Reminder for this step already sent" });
+    const result = sendOneReminder(item, settings);
+    res.json(result);
+  });
+
+  // POST run the engine — send every pending reminder in the queue
+  app.post("/api/reminders/run", requireRole("owner", "admin"), (req, res) => {
+    const { settings, queue } = computeReminderQueue();
+    if (settings.enabled === false && !req.body?.force) {
+      return res.json({ sent: [], skipped: queue.length, disabled: true });
+    }
+    const pending = queue.filter((q: any) => !q.alreadySent);
+    const sent: any[] = [];
+    for (const item of pending) sent.push(sendOneReminder(item, settings));
+    res.json({ sent, count: sent.length, considered: queue.length });
+  });
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PAYMENT RECONCILIATION — Stripe payouts ↔ invoices ↔ QuickBooks status
+  // One view that matches money across systems and surfaces gaps:
+  //  • Stripe captured a payment but the invoice isn't marked paid
+  //  • Invoice is paid but never synced/marked paid in QuickBooks
+  //  • Payment recorded with no matching invoice
+  // ══════════════════════════════════════════════════════════════════════════
+  app.get("/api/reconciliation", requireRole("owner", "admin"), (_req, res) => {
+    const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
+    const payments = sqlite.prepare("SELECT * FROM payments WHERE type = 'received' OR type IS NULL").all() as any[];
+    const stripeSessions = sqlite.prepare("SELECT * FROM stripe_sessions").all() as any[];
+    let qbInvoices: any[] = [];
+    try { qbInvoices = sqlite.prepare("SELECT * FROM qb_invoices").all() as any[]; } catch (_) {}
+    let qbPayments: any[] = [];
+    try { qbPayments = sqlite.prepare("SELECT * FROM qb_payments").all() as any[]; } catch (_) {}
+    const contacts = sqlite.prepare("SELECT id, name FROM contacts").all() as any[];
+    const cName = (id: any) => contacts.find((c: any) => c.id === id)?.name || null;
+
+    const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
+
+    const rows = invoices
+      .filter((inv) => inv.status !== "draft")
+      .map((inv) => {
+        const invPayments = payments.filter((p) => p.invoice_id === inv.id);
+        const paidAmount = round2(invPayments.reduce((s, p) => s + (p.amount || 0), 0));
+        const stripe = stripeSessions.filter((ss) => ss.invoice_id === inv.id);
+        const stripePaid = stripe.some((ss) => ss.status === "paid");
+        const stripeAmount = round2(stripe.filter((ss) => ss.status === "paid").reduce((s, ss) => s + (ss.amount || 0), 0));
+        const qb = qbInvoices.find((q) => q.invoice_id === inv.id);
+        const qbSynced = !!qb;
+        const qbStatus = qb?.status || null; // synced | sent | paid
+        const qbPaid = qbStatus === "paid" || qbPayments.some((p) => p.invoice_id === inv.id);
+        const total = round2(inv.total);
+        const balance = round2(total - paidAmount);
+        const flags: string[] = [];
+        // Reconciliation checks
+        if (stripePaid && inv.status !== "paid") flags.push("stripe_paid_invoice_open");
+        if (paidAmount >= total && total > 0 && inv.status !== "paid") flags.push("fully_paid_not_marked");
+        if (inv.status === "paid" && !qbPaid && qbSynced) flags.push("paid_not_in_qb");
+        if (inv.status === "paid" && !qbSynced) flags.push("paid_not_synced_to_qb");
+        if (paidAmount > 0 && paidAmount < total && total > 0) flags.push("partial_payment");
+        if (stripePaid && stripeAmount > 0 && Math.abs(stripeAmount - paidAmount) > 0.01) flags.push("stripe_amount_mismatch");
+        return {
+          invoiceId: inv.id,
+          invoiceNumber: inv.invoice_number,
+          contactId: inv.contact_id,
+          contactName: cName(inv.contact_id),
+          status: inv.status,
+          total,
+          paidAmount,
+          balance,
+          stripePaid,
+          stripeAmount,
+          qbSynced,
+          qbStatus,
+          qbPaid,
+          qbLink: qb?.qb_link || null,
+          flags,
+          reconciled: flags.length === 0,
+        };
+      });
+
+    // Payments that reference an invoice id that doesn't exist / is a draft
+    const orphanPayments = payments
+      .filter((p) => {
+        if (!p.invoice_id) return true;
+        const inv = invoices.find((i) => i.id === p.invoice_id);
+        return !inv || inv.status === "draft";
+      })
+      .map((p) => ({
+        paymentId: p.id,
+        invoiceId: p.invoice_id,
+        amount: round2(p.amount),
+        method: p.method,
+        reference: p.reference,
+        contactName: cName(p.contact_id),
+        paidAt: p.paid_at,
+      }));
+
+    const summary = {
+      totalInvoices: rows.length,
+      reconciled: rows.filter((r) => r.reconciled).length,
+      needsAttention: rows.filter((r) => !r.reconciled).length,
+      orphanPayments: orphanPayments.length,
+      openBalance: round2(rows.filter((r) => r.status !== "paid").reduce((s, r) => s + r.balance, 0)),
+      collectedTotal: round2(rows.reduce((s, r) => s + r.paidAmount, 0)),
+      stripeCollected: round2(rows.reduce((s, r) => s + r.stripeAmount, 0)),
+    };
+
+    res.json({ summary, rows, orphanPayments });
+  });
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // MIGRATION CENTER — Slack / CompanyCam / Dash live-API import
+  // Reuses the generic `integrations` kv table for credentials (masked on read).
+  // Sync results are recorded in `migration_syncs` for an audit trail.
+  // ══════════════════════════════════════════════════════════════════════════
+  try { sqlite.exec(`CREATE TABLE IF NOT EXISTS migration_syncs (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, scope TEXT, status TEXT, records INTEGER DEFAULT 0, detail TEXT, error TEXT, run_by TEXT, created_at TEXT)`); } catch(_) {}
+
+  function readIntegration(key: string): any {
+    const row: any = sqlite.prepare("SELECT value FROM integrations WHERE key = ?").get(key);
+    return row ? JSON.parse(row.value || "{}") : {};
+  }
+
+  // --- Test connection: validates a token by hitting each provider's identity endpoint ---
+  app.post("/api/migration/:source/test", requireRole("owner", "admin"), wrapAsync(async (req, res) => {
+    const source = req.params.source;
+    const cfg = readIntegration(source);
+    const token = cfg.apiKey || cfg.token || req.body?.token;
+    if (!token) return res.status(400).json({ ok: false, error: "No API token saved. Save credentials first." });
+    try {
+      if (source === "slack") {
+        const r = await fetch("https://slack.com/api/auth.test", { headers: { Authorization: `Bearer ${token}` } });
+        const d: any = await r.json();
+        if (!d.ok) throw new Error(d.error || "Slack auth failed");
+        return res.json({ ok: true, account: d.team || d.user, detail: `Connected to workspace \"${d.team}\" as ${d.user}` });
+      }
+      if (source === "companycam") {
+        const r = await fetch("https://api.companycam.com/v2/users/current", { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } });
+        if (!r.ok) throw new Error(`CompanyCam returned ${r.status}`);
+        const d: any = await r.json();
+        const name = d?.data?.first_name ? `${d.data.first_name} ${d.data.last_name||""}`.trim() : (d?.first_name || "account");
+        return res.json({ ok: true, account: name, detail: `Connected to CompanyCam as ${name}` });
+      }
+      if (source === "dash") {
+        const base = (cfg.baseUrl || req.body?.baseUrl || "https://api.dashsolution.com").replace(/\/$/, "");
+        const r = await fetch(`${base}/v1/me`, { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } });
+        if (!r.ok) throw new Error(`Dash returned ${r.status}`);
+        const d: any = await r.json();
+        return res.json({ ok: true, account: d?.name || d?.email || "account", detail: `Connected to Dash (${base})` });
+      }
+      return res.status(400).json({ ok: false, error: "Unknown source" });
+    } catch (err: any) {
+      return res.status(502).json({ ok: false, error: `Could not reach ${source}: ${err.message}` });
+    }
+  }));
+
+  // --- Sync: pull records from a provider into Titan. Runs one or more scopes. ---
+  // Body: { scopes: string[] }.  Live-fetches from provider, upserts into local tables,
+  // records a migration_syncs row per scope. Designed to be resilient — a failure in
+  // one scope does not abort the others.
+  app.post("/api/migration/:source/sync", requireRole("owner", "admin"), wrapAsync(async (req, res) => {
+    const source = req.params.source;
+    const cfg = readIntegration(source);
+    const token = cfg.apiKey || cfg.token;
+    const emp = (req as any).employee;
+    const now = () => new Date().toISOString();
+    if (!token) return res.status(400).json({ error: "No API token saved. Save credentials first." });
+    const scopes: string[] = Array.isArray(req.body?.scopes) && req.body.scopes.length ? req.body.scopes : ["all"];
+    const results: any[] = [];
+
+    const logSync = (scope: string, status: string, records: number, detail: string, error?: string) => {
+      sqlite.prepare("INSERT INTO migration_syncs (source, scope, status, records, detail, error, run_by, created_at) VALUES (?,?,?,?,?,?,?,?)")
+        .run(source, scope, status, records, detail || null, error || null, emp?.name || "system", now());
+      results.push({ source, scope, status, records, detail, error });
+    };
+
+    const upsertContact = (name: string, extra: any = {}) => {
+      if (!name) return;
+      const existing: any = sqlite.prepare("SELECT id FROM contacts WHERE lower(name) = lower(?) LIMIT 1").get(name);
+      if (existing) return; // dedupe by name
+      sqlite.prepare("INSERT INTO contacts (name, type, email, phone, company, notes) VALUES (?,?,?,?,?,?)")
+        .run(name, extra.type || "imported", extra.email || null, extra.phone || null, extra.company || null, `Imported from ${source}`);
+    };
+
+    try {
+      if (source === "slack") {
+        for (const scope of scopes) {
+          try {
+            if (scope === "channels" || scope === "all") {
+              const r = await fetch("https://slack.com/api/conversations.list?limit=200&types=public_channel,private_channel", { headers: { Authorization: `Bearer ${token}` } });
+              const d: any = await r.json();
+              if (!d.ok) throw new Error(d.error);
+              const chans = d.channels || [];
+              sqlite.exec(`CREATE TABLE IF NOT EXISTS imported_slack_channels (id TEXT PRIMARY KEY, name TEXT, purpose TEXT, imported_at TEXT)`);
+              for (const c of chans) sqlite.prepare("INSERT OR REPLACE INTO imported_slack_channels (id,name,purpose,imported_at) VALUES (?,?,?,?)").run(c.id, c.name, c.purpose?.value || "", now());
+              logSync("channels", "success", chans.length, `${chans.length} channels imported`);
+            }
+            if (scope === "messages" || scope === "all") {
+              // Messages depend on channels; pull recent history from up to 10 channels
+              const chans = sqlite.prepare("SELECT id,name FROM imported_slack_channels LIMIT 10").all() as any[];
+              sqlite.exec(`CREATE TABLE IF NOT EXISTS imported_slack_messages (ts TEXT, channel TEXT, user TEXT, text TEXT, imported_at TEXT)`);
+              let count = 0;
+              for (const c of chans) {
+                const r = await fetch(`https://slack.com/api/conversations.history?channel=${c.id}&limit=100`, { headers: { Authorization: `Bearer ${token}` } });
+                const d: any = await r.json();
+                if (d.ok) for (const m of (d.messages || [])) { sqlite.prepare("INSERT INTO imported_slack_messages (ts,channel,user,text,imported_at) VALUES (?,?,?,?,?)").run(m.ts, c.name, m.user || "", m.text || "", now()); count++; }
+              }
+              logSync("messages", "success", count, `${count} messages imported from ${chans.length} channels`);
+            }
+            if (scope === "files" || scope === "all") {
+              const r = await fetch("https://slack.com/api/files.list?count=200", { headers: { Authorization: `Bearer ${token}` } });
+              const d: any = await r.json();
+              if (!d.ok) throw new Error(d.error);
+              const files = d.files || [];
+              sqlite.exec(`CREATE TABLE IF NOT EXISTS imported_slack_files (id TEXT PRIMARY KEY, name TEXT, mimetype TEXT, url TEXT, imported_at TEXT)`);
+              for (const f of files) sqlite.prepare("INSERT OR REPLACE INTO imported_slack_files (id,name,mimetype,url,imported_at) VALUES (?,?,?,?,?)").run(f.id, f.name, f.mimetype, f.url_private, now());
+              logSync("files", "success", files.length, `${files.length} files catalogued`);
+            }
+            if (scope === "contacts" || scope === "all") {
+              const r = await fetch("https://slack.com/api/users.list?limit=200", { headers: { Authorization: `Bearer ${token}` } });
+              const d: any = await r.json();
+              if (!d.ok) throw new Error(d.error);
+              const members = (d.members || []).filter((m: any) => !m.is_bot && !m.deleted && m.id !== "USLACKBOT");
+              for (const m of members) upsertContact(m.real_name || m.name, { email: m.profile?.email, type: "imported" });
+              logSync("contacts", "success", members.length, `${members.length} people synced (deduplicated)`);
+            }
+          } catch (e: any) { logSync(scope, "error", 0, "", e.message); }
+        }
+      } else if (source === "companycam") {
+        for (const scope of scopes) {
+          try {
+            if (scope === "photos" || scope === "all") {
+              const r = await fetch("https://api.companycam.com/v2/photos?per_page=100", { headers: { Authorization: `Bearer ${token}` } });
+              if (!r.ok) throw new Error(`status ${r.status}`);
+              const d: any = await r.json();
+              const photos = d?.data || d || [];
+              sqlite.exec(`CREATE TABLE IF NOT EXISTS imported_companycam_photos (id TEXT PRIMARY KEY, project_id TEXT, uri TEXT, captured_at TEXT, imported_at TEXT)`);
+              for (const p of photos) sqlite.prepare("INSERT OR REPLACE INTO imported_companycam_photos (id,project_id,uri,captured_at,imported_at) VALUES (?,?,?,?,?)").run(String(p.id), String(p.project_id||""), p.uris?.[0]?.uri || p.uri || "", p.captured_at || "", now());
+              logSync("photos", "success", photos.length, `${photos.length} job photos imported`);
+            }
+            if (scope === "documents" || scope === "all") {
+              const r = await fetch("https://api.companycam.com/v2/documents?per_page=100", { headers: { Authorization: `Bearer ${token}` } });
+              if (!r.ok) throw new Error(`status ${r.status}`);
+              const d: any = await r.json();
+              const docs = d?.data || d || [];
+              sqlite.exec(`CREATE TABLE IF NOT EXISTS imported_companycam_docs (id TEXT PRIMARY KEY, project_id TEXT, name TEXT, url TEXT, imported_at TEXT)`);
+              for (const doc of docs) sqlite.prepare("INSERT OR REPLACE INTO imported_companycam_docs (id,project_id,name,url,imported_at) VALUES (?,?,?,?,?)").run(String(doc.id), String(doc.project_id||""), doc.name || "", doc.url || "", now());
+              logSync("documents", "success", docs.length, `${docs.length} documents imported`);
+            }
+            if (scope === "contacts" || scope === "all") {
+              const r = await fetch("https://api.companycam.com/v2/users?per_page=100", { headers: { Authorization: `Bearer ${token}` } });
+              if (!r.ok) throw new Error(`status ${r.status}`);
+              const d: any = await r.json();
+              const users = d?.data || d || [];
+              for (const u of users) upsertContact(`${u.first_name||""} ${u.last_name||""}`.trim(), { email: u.email_address || u.email, type: "imported" });
+              logSync("contacts", "success", users.length, `${users.length} people synced (deduplicated)`);
+            }
+          } catch (e: any) { logSync(scope, "error", 0, "", e.message); }
+        }
+      } else if (source === "dash") {
+        const base = (cfg.baseUrl || "https://api.dashsolution.com").replace(/\/$/, "");
+        const H = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+        for (const scope of scopes) {
+          try {
+            if (scope === "jobs" || scope === "all") {
+              const r = await fetch(`${base}/v1/jobs?limit=200`, { headers: H });
+              if (!r.ok) throw new Error(`status ${r.status}`);
+              const d: any = await r.json();
+              const jobs = d?.data || d?.jobs || d || [];
+              sqlite.exec(`CREATE TABLE IF NOT EXISTS imported_dash_jobs (id TEXT PRIMARY KEY, job_number TEXT, customer TEXT, status TEXT, address TEXT, raw TEXT, imported_at TEXT)`);
+              for (const j of jobs) sqlite.prepare("INSERT OR REPLACE INTO imported_dash_jobs (id,job_number,customer,status,address,raw,imported_at) VALUES (?,?,?,?,?,?,?)").run(String(j.id), j.job_number || j.number || "", j.customer_name || j.customer || "", j.status || "", j.address || "", JSON.stringify(j), now());
+              logSync("jobs", "success", jobs.length, `${jobs.length} jobs imported`);
+            }
+            if (scope === "estimates" || scope === "all") {
+              const r = await fetch(`${base}/v1/estimates?limit=200`, { headers: H });
+              if (!r.ok) throw new Error(`status ${r.status}`);
+              const d: any = await r.json();
+              const ests = d?.data || d?.estimates || d || [];
+              sqlite.exec(`CREATE TABLE IF NOT EXISTS imported_dash_estimates (id TEXT PRIMARY KEY, job_id TEXT, total REAL, status TEXT, raw TEXT, imported_at TEXT)`);
+              for (const e of ests) sqlite.prepare("INSERT OR REPLACE INTO imported_dash_estimates (id,job_id,total,status,raw,imported_at) VALUES (?,?,?,?,?,?)").run(String(e.id), String(e.job_id||""), Number(e.total||0), e.status||"", JSON.stringify(e), now());
+              logSync("estimates", "success", ests.length, `${ests.length} estimates imported`);
+            }
+            if (scope === "financials" || scope === "all") {
+              const r = await fetch(`${base}/v1/payments?limit=200`, { headers: H });
+              if (!r.ok) throw new Error(`status ${r.status}`);
+              const d: any = await r.json();
+              const pays = d?.data || d?.payments || d || [];
+              sqlite.exec(`CREATE TABLE IF NOT EXISTS imported_dash_financials (id TEXT PRIMARY KEY, job_id TEXT, amount REAL, kind TEXT, paid_at TEXT, raw TEXT, imported_at TEXT)`);
+              for (const p of pays) sqlite.prepare("INSERT OR REPLACE INTO imported_dash_financials (id,job_id,amount,kind,paid_at,raw,imported_at) VALUES (?,?,?,?,?,?,?)").run(String(p.id), String(p.job_id||""), Number(p.amount||0), p.type||"payment", p.paid_at||p.date||"", JSON.stringify(p), now());
+              logSync("financials", "success", pays.length, `${pays.length} financial records imported`);
+            }
+            if (scope === "contacts" || scope === "all") {
+              const r = await fetch(`${base}/v1/customers?limit=200`, { headers: H });
+              if (!r.ok) throw new Error(`status ${r.status}`);
+              const d: any = await r.json();
+              const custs = d?.data || d?.customers || d || [];
+              for (const c of custs) upsertContact(c.name || `${c.first_name||""} ${c.last_name||""}`.trim(), { email: c.email, phone: c.phone, company: c.company, type: "customer" });
+              logSync("contacts", "success", custs.length, `${custs.length} customers synced (deduplicated)`);
+            }
+            if (scope === "notes" || scope === "all") {
+              // Pull all job notes from Dash so each file stays complete.
+              const r = await fetch(`${base}/v1/notes?limit=500`, { headers: H });
+              if (!r.ok) throw new Error(`status ${r.status}`);
+              const d: any = await r.json();
+              const notes = d?.data || d?.notes || d || [];
+              sqlite.exec(`CREATE TABLE IF NOT EXISTS imported_dash_notes (id TEXT PRIMARY KEY, job_id TEXT, author TEXT, body TEXT, tag TEXT, created_at TEXT, imported_at TEXT)`);
+              let linked = 0;
+              for (const n of notes) {
+                sqlite.prepare("INSERT OR REPLACE INTO imported_dash_notes (id,job_id,author,body,tag,created_at,imported_at) VALUES (?,?,?,?,?,?,?)")
+                  .run(String(n.id), String(n.job_id||n.job||""), n.author||n.user||"Dash", n.body||n.text||n.note||"", n.tag||n.category||"", n.created_at||n.date||now(), now());
+                // Merge into the live job_notes table when we can map the Dash job number to a local job.
+                const jobNum = n.job_number || n.job_no || null;
+                const local: any = jobNum ? sqlite.prepare("SELECT id FROM jobs WHERE job_number=?").get(String(jobNum)) : null;
+                if (local) {
+                  const dup = sqlite.prepare("SELECT id FROM job_notes WHERE job_id=? AND body=?").get(local.id, n.body||n.text||"");
+                  if (!dup) { sqlite.prepare("INSERT INTO job_notes (job_id, author, body, is_public, tag, created_at) VALUES (?,?,?,0,?,?)").run(local.id, `Dash: ${n.author||"import"}`, n.body||n.text||n.note||"", n.tag||"imported", n.created_at||now()); linked++; }
+                }
+              }
+              logSync("notes", "success", notes.length, `${notes.length} notes imported (${linked} merged into live files)`);
+            }
+            if (scope === "documents" || scope === "all") {
+              // Pull all job documents from Dash so each file stays complete.
+              const r = await fetch(`${base}/v1/documents?limit=500`, { headers: H });
+              if (!r.ok) throw new Error(`status ${r.status}`);
+              const d: any = await r.json();
+              const docs = d?.data || d?.documents || d || [];
+              sqlite.exec(`CREATE TABLE IF NOT EXISTS imported_dash_documents (id TEXT PRIMARY KEY, job_id TEXT, name TEXT, doc_type TEXT, url TEXT, raw TEXT, imported_at TEXT)`);
+              for (const doc of docs) sqlite.prepare("INSERT OR REPLACE INTO imported_dash_documents (id,job_id,name,doc_type,url,raw,imported_at) VALUES (?,?,?,?,?,?,?)")
+                .run(String(doc.id), String(doc.job_id||doc.job||""), doc.name||doc.title||"", doc.type||doc.doc_type||"other", doc.url||doc.download_url||"", JSON.stringify(doc), now());
+              logSync("documents", "success", docs.length, `${docs.length} documents imported`);
+            }
+          } catch (e: any) { logSync(scope, "error", 0, "", e.message); }
+        }
+      } else {
+        return res.status(400).json({ error: "Unknown source" });
+      }
+    } catch (err: any) {
+      logSync("all", "error", 0, "", err.message);
+    }
+
+    const totalRecords = results.reduce((s, r) => s + (r.records || 0), 0);
+    const anyError = results.some(r => r.status === "error");
+    res.json({ ok: !anyError, source, totalRecords, results });
+  }));
+
+  // --- Sync history (audit trail) ---
+  app.get("/api/migration/history", requireRole("owner", "admin"), wrapAsync((req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS migration_syncs (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, scope TEXT, status TEXT, records INTEGER DEFAULT 0, detail TEXT, error TEXT, run_by TEXT, created_at TEXT)`); } catch(_) {}
+    const rows = sqlite.prepare("SELECT * FROM migration_syncs ORDER BY id DESC LIMIT 100").all();
+    res.json(rows);
+  }));
+
+  // --- Import summary counts (for the Migration Center dashboard) ---
+  app.get("/api/migration/summary", requireRole("owner", "admin"), wrapAsync((req, res) => {
+    const count = (t: string) => { try { return (sqlite.prepare(`SELECT COUNT(*) c FROM ${t}`).get() as any).c; } catch { return 0; } };
+    res.json({
+      slack: { channels: count("imported_slack_channels"), messages: count("imported_slack_messages"), files: count("imported_slack_files") },
+      companycam: { photos: count("imported_companycam_photos"), documents: count("imported_companycam_docs") },
+      dash: { jobs: count("imported_dash_jobs"), estimates: count("imported_dash_estimates"), financials: count("imported_dash_financials") },
+      contactsImported: (() => { try { return (sqlite.prepare("SELECT COUNT(*) c FROM contacts WHERE type = 'imported'").get() as any).c; } catch { return 0; } })(),
+    });
+  }));
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // DOCUMENT BUILDER — saved branded report/document templates
+  // ══════════════════════════════════════════════════════════════════════════
+  try { sqlite.exec(`CREATE TABLE IF NOT EXISTS doc_templates (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, kind TEXT DEFAULT 'pdf', config TEXT, updated_by TEXT, created_at TEXT, updated_at TEXT)`); } catch(_) {}
+  app.get("/api/doc-templates", requireRole("owner", "admin"), wrapAsync((req, res) => {
+    res.json(sqlite.prepare("SELECT * FROM doc_templates ORDER BY updated_at DESC, id DESC").all());
+  }));
+  app.post("/api/doc-templates", requireRole("owner", "admin"), wrapAsync((req, res) => {
+    const emp = (req as any).employee;
+    const { name, kind, config } = req.body;
+    const now = new Date().toISOString();
+    const r = sqlite.prepare("INSERT INTO doc_templates (name, kind, config, updated_by, created_at, updated_at) VALUES (?,?,?,?,?,?)")
+      .run(name || "Untitled", kind || "pdf", JSON.stringify(config || {}), emp?.name || "", now, now);
+    res.json(sqlite.prepare("SELECT * FROM doc_templates WHERE id = ?").get(r.lastInsertRowid));
+  }));
+  app.patch("/api/doc-templates/:id", requireRole("owner", "admin"), wrapAsync((req, res) => {
+    const emp = (req as any).employee;
+    const { name, kind, config } = req.body;
+    const cur: any = sqlite.prepare("SELECT * FROM doc_templates WHERE id = ?").get(Number(req.params.id));
+    if (!cur) return res.status(404).json({ error: "Not found" });
+    sqlite.prepare("UPDATE doc_templates SET name = ?, kind = ?, config = ?, updated_by = ?, updated_at = ? WHERE id = ?")
+      .run(name ?? cur.name, kind ?? cur.kind, JSON.stringify(config ?? JSON.parse(cur.config||"{}")), emp?.name || "", new Date().toISOString(), Number(req.params.id));
+    res.json(sqlite.prepare("SELECT * FROM doc_templates WHERE id = ?").get(Number(req.params.id)));
+  }));
+  app.delete("/api/doc-templates/:id", requireRole("owner", "admin"), wrapAsync((req, res) => {
+    sqlite.prepare("DELETE FROM doc_templates WHERE id = ?").run(Number(req.params.id));
+    res.json({ success: true });
+  }));
+
+  // --- Job documents bundle (for combined-PDF packet printing) ---
+  // Returns the job + all its documents (including file_data) so the client can
+  // assemble a single print packet. Owner/admin/tech may read.
+  app.get("/api/jobs/:id/documents-bundle", requireStaffAuth, wrapAsync((req, res) => {
+    const jobId = Number(req.params.id);
+    const job: any = sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    const contact: any = job.contact_id ? sqlite.prepare("SELECT name, email, phone, address FROM contacts WHERE id = ?").get(job.contact_id) : null;
+    const docs = storage.getJobDocuments(jobId);
+    res.json({ job, contact, documents: docs });
+  }));
+
+  // ── AR Follow-Up Rules ────────────────────────────────────────────────────
+  app.get("/api/ar-followup-rules", (_req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS ar_followup_rules (id INTEGER PRIMARY KEY AUTOINCREMENT, days_threshold INTEGER NOT NULL, action TEXT NOT NULL, message_template TEXT, assignee TEXT, created_at TEXT DEFAULT '')`); } catch(_) {}
+    const rules = sqlite.prepare("SELECT * FROM ar_followup_rules ORDER BY days_threshold").all();
+    res.json(rules);
+  });
+  app.post("/api/ar-followup-rules", (req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS ar_followup_rules (id INTEGER PRIMARY KEY AUTOINCREMENT, days_threshold INTEGER NOT NULL, action TEXT NOT NULL, message_template TEXT, assignee TEXT, created_at TEXT DEFAULT '')`); } catch(_) {}
+    const { daysThreshold, action, messageTemplate, assignee } = req.body;
+    const r = sqlite.prepare("INSERT INTO ar_followup_rules (days_threshold, action, message_template, assignee, created_at) VALUES (?,?,?,?,?)").run(daysThreshold, action, messageTemplate||null, assignee||null, new Date().toISOString());
+    res.json(sqlite.prepare("SELECT * FROM ar_followup_rules WHERE id=?").get(r.lastInsertRowid));
+  });
+  app.delete("/api/ar-followup-rules/:id", (req, res) => {
+    sqlite.prepare("DELETE FROM ar_followup_rules WHERE id=?").run(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+  // Run AR follow-up engine — returns which invoices need action today
+  app.get("/api/ar-followup-engine", (_req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS ar_followup_rules (id INTEGER PRIMARY KEY AUTOINCREMENT, days_threshold INTEGER NOT NULL, action TEXT NOT NULL, message_template TEXT, assignee TEXT, created_at TEXT DEFAULT '')`); } catch(_) {}
+    const rules = sqlite.prepare("SELECT * FROM ar_followup_rules ORDER BY days_threshold").all() as any[];
+    const invoices = sqlite.prepare("SELECT i.*, j.address, j.insurance_carrier, j.contact_id FROM invoices i LEFT JOIN jobs j ON i.job_id = j.id WHERE i.status != 'paid' AND i.status != 'draft'").all() as any[];
+    const contacts = sqlite.prepare("SELECT * FROM contacts").all() as any[];
+    const now = Date.now();
+    const actions: any[] = [];
+    for (const inv of invoices) {
+      const sentDate = inv.created_at ? new Date(inv.created_at).getTime() : null;
+      if (!sentDate) continue;
+      const daysOut = Math.floor((now - sentDate) / 86400000);
+      for (const rule of rules) {
+        if (daysOut >= rule.days_threshold) {
+          const contact = contacts.find((c: any) => c.id === inv.contact_id);
+          actions.push({ invoice: inv, rule, daysOut, contact, message: (rule.message_template || "Invoice {invoiceNumber} is {days} days overdue. Please remit payment at your earliest convenience. — Titan Restoration LLC 706-922-0154").replace("{invoiceNumber}", inv.invoice_number || inv.id).replace("{days}", daysOut) });
+        }
+      }
+    }
+    res.json(actions);
+  });
+
+  // ── SMS on Jobs — per-job thread ──────────────────────────────────────────
+  app.get("/api/jobs/:id/sms", (req, res) => {
+    const msgs = sqlite.prepare("SELECT * FROM sms_messages WHERE job_id=? ORDER BY created_at ASC").all(Number(req.params.id));
+    res.json(msgs);
+  });
+  app.post("/api/jobs/:id/sms", (req, res) => {
+    try { sqlite.exec(`ALTER TABLE sms_messages ADD COLUMN job_id INTEGER`); } catch(_) {}
+    const { body, direction, to, from: from_ } = req.body;
+    const r = sqlite.prepare(`INSERT INTO sms_messages (contact_id, job_id, direction, body, "to", "from", status, created_at) VALUES (?,?,?,?,?,?,?,?)`).run(req.body.contactId||null, Number(req.params.id), direction||'outbound', body, to||'', from_||'Titan Restoration (706-922-0154)', 'sent', new Date().toISOString());
+    res.json(sqlite.prepare("SELECT * FROM sms_messages WHERE id=?").get(r.lastInsertRowid));
+  });
+
+  // ── Equipment Return Alerts ───────────────────────────────────────────────
+  app.get("/api/equipment-alerts", (_req, res) => {
+    try { sqlite.exec(`ALTER TABLE equipment_deployments ADD COLUMN expected_return_date TEXT`); } catch(_) {}
+    const deps = sqlite.prepare(`
+      SELECT ed.*, e.name as equipment_name, e.category as equipment_type, j.job_number, j.address, j.assigned_tech
+      FROM equipment_deployments ed
+      LEFT JOIN equipment e ON ed.equipment_id = e.id
+      LEFT JOIN jobs j ON ed.job_id = j.id
+      WHERE ed.returned_at IS NULL
+    `).all() as any[];
+    const now = Date.now();
+    const alerts = deps.map((d: any) => {
+      const deployedDays = Math.floor((now - new Date(d.deployed_at).getTime()) / 86400000);
+      const isOverdue = d.expected_return_date ? new Date(d.expected_return_date).getTime() < now : deployedDays > 14;
+      return { ...d, deployedDays, isOverdue };
+    }).filter((d: any) => d.isOverdue);
+    res.json(alerts);
+  });
+  app.patch("/api/equipment-deployments/:id/expected-return", (req, res) => {
+    try { sqlite.exec(`ALTER TABLE equipment_deployments ADD COLUMN expected_return_date TEXT`); } catch(_) {}
+    sqlite.prepare("UPDATE equipment_deployments SET expected_return_date=? WHERE id=?").run(req.body.expectedReturnDate, Number(req.params.id));
+    res.json(sqlite.prepare("SELECT * FROM equipment_deployments WHERE id=?").get(Number(req.params.id)));
+  });
+
+  // ── Carrier Response Time Tracker ─────────────────────────────────────────
+  app.get("/api/reports/carrier-response-time", (_req, res) => {
+    const jobs = sqlite.prepare("SELECT * FROM jobs WHERE insurance_carrier IS NOT NULL AND insurance_carrier != ''").all() as any[];
+    const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
+    const payments = sqlite.prepare("SELECT * FROM payments WHERE type='received'").all() as any[];
+    const byCarrier: Record<string, any> = {};
+    for (const job of jobs) {
+      const carrier = job.insurance_carrier;
+      if (!byCarrier[carrier]) byCarrier[carrier] = { carrier, jobs: 0, totalDays: 0, paid: 0, fastest: 999, slowest: 0, adjusterData: {} };
+      byCarrier[carrier].jobs++;
+      const jobInvoices = invoices.filter((i: any) => i.job_id === job.id);
+      const jobPayments = payments.filter((p: any) => jobInvoices.some((i: any) => i.id === p.invoice_id));
+      for (const inv of jobInvoices) {
+        const pmt = jobPayments.find((p: any) => p.invoice_id === inv.id);
+        if (pmt && inv.created_at && pmt.paid_at) {
+          const days = Math.floor((new Date(pmt.paid_at).getTime() - new Date(inv.created_at).getTime()) / 86400000);
+          if (days >= 0) {
+            byCarrier[carrier].totalDays += days;
+            byCarrier[carrier].paid++;
+            byCarrier[carrier].fastest = Math.min(byCarrier[carrier].fastest, days);
+            byCarrier[carrier].slowest = Math.max(byCarrier[carrier].slowest, days);
+          }
+        }
+        if (job.adjuster_name) {
+          const adj = job.adjuster_name;
+          if (!byCarrier[carrier].adjusterData[adj]) byCarrier[carrier].adjusterData[adj] = { name: adj, jobs: 0, totalDays: 0, paid: 0 };
+          byCarrier[carrier].adjusterData[adj].jobs++;
+        }
+      }
+    }
+    const results = Object.values(byCarrier).map((c: any) => ({
+      ...c,
+      avgDays: c.paid > 0 ? Math.round(c.totalDays / c.paid) : null,
+      fastest: c.fastest === 999 ? null : c.fastest,
+      adjusters: Object.values(c.adjusterData),
+    })).sort((a: any, b: any) => (a.avgDays ?? 999) - (b.avgDays ?? 999));
+    res.json(results);
+  });
+
+  // ── Profitability by Loss Type ────────────────────────────────────────────
+  app.get("/api/reports/profitability-by-type", (_req, res) => {
+    const jobs = sqlite.prepare("SELECT * FROM jobs").all() as any[];
+    const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
+    const payments = sqlite.prepare("SELECT * FROM payments WHERE type='received'").all() as any[];
+    const costs = sqlite.prepare("SELECT * FROM job_costs").all() as any[];
+    const byType: Record<string, any> = {};
+    for (const job of jobs) {
+      const lt = job.loss_type || "unknown";
+      if (!byType[lt]) byType[lt] = { lossType: lt, jobs: 0, totalInvoiced: 0, totalCollected: 0, totalCosts: 0, totalCycleDays: 0, jobsWithCycle: 0 };
+      byType[lt].jobs++;
+      const jobInv = invoices.filter((i: any) => i.job_id === job.id);
+      byType[lt].totalInvoiced += jobInv.reduce((s: number, i: any) => s + (i.total || 0), 0);
+      const jobPmts = payments.filter((p: any) => jobInv.some((i: any) => i.id === p.invoice_id));
+      byType[lt].totalCollected += jobPmts.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+      byType[lt].totalCosts += costs.filter((c: any) => c.job_id === job.id).reduce((s: number, c: any) => s + (c.total || 0), 0);
+      if (job.created_at && job.job_complete) {
+        const days = Math.floor((new Date(job.job_complete).getTime() - new Date(job.created_at).getTime()) / 86400000);
+        if (days >= 0) { byType[lt].totalCycleDays += days; byType[lt].jobsWithCycle++; }
+      }
+    }
+    const results = Object.values(byType).map((t: any) => ({
+      ...t,
+      avgJobValue: t.jobs > 0 ? Math.round(t.totalInvoiced / t.jobs) : 0,
+      grossMargin: t.totalInvoiced > 0 ? Math.round(((t.totalInvoiced - t.totalCosts) / t.totalInvoiced) * 100) : 0,
+      collectionRate: t.totalInvoiced > 0 ? Math.round((t.totalCollected / t.totalInvoiced) * 100) : 0,
+      avgCycleDays: t.jobsWithCycle > 0 ? Math.round(t.totalCycleDays / t.jobsWithCycle) : null,
+    })).sort((a: any, b: any) => b.totalInvoiced - a.totalInvoiced);
+    res.json(results);
+  });
+
+  // ── Tech Daily Summary ────────────────────────────────────────────────────
+  app.get("/api/tech-daily/:tech", (req, res) => {
+    const tech = decodeURIComponent(req.params.tech);
+    const jobs = sqlite.prepare("SELECT * FROM jobs WHERE assigned_tech=? AND status NOT IN ('complete','closed')").all(tech) as any[];
+    const today = new Date().toISOString().slice(0, 10);
+    const scheduled = sqlite.prepare("SELECT s.*, j.job_number, j.address, j.loss_type FROM shifts s LEFT JOIN jobs j ON s.job_id = j.id WHERE s.tech_name=? AND s.shift_date=?").all(tech, today);
+    res.json({ tech, activeJobs: jobs, scheduledToday: scheduled, date: today, phone: "706-922-0154" });
+  });
+
+  // ── Job Age Alerts ────────────────────────────────────────────────────────
+  app.get("/api/job-age-alerts", (req, res) => {
+    const thresholdDays = Number(req.query.days || 7);
+    const jobs = sqlite.prepare("SELECT * FROM jobs WHERE status NOT IN ('complete','closed')").all() as any[];
+    const now = Date.now();
+    const stale = jobs.map((j: any) => {
+      // Use the most recent stage-change date or createdAt
+      const dates = [j.invoice_sent_date, j.wip_date, j.pre_production_date, j.sales_date, j.created_at].filter(Boolean);
+      const latestDate = dates.reduce((latest: any, d: any) => {
+        const t = new Date(d).getTime();
+        return t > latest ? t : latest;
+      }, 0);
+      const stuckDays = latestDate > 0 ? Math.floor((now - latestDate) / 86400000) : null;
+      return { ...j, stuckDays, progressStage: j.progress_stage || "pending_sale" };
+    }).filter((j: any) => j.stuckDays !== null && j.stuckDays >= thresholdDays);
+    res.json(stale.sort((a: any, b: any) => (b.stuckDays || 0) - (a.stuckDays || 0)));
+  });
+
+  // ── Google Review Request ─────────────────────────────────────────────────
+  app.post("/api/jobs/:id/review-request", (req, res) => {
+    const job = sqlite.prepare("SELECT * FROM jobs WHERE id=?").get(Number(req.params.id)) as any;
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    const contact = job.contact_id ? sqlite.prepare("SELECT * FROM contacts WHERE id=?").get(job.contact_id) as any : null;
+    const reviewLink = "https://g.page/r/YOUR_GOOGLE_PLACE_ID/review";
+    const message = `Hi${contact?.name ? " " + contact.name.split(" ")[0] : ""}! Thank you for choosing Titan Restoration. We hope your experience was excellent. If you have a moment, we'd appreciate a Google review: ${reviewLink} — Titan Restoration LLC 706-922-0154`;
+    // Log as SMS outbound
+    try {
+      sqlite.prepare(`INSERT INTO sms_messages (contact_id, job_id, direction, body, "to", "from", status, created_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+        job.contact_id||null, job.id, "outbound", message, contact?.phone||"", "Titan Restoration (706-922-0154)", "sent", new Date().toISOString()
+      );
+    } catch(_) {}
+    res.json({ success: true, message, phone: contact?.phone });
+  });
+
+
+
+  // ── Credit Memo CRUD ──────────────────────────────────────────────────────
+  app.post("/api/jobs/:id/credit-memo", (req, res) => {
+    try { sqlite.exec(`ALTER TABLE payments ADD COLUMN credit_memo INTEGER DEFAULT 0`); } catch(_) {}
+    try { sqlite.exec(`ALTER TABLE payments ADD COLUMN memo_reason TEXT`); } catch(_) {}
+    const { amount, reason, invoiceId } = req.body;
+    const r = sqlite.prepare(`INSERT INTO payments (job_id, invoice_id, type, amount, credit_memo, memo_reason, paid_at) VALUES (?,?,?,?,1,?,?)`)
+      .run(Number(req.params.id), invoiceId || null, 'credit_memo', Math.abs(amount || 0), reason || '', new Date().toISOString());
+    res.json(sqlite.prepare("SELECT * FROM payments WHERE id=?").get(r.lastInsertRowid));
+  });
+
+
+  // ── IICRC Deviation Log (#29) ──────────────────────────────────────────────
+  app.get("/api/iicrc-deviations", (_req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS iicrc_deviations (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, deviation_type TEXT NOT NULL, description TEXT NOT NULL, iicrc_section TEXT, justification TEXT, approved_by TEXT, status TEXT NOT NULL DEFAULT 'pending', requires_reinspection INTEGER DEFAULT 0, created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    res.json(sqlite.prepare("SELECT * FROM iicrc_deviations ORDER BY id DESC").all());
+  });
+  app.post("/api/iicrc-deviations", (req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS iicrc_deviations (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, deviation_type TEXT NOT NULL, description TEXT NOT NULL, iicrc_section TEXT, justification TEXT, approved_by TEXT, status TEXT NOT NULL DEFAULT 'pending', requires_reinspection INTEGER DEFAULT 0, created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    const { job_id, deviation_type, description, iicrc_section, justification, approved_by, status, requires_reinspection, created_at } = req.body;
+    const r = sqlite.prepare(`INSERT INTO iicrc_deviations (job_id, deviation_type, description, iicrc_section, justification, approved_by, status, requires_reinspection, created_at) VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(job_id||null, deviation_type||'', description||'', iicrc_section||'', justification||'', approved_by||'', status||'pending', requires_reinspection?1:0, created_at||new Date().toISOString());
+    res.json(sqlite.prepare("SELECT * FROM iicrc_deviations WHERE id=?").get(r.lastInsertRowid));
+  });
+  app.patch("/api/iicrc-deviations/:id", (req, res) => {
+    const { status } = req.body;
+    sqlite.prepare("UPDATE iicrc_deviations SET status=? WHERE id=?").run(status||'pending', Number(req.params.id));
+    res.json(sqlite.prepare("SELECT * FROM iicrc_deviations WHERE id=?").get(Number(req.params.id)));
+  });
+  app.delete("/api/iicrc-deviations/:id", (req, res) => {
+    sqlite.prepare("DELETE FROM iicrc_deviations WHERE id=?").run(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+  // ── COI Records (#30) ─────────────────────────────────────────────────────
+  app.get("/api/coi-records", (_req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS coi_records (id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER, document_type TEXT NOT NULL, document_number TEXT, issuer TEXT, expires_at TEXT NOT NULL, document_url TEXT, status TEXT NOT NULL DEFAULT 'active', alert_sent_30 INTEGER DEFAULT 0, alert_sent_7 INTEGER DEFAULT 0, notes TEXT, created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    res.json(sqlite.prepare("SELECT * FROM coi_records ORDER BY expires_at ASC").all());
+  });
+  app.post("/api/coi-records", (req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS coi_records (id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER, document_type TEXT NOT NULL, document_number TEXT, issuer TEXT, expires_at TEXT NOT NULL, document_url TEXT, status TEXT NOT NULL DEFAULT 'active', alert_sent_30 INTEGER DEFAULT 0, alert_sent_7 INTEGER DEFAULT 0, notes TEXT, created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    const { contact_id, document_type, document_number, issuer, expires_at, status, notes, created_at } = req.body;
+    const r = sqlite.prepare(`INSERT INTO coi_records (contact_id, document_type, document_number, issuer, expires_at, status, notes, created_at) VALUES (?,?,?,?,?,?,?,?)`)
+      .run(contact_id||null, document_type||'', document_number||'', issuer||'', expires_at||'', status||'active', notes||'', created_at||new Date().toISOString());
+    res.json(sqlite.prepare("SELECT * FROM coi_records WHERE id=?").get(r.lastInsertRowid));
+  });
+  app.delete("/api/coi-records/:id", (req, res) => {
+    sqlite.prepare("DELETE FROM coi_records WHERE id=?").run(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+  // ── LMS Courses (#31) ─────────────────────────────────────────────────────
+  app.get("/api/lms-courses", (_req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS lms_courses (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT, category TEXT NOT NULL DEFAULT 'iicrc', content_url TEXT, content_type TEXT NOT NULL DEFAULT 'video', quiz_json TEXT DEFAULT '[]', duration_mins INTEGER DEFAULT 0, required_role TEXT DEFAULT 'all', created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    res.json(sqlite.prepare("SELECT * FROM lms_courses ORDER BY id DESC").all());
+  });
+  app.post("/api/lms-courses", (req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS lms_courses (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT, category TEXT NOT NULL DEFAULT 'iicrc', content_url TEXT, content_type TEXT NOT NULL DEFAULT 'video', quiz_json TEXT DEFAULT '[]', duration_mins INTEGER DEFAULT 0, required_role TEXT DEFAULT 'all', created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    const { title, description, category, content_url, content_type, duration_mins, required_role, created_at } = req.body;
+    const r = sqlite.prepare(`INSERT INTO lms_courses (title, description, category, content_url, content_type, duration_mins, required_role, created_at) VALUES (?,?,?,?,?,?,?,?)`)
+      .run(title||'', description||'', category||'iicrc', content_url||'', content_type||'video', duration_mins||0, required_role||'all', created_at||new Date().toISOString());
+    res.json(sqlite.prepare("SELECT * FROM lms_courses WHERE id=?").get(r.lastInsertRowid));
+  });
+  app.delete("/api/lms-courses/:id", (req, res) => {
+    sqlite.prepare("DELETE FROM lms_courses WHERE id=?").run(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+  // ── LMS Enrollments (#31) ────────────────────────────────────────────────
+  app.get("/api/lms-enrollments", (_req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS lms_enrollments (id INTEGER PRIMARY KEY AUTOINCREMENT, course_id INTEGER NOT NULL, employee_id INTEGER NOT NULL, employee_name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'assigned', score INTEGER, started_at TEXT, completed_at TEXT, assigned_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    res.json(sqlite.prepare("SELECT * FROM lms_enrollments ORDER BY id DESC").all());
+  });
+  app.post("/api/lms-enrollments", (req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS lms_enrollments (id INTEGER PRIMARY KEY AUTOINCREMENT, course_id INTEGER NOT NULL, employee_id INTEGER NOT NULL, employee_name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'assigned', score INTEGER, started_at TEXT, completed_at TEXT, assigned_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    const { course_id, employee_id, employee_name, status, assigned_at } = req.body;
+    const r = sqlite.prepare(`INSERT INTO lms_enrollments (course_id, employee_id, employee_name, status, assigned_at) VALUES (?,?,?,?,?)`)
+      .run(course_id||0, employee_id||0, employee_name||'', status||'assigned', assigned_at||new Date().toISOString());
+    res.json(sqlite.prepare("SELECT * FROM lms_enrollments WHERE id=?").get(r.lastInsertRowid));
+  });
+  app.patch("/api/lms-enrollments/:id", (req, res) => {
+    const { status, score, started_at, completed_at } = req.body;
+    const existing = sqlite.prepare("SELECT * FROM lms_enrollments WHERE id=?").get(Number(req.params.id)) as any;
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    sqlite.prepare("UPDATE lms_enrollments SET status=?, score=?, started_at=?, completed_at=? WHERE id=?")
+      .run(status||existing.status, score??existing.score, started_at||existing.started_at, completed_at||existing.completed_at, Number(req.params.id));
+    res.json(sqlite.prepare("SELECT * FROM lms_enrollments WHERE id=?").get(Number(req.params.id)));
+  });
+
+  // ── Payment Plans (#5) ────────────────────────────────────────────────────
+  app.get("/api/payment-plans", (_req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS payment_plans (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, contact_id INTEGER, total_amount REAL NOT NULL, down_payment REAL DEFAULT 0, installment_count INTEGER NOT NULL DEFAULT 3, frequency TEXT NOT NULL DEFAULT 'monthly', status TEXT NOT NULL DEFAULT 'active', stripe_customer_id TEXT, notes TEXT, created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS payment_plan_installments (id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER NOT NULL, due_date TEXT NOT NULL, amount REAL NOT NULL, status TEXT NOT NULL DEFAULT 'pending', paid_at TEXT, stripe_payment_intent_id TEXT)`); } catch(_) {}
+    res.json(sqlite.prepare("SELECT * FROM payment_plans ORDER BY id DESC").all());
+  });
+  app.post("/api/payment-plans", (req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS payment_plans (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, contact_id INTEGER, total_amount REAL NOT NULL, down_payment REAL DEFAULT 0, installment_count INTEGER NOT NULL DEFAULT 3, frequency TEXT NOT NULL DEFAULT 'monthly', status TEXT NOT NULL DEFAULT 'active', stripe_customer_id TEXT, notes TEXT, created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS payment_plan_installments (id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER NOT NULL, due_date TEXT NOT NULL, amount REAL NOT NULL, status TEXT NOT NULL DEFAULT 'pending', paid_at TEXT, stripe_payment_intent_id TEXT)`); } catch(_) {}
+    const { job_id, contact_id, total_amount, down_payment, installment_count, frequency, notes, created_at } = req.body;
+    const r = sqlite.prepare(`INSERT INTO payment_plans (job_id, contact_id, total_amount, down_payment, installment_count, frequency, notes, created_at) VALUES (?,?,?,?,?,?,?,?)`)
+      .run(job_id||0, contact_id||null, total_amount||0, down_payment||0, installment_count||3, frequency||'monthly', notes||'', created_at||new Date().toISOString());
+    const planId = r.lastInsertRowid;
+    // Generate installments
+    const remaining = (total_amount||0) - (down_payment||0);
+    const count = installment_count || 3;
+    const installAmt = Math.round((remaining / count) * 100) / 100;
+    const now = new Date();
+    for (let i = 0; i < count; i++) {
+      const due = new Date(now);
+      if (frequency === 'weekly') due.setDate(due.getDate() + 7 * (i + 1));
+      else if (frequency === 'biweekly') due.setDate(due.getDate() + 14 * (i + 1));
+      else due.setMonth(due.getMonth() + (i + 1));
+      sqlite.prepare("INSERT INTO payment_plan_installments (plan_id, due_date, amount, status) VALUES (?,?,?,?)")
+        .run(planId, due.toISOString().slice(0, 10), installAmt, 'pending');
+    }
+    res.json(sqlite.prepare("SELECT * FROM payment_plans WHERE id=?").get(planId));
+  });
+  app.get("/api/payment-plans/:id/installments", (req, res) => {
+    res.json(sqlite.prepare("SELECT * FROM payment_plan_installments WHERE plan_id=? ORDER BY due_date").all(Number(req.params.id)));
+  });
+
+  // ── Safety Checklists (#10) ───────────────────────────────────────────────
+  app.get("/api/safety-checklists", (_req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS safety_checklists (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, tech_name TEXT NOT NULL, checklist_type TEXT NOT NULL DEFAULT 'pre_job', items_json TEXT NOT NULL DEFAULT '[]', photos_json TEXT DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', completed_at TEXT, created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    res.json(sqlite.prepare("SELECT * FROM safety_checklists ORDER BY id DESC").all());
+  });
+  app.post("/api/safety-checklists", (req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS safety_checklists (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, tech_name TEXT NOT NULL, checklist_type TEXT NOT NULL DEFAULT 'pre_job', items_json TEXT NOT NULL DEFAULT '[]', photos_json TEXT DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', completed_at TEXT, created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    const { job_id, tech_name, checklist_type, items_json, photos_json, status, completed_at, created_at } = req.body;
+    const r = sqlite.prepare(`INSERT INTO safety_checklists (job_id, tech_name, checklist_type, items_json, photos_json, status, completed_at, created_at) VALUES (?,?,?,?,?,?,?,?)`)
+      .run(job_id||0, tech_name||'', checklist_type||'pre_job', JSON.stringify(items_json||[]), JSON.stringify(photos_json||[]), status||'pending', completed_at||null, created_at||new Date().toISOString());
+    res.json(sqlite.prepare("SELECT * FROM safety_checklists WHERE id=?").get(r.lastInsertRowid));
+  });
+  app.patch("/api/safety-checklists/:id", (req, res) => {
+    const { status, items_json, completed_at } = req.body;
+    const existing = sqlite.prepare("SELECT * FROM safety_checklists WHERE id=?").get(Number(req.params.id)) as any;
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    sqlite.prepare("UPDATE safety_checklists SET status=?, items_json=?, completed_at=? WHERE id=?")
+      .run(status||existing.status, items_json ? JSON.stringify(items_json) : existing.items_json, completed_at||existing.completed_at, Number(req.params.id));
+    res.json(sqlite.prepare("SELECT * FROM safety_checklists WHERE id=?").get(Number(req.params.id)));
+  });
+
+  // ── NPS Surveys (#15) ─────────────────────────────────────────────────────
+  app.get("/api/nps-surveys", (_req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS nps_surveys (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, contact_id INTEGER, score INTEGER NOT NULL, feedback TEXT, tech_rating INTEGER, cleanliness_rating INTEGER, communication_rating INTEGER, would_refer INTEGER DEFAULT 0, review_requested INTEGER DEFAULT 0, created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    res.json(sqlite.prepare("SELECT * FROM nps_surveys ORDER BY id DESC").all());
+  });
+  app.post("/api/nps-surveys", (req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS nps_surveys (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, contact_id INTEGER, score INTEGER NOT NULL, feedback TEXT, tech_rating INTEGER, cleanliness_rating INTEGER, communication_rating INTEGER, would_refer INTEGER DEFAULT 0, review_requested INTEGER DEFAULT 0, created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    const { job_id, contact_id, score, feedback, tech_rating, cleanliness_rating, communication_rating, would_refer, review_requested, created_at } = req.body;
+    const r = sqlite.prepare(`INSERT INTO nps_surveys (job_id, contact_id, score, feedback, tech_rating, cleanliness_rating, communication_rating, would_refer, review_requested, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run(job_id||0, contact_id||null, score||0, feedback||'', tech_rating||null, cleanliness_rating||null, communication_rating||null, would_refer?1:0, review_requested?1:0, created_at||new Date().toISOString());
+    res.json(sqlite.prepare("SELECT * FROM nps_surveys WHERE id=?").get(r.lastInsertRowid));
+  });
+
+  // ── Cash Flow Calendar (#3) ───────────────────────────────────────────────
+  // (data pulled from existing invoices/payments — no new table needed)
+  app.get("/api/cash-flow/forecast", (_req, res) => {
+    const invoices = sqlite.prepare("SELECT * FROM invoices WHERE status != 'void'").all() as any[];
+    const payments = sqlite.prepare("SELECT * FROM payments WHERE type='received'").all() as any[];
+    const forecast: Record<string, { expected: number; received: number; invoices: number }> = {};
+    for (const inv of invoices) {
+      const dueDate = (inv.due_date || inv.created_at || '').slice(0, 7); // YYYY-MM
+      if (!dueDate) continue;
+      if (!forecast[dueDate]) forecast[dueDate] = { expected: 0, received: 0, invoices: 0 };
+      forecast[dueDate].expected += inv.total || 0;
+      forecast[dueDate].invoices++;
+    }
+    for (const p of payments) {
+      const paidDate = (p.paid_at || p.created_at || '').slice(0, 7);
+      if (!paidDate) continue;
+      if (!forecast[paidDate]) forecast[paidDate] = { expected: 0, received: 0, invoices: 0 };
+      forecast[paidDate].received += p.amount || 0;
+    }
+    res.json(Object.entries(forecast).map(([month, data]) => ({ month, ...data })).sort((a, b) => a.month.localeCompare(b.month)));
+  });
+
+  // Unmatched /api/* routes should return a clean JSON 404 rather than falling
+  // through to the SPA's index.html catch-all. Registered last so it only
+  // catches genuinely-unknown API paths (all real routes above take priority).
+  app.all(/^\/api\/.*/, (req, res) => {
+    res.status(404).json({ error: "Not found", path: req.path });
+  });
+
+  return httpServer;
+}
+
+// ── Process-level crash guards ──────────────────────────────────────────────
+process.on('uncaughtException', (err) => {
+  console.error('[UNCAUGHT EXCEPTION]', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[UNHANDLED REJECTION]', reason);
+});
+

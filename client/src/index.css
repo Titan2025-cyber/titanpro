@@ -1,0 +1,156 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Titan Pro Brand Colors */
+    /* Bright Red: HSL 0 76% 49% */
+    /* Bright Blue: HSL 215 74% 49% */
+
+    --background: 220 20% 97%;
+    --foreground: 220 20% 8%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 20% 8%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 20% 8%;
+
+    --primary: 0 76% 49%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 215 74% 49%;
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 220 15% 94%;
+    --muted-foreground: 220 10% 45%;
+
+    --accent: 215 74% 49%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 15% 88%;
+    --input: 220 15% 88%;
+    --ring: 0 76% 49%;
+
+    --radius: 0.5rem;
+
+    /* Custom Titan tokens */
+    --titan-red: 0 76% 49%;
+    --titan-red-dark: 0 80% 42%;
+    --titan-blue: 215 74% 49%;
+    --titan-blue-dark: 215 76% 42%;
+    --sidebar-bg: 220 25% 12%;
+    --sidebar-fg: 220 15% 90%;
+    --sidebar-accent: 0 76% 49%;
+    --sidebar-border: 220 20% 20%;
+  }
+
+  .dark {
+    --background: 220 20% 7%;
+    --foreground: 220 15% 95%;
+
+    --card: 220 20% 10%;
+    --card-foreground: 220 15% 95%;
+
+    --popover: 220 20% 10%;
+    --popover-foreground: 220 15% 95%;
+
+    --primary: 0 80% 56%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 215 76% 58%;
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 220 15% 18%;
+    --muted-foreground: 220 10% 60%;
+
+    --accent: 215 76% 58%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 80% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 15% 22%;
+    --input: 220 15% 22%;
+    --ring: 0 80% 56%;
+
+    --titan-red: 0 80% 56%;
+    --titan-red-dark: 0 76% 49%;
+    --titan-blue: 215 76% 58%;
+    --titan-blue-dark: 215 74% 49%;
+    --sidebar-bg: 220 25% 8%;
+    --sidebar-fg: 220 15% 90%;
+    --sidebar-accent: 0 80% 56%;
+    --sidebar-border: 220 20% 15%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', 'DM Sans', system-ui, sans-serif;
+  }
+}
+
+/* Titan Pro sidebar */
+.titan-sidebar {
+  background-color: hsl(var(--sidebar-bg));
+  color: hsl(var(--sidebar-fg));
+  border-right: 1px solid hsl(var(--sidebar-border));
+}
+
+.titan-sidebar a {
+  color: hsl(var(--sidebar-fg));
+  opacity: 0.8;
+  transition: all 0.15s ease;
+}
+
+.titan-sidebar a:hover,
+.titan-sidebar a.active {
+  opacity: 1;
+  background-color: hsl(var(--sidebar-accent) / 0.2);
+  color: hsl(0 0% 100%);
+}
+
+.titan-sidebar a.active {
+  background-color: hsl(var(--sidebar-accent) / 0.25);
+  border-left: 3px solid hsl(var(--titan-red));
+}
+
+/* Status badges */
+.badge-new { @apply bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300; }
+.badge-mitigation { @apply bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300; }
+.badge-drying { @apply bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300; }
+.badge-reconstruction { @apply bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300; }
+.badge-complete { @apply bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300; }
+.badge-closed { @apply bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400; }
+
+/* ─── Print-friendly report styles ──────────────────────────────────────── */
+@media print {
+  /* Hide app chrome (sidebar, nav, buttons marked print-hide) */
+  .titan-sidebar, .print-hide, nav[data-app-nav], [data-print-hide] { display: none !important; }
+  body { background: #fff !important; }
+  .print-report {
+    position: absolute; inset: 0; margin: 0 !important; padding: 0 !important;
+    width: 100%; background: #fff; color: #111;
+  }
+  .print-report * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  .print-page-break { page-break-before: always; }
+  @page { margin: 12mm; size: letter; }
+}
+/* On-screen preview frame for the print view */
+.print-report {
+  max-width: 820px; margin: 0 auto; background: #fff; color: #111;
+}
+.print-report .pr-band-red { background: hsl(var(--titan-red)); color: #fff; }
+.print-report .pr-band-blue { background: hsl(var(--titan-blue)); color: #fff; }
+.print-report table { width: 100%; border-collapse: collapse; }
+.print-report th { background: hsl(var(--titan-blue)); color: #fff; text-align: left; }
+.print-report th, .print-report td { border: 1px solid #d8dde3; padding: 6px 9px; font-size: 12px; }
+.print-report tr:nth-child(even) td { background: #f6f8fa; }
