@@ -1,25 +1,30 @@
 // EnvBanner — a highly visible bar shown on every non-production environment
 // so users can never confuse a test/staging deployment with the live site.
 //
-// Detection is based on the standard NODE_ENV environment variable:
-//   - NODE_ENV === "production"  -> banner hidden
-//   - anything else (staging, test, development, qa, demo, unset) -> banner shown
+// Detection: the VITE_APP_ENV build-time environment variable.
+//   - VITE_APP_ENV === "production"  -> banner hidden
+//   - VITE_APP_ENV === anything else ("staging", "test", "qa", "demo", etc.)
+//     -> red "Staging Site" banner shown
+//   - VITE_APP_ENV is unset -> banner shown (safe default: any deploy that
+//     forgot to configure this variable is treated as non-production)
 //
-// NODE_ENV is set automatically by Vite for the two common cases:
-//   - `npm run dev`   -> NODE_ENV=development  (banner shown)
-//   - `npm run build` -> NODE_ENV=production   (banner hidden)
-// For staging/test builds on Railway, set NODE_ENV=staging (or any non-
-// "production" value) as a build-time env var and the banner will appear.
+// The VITE_ prefix is required — Vite only exposes environment variables
+// beginning with VITE_ to the client bundle. Plain NODE_ENV will NOT work
+// here because Vite reserves NODE_ENV/MODE for its own build machinery
+// (vite build hardcodes MODE=production regardless of the shell NODE_ENV).
+//
+// Railway configuration:
+//   Production service : do not set VITE_APP_ENV (or set it to "production")
+//   Staging/test        : set VITE_APP_ENV=staging (or "test", etc.)
 
 import { AlertTriangle } from "lucide-react";
 
-// import.meta.env.MODE is Vite's canonical way to read NODE_ENV on the client;
-// it is a build-time constant so tree-shaking removes the banner from
-// production bundles entirely.
-const NODE_ENV = import.meta.env.MODE;
+// import.meta.env.VITE_APP_ENV is inlined at build time by Vite, so the
+// banner is either fully present or fully tree-shaken out of the bundle.
+const APP_ENV = import.meta.env.VITE_APP_ENV;
 
 export default function EnvBanner() {
-  if (NODE_ENV === "production") return null;
+  if (APP_ENV === "production") return null;
 
   return (
     <div
