@@ -1,63 +1,25 @@
 // EnvBanner — a highly visible bar shown on every non-production environment
 // so users can never confuse a test/staging deployment with the live site.
 //
-// Detection logic (first match wins):
-//   1. VITE_ENV_LABEL env var — an explicit override, wins over everything.
-//        Examples: "staging", "preview", "qa", "local", "test", "production"
-//        Set to "production" (case-insensitive) to hide the banner even in dev.
-//   2. Hostname heuristics — if the browser is on localhost / *.local / an IP
-//        address / a domain containing "staging", "preview", "test", "dev",
-//        or "railway.app", we assume non-production.
-//   3. Vite dev mode (import.meta.env.DEV) — always considered non-production.
-//   4. Otherwise assume production and render nothing.
+// Detection is based on the standard NODE_ENV environment variable:
+//   - NODE_ENV === "production"  -> banner hidden
+//   - anything else (staging, test, development, qa, demo, unset) -> banner shown
 //
-// The banner appears at the very top of the viewport and pushes content down;
-// it is rendered from App.tsx above every route, and also stands alone on the
-// login screen (which is rendered before AuthGate).
+// NODE_ENV is set automatically by Vite for the two common cases:
+//   - `npm run dev`   -> NODE_ENV=development  (banner shown)
+//   - `npm run build` -> NODE_ENV=production   (banner hidden)
+// For staging/test builds on Railway, set NODE_ENV=staging (or any non-
+// "production" value) as a build-time env var and the banner will appear.
 
 import { AlertTriangle } from "lucide-react";
 
-function detectEnvironment(): { isProd: boolean; label: string } {
-  // 1. Explicit override
-  const override = (import.meta.env.VITE_ENV_LABEL as string | undefined)?.trim();
-  if (override) {
-    const isProd = override.toLowerCase() === "production" || override.toLowerCase() === "prod";
-    return { isProd, label: override.toUpperCase() };
-  }
-
-  // 2. Hostname heuristics (only runs in the browser)
-  if (typeof window !== "undefined") {
-    const host = window.location.hostname.toLowerCase();
-    if (host === "localhost" || host === "127.0.0.1" || host.endsWith(".local")) {
-      return { isProd: false, label: "LOCAL" };
-    }
-    // IP addresses are almost never production
-    if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
-      return { isProd: false, label: "LOCAL" };
-    }
-    if (host.includes("staging")) return { isProd: false, label: "STAGING" };
-    if (host.includes("preview")) return { isProd: false, label: "PREVIEW" };
-    if (host.includes("test")) return { isProd: false, label: "TEST" };
-    if (host.includes("dev")) return { isProd: false, label: "DEV" };
-    // Railway preview / non-custom-domain deploys — flag them so nobody mistakes
-    // the auto-generated *.up.railway.app URL for the real customer site.
-    if (host.endsWith(".railway.app") || host.endsWith(".up.railway.app")) {
-      return { isProd: false, label: "RAILWAY PREVIEW" };
-    }
-  }
-
-  // 3. Vite dev mode
-  if (import.meta.env.DEV) {
-    return { isProd: false, label: "DEV" };
-  }
-
-  // 4. Default: assume production
-  return { isProd: true, label: "PRODUCTION" };
-}
+// import.meta.env.MODE is Vite's canonical way to read NODE_ENV on the client;
+// it is a build-time constant so tree-shaking removes the banner from
+// production bundles entirely.
+const NODE_ENV = import.meta.env.MODE;
 
 export default function EnvBanner() {
-  const { isProd, label } = detectEnvironment();
-  if (isProd) return null;
+  if (NODE_ENV === "production") return null;
 
   return (
     <div
