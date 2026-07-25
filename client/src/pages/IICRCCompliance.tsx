@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { UserSelect } from "@/components/UserSelect";
 import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -6,8 +7,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { useState } from "react";
-import { Plus, CheckCircle, AlertTriangle, ClipboardList, ShieldCheck } from "lucide-react";
+import { Plus, CheckCircle, AlertTriangle, ClipboardList, ShieldCheck, Trash2 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 const STANDARD_OPTIONS = [
   { value: "S500", label: "S500 — Water Damage Restoration" },
@@ -24,6 +31,38 @@ const CATEGORY_OPTIONS: Record<string, { value: string; label: string }[]> = {
   S520: [{ value: "mold", label: "Mold Remediation (any class)" }],
   S700: [{ value: "fire_smoke", label: "Fire & Smoke Restoration" }],
 };
+
+function DeleteChecklistBtn({ id, label, onDone }: { id: number; label: string; onDone: () => void }) {
+  const { toast } = useToast();
+  const m = useMutation({
+    mutationFn: () => apiRequest(`/api/compliance-checklists/${id}`, { method: "DELETE" }),
+    onSuccess: () => { toast({ title: "Checklist Deleted" }); onDone(); },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="icon" onClick={(e) => e.stopPropagation()} data-testid={`button-delete-compliance-checklists-${id}`}>
+          <Trash2 className="w-4 h-4 text-destructive" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this checklist?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {label ? `"${label}" ` : ""}This permanently removes the record and cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => m.mutate()} data-testid={`button-confirm-delete-compliance-checklists-${id}`}>
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
 
 export default function IICRCCompliance() {
   const qc = useQueryClient();
@@ -86,7 +125,7 @@ export default function IICRCCompliance() {
             <DialogHeader><DialogTitle>Start IICRC Compliance Checklist</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <Input placeholder="Job ID" value={newForm.jobId} onChange={e => setNewForm(f => ({ ...f, jobId: e.target.value }))} data-testid="input-job-id" />
-              <Input placeholder="Technician name" value={newForm.techName} onChange={e => setNewForm(f => ({ ...f, techName: e.target.value }))} data-testid="input-tech-name" />
+              <UserSelect value={newForm.techName} onChange={v => setNewForm(f => ({ ...f, techName: v }))} roles={["tech"]} placeholder="Select technician" testId="select-tech-name" />
               <Select value={newForm.standard} onValueChange={v => setNewForm(f => ({ ...f, standard: v, lossCategory: CATEGORY_OPTIONS[v][0].value }))}>
                 <SelectTrigger data-testid="select-standard"><SelectValue /></SelectTrigger>
                 <SelectContent>{STANDARD_OPTIONS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
@@ -126,7 +165,10 @@ export default function IICRCCompliance() {
                           <p className="font-medium text-sm">{cl.standard} — {cl.loss_category.replace(/_/g, " ")}</p>
                           <p className="text-xs text-muted-foreground">Job #{cl.job_id}{cl.tech_name ? ` · ${cl.tech_name}` : ""}</p>
                         </div>
-                        <Badge variant={statusBadge(cl.overall_status) as any} className="text-xs">{cl.overall_status.replace(/_/g, " ")}</Badge>
+                        <div className="flex items-center gap-1">
+                          <Badge variant={statusBadge(cl.overall_status) as any} className="text-xs">{cl.overall_status.replace(/_/g, " ")}</Badge>
+                          <DeleteChecklistBtn id={cl.id} label={`${cl.standard} — Job #${cl.job_id}`} onDone={() => { qc.invalidateQueries({ queryKey: ["/api/compliance-checklists"] }); if (activeId === cl.id) setActiveId(null); }} />
+                        </div>
                       </div>
                       <div className="mt-2">
                         <div className="h-1.5 bg-muted rounded-full overflow-hidden">

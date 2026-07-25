@@ -6,10 +6,48 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { useState } from "react";
-import { Phone, AlertTriangle, CheckCircle, Zap, Plus, Flame, Droplets, Wind } from "lucide-react";
+import { Phone, AlertTriangle, CheckCircle, Zap, Plus, Flame, Droplets, Wind, Trash2 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 const LOSS_ICONS: Record<string, any> = { water: Droplets, fire: Flame, storm: Wind, mold: AlertTriangle, other: Zap };
+
+function DeleteIntakeBtn({ id, label, onDone }: { id: number; label: string; onDone: () => void }) {
+  const { toast } = useToast();
+  const m = useMutation({
+    mutationFn: () => apiRequest(`/api/emergency-intakes/${id}`, { method: "DELETE" }),
+    onSuccess: () => { toast({ title: "Intake Deleted" }); onDone(); },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button size="sm" variant="ghost" className="shrink-0" data-testid={`button-delete-emergency-intakes-${id}`}>
+          <Trash2 className="w-4 h-4 text-destructive" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this emergency intake?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {label ? `"${label}" ` : ""}This permanently removes the record and cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => m.mutate()} data-testid={`button-confirm-delete-emergency-intakes-${id}`}>
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
 
 export default function EmergencyIntake() {
   const qc = useQueryClient();
@@ -128,31 +166,34 @@ export default function EmergencyIntake() {
                         <p className="text-xs text-muted-foreground mt-1">{new Date(intake.created_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>
                       </div>
                     </div>
-                    {intake.status === "pending" && (
-                      <Dialog open={dispatchId === intake.id} onOpenChange={v => setDispatchId(v ? intake.id : null)}>
-                        <DialogTrigger asChild>
-                          <Button size="sm" className="bg-[hsl(var(--titan-blue))] text-white shrink-0" data-testid={`button-dispatch-${intake.id}`}><Zap className="w-3 h-3 mr-1" />Dispatch</Button>
-                        </DialogTrigger>
-                        <DialogContent>
-                          <DialogHeader><DialogTitle>Dispatch Crew</DialogTitle></DialogHeader>
-                          <div className="space-y-3">
-                            <p className="text-sm text-muted-foreground">Caller: <strong>{intake.caller_name || intake.caller_phone}</strong> · {intake.address}</p>
-                            <Select value={dispatchForm.tech} onValueChange={v => setDispatchForm({ tech: v })}>
-                              <SelectTrigger><SelectValue placeholder="Select technician" /></SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="Cody Brantley">Cody Brantley</SelectItem>
-                                <SelectItem value="John">John</SelectItem>
-                                <SelectItem value="Mason">Mason</SelectItem>
-                                <SelectItem value="Clint">Clint</SelectItem>
-                                <SelectItem value="Blake">Blake</SelectItem>
-                                <SelectItem value="Blake Foster">Blake Foster</SelectItem>
-                              </SelectContent>
-                            </Select>
-                            <Button className="w-full bg-[hsl(var(--titan-red))] text-white" onClick={() => dispatch.mutate({ id: intake.id, tech: dispatchForm.tech })} disabled={!dispatchForm.tech}>Confirm Dispatch</Button>
-                          </div>
-                        </DialogContent>
-                      </Dialog>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {intake.status === "pending" && (
+                        <Dialog open={dispatchId === intake.id} onOpenChange={v => setDispatchId(v ? intake.id : null)}>
+                          <DialogTrigger asChild>
+                            <Button size="sm" className="bg-[hsl(var(--titan-blue))] text-white shrink-0" data-testid={`button-dispatch-${intake.id}`}><Zap className="w-3 h-3 mr-1" />Dispatch</Button>
+                          </DialogTrigger>
+                          <DialogContent>
+                            <DialogHeader><DialogTitle>Dispatch Crew</DialogTitle></DialogHeader>
+                            <div className="space-y-3">
+                              <p className="text-sm text-muted-foreground">Caller: <strong>{intake.caller_name || intake.caller_phone}</strong> · {intake.address}</p>
+                              <Select value={dispatchForm.tech} onValueChange={v => setDispatchForm({ tech: v })}>
+                                <SelectTrigger><SelectValue placeholder="Select technician" /></SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="Cody Brantley">Cody Brantley</SelectItem>
+                                  <SelectItem value="John">John</SelectItem>
+                                  <SelectItem value="Mason">Mason</SelectItem>
+                                  <SelectItem value="Clint">Clint</SelectItem>
+                                  <SelectItem value="Blake">Blake</SelectItem>
+                                  <SelectItem value="Blake Foster">Blake Foster</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <Button className="w-full bg-[hsl(var(--titan-red))] text-white" onClick={() => dispatch.mutate({ id: intake.id, tech: dispatchForm.tech })} disabled={!dispatchForm.tech}>Confirm Dispatch</Button>
+                            </div>
+                          </DialogContent>
+                        </Dialog>
+                      )}
+                      <DeleteIntakeBtn id={intake.id} label={intake.caller_name || intake.caller_phone} onDone={() => qc.invalidateQueries({ queryKey: ["/api/emergency-intakes"] })} />
+                    </div>
                   </div>
                 </CardContent>
               </Card>

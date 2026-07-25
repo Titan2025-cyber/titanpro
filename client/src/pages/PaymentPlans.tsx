@@ -14,8 +14,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, DollarSign, Calendar, CheckCircle, Clock, AlertTriangle, CreditCard } from "lucide-react";
+import { Plus, DollarSign, Calendar, CheckCircle, Clock, AlertTriangle, CreditCard, Trash2 } from "lucide-react";
 import type { Job, Contact } from "@shared/schema";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 const fmt$ = (n: number) => "$" + (n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -63,6 +68,12 @@ export default function PaymentPlans() {
   const activateMutation = useMutation({
     mutationFn: (planId: number) => apiRequest("PATCH", `/api/payment-plans/${planId}`, { status: "active" }).then(r => r.json()),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/payment-plans"] }); toast({ title: "Plan activated" }); },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (planId: number) => apiRequest("DELETE", `/api/payment-plans/${planId}`),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/payment-plans"] }); toast({ title: "Payment plan deleted" }); },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
   });
 
   const totalAmt = parseFloat(form.totalAmount) || 0;
@@ -195,6 +206,27 @@ export default function PaymentPlans() {
                       <Button size="sm" variant="outline" className="text-xs h-7" onClick={() => setSelectedPlan(selectedPlan?.id === plan.id ? null : plan)}>
                         {selectedPlan?.id === plan.id ? "Hide" : "Details"}
                       </Button>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button size="sm" variant="ghost" className="text-xs h-7" data-testid={`button-delete-payment-plans-${plan.id}`}>
+                            <Trash2 className="w-4 h-4 text-destructive" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Delete this payment plan?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              {job?.jobNumber ? `"${job.jobNumber}" ` : ""}This permanently removes the record and cannot be undone.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => deleteMutation.mutate(plan.id)} data-testid={`button-confirm-delete-payment-plans-${plan.id}`}>
+                              Delete
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                     </div>
                   </div>
 

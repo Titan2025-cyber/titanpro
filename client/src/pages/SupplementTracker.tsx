@@ -9,8 +9,13 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Copy, Plus, Clock, AlertTriangle, CheckCircle2, Send, FileText } from "lucide-react";
+import { Copy, Plus, Clock, AlertTriangle, CheckCircle2, Send, FileText, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 interface SupplementTracker {
   id: number; jobId: number; carrier: string; claimNumber: string;
@@ -61,6 +66,15 @@ export default function SupplementTracker() {
       setLetterText(data.letter);
       setShowLetter(true);
     },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => apiRequest(`/api/supplement-tracker/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/supplement-tracker"] });
+      toast({ title: "Supplement deleted" });
+    },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
   });
 
   const overdue = trackers.filter(t => t.status === "pending" && daysRemaining(t.deadlineDate) < 0);
@@ -197,6 +211,27 @@ export default function SupplementTracker() {
                             {t.status === "responded" && (
                               <Button size="sm" variant="outline" className="text-xs" onClick={() => updateMutation.mutate({ id: t.id, data: { status: "closed" } })}>Close</Button>
                             )}
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button size="sm" variant="ghost" className="text-xs" data-testid={`button-delete-supplement-tracker-${t.id}`}>
+                                  <Trash2 className="w-3.5 h-3.5 text-destructive" />
+                                </Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>Delete this supplement record?</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    {t.carrier ? `"${t.carrier}" ` : ""}This permanently removes the record and cannot be undone.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                  <AlertDialogAction onClick={() => deleteMutation.mutate(t.id)} data-testid={`button-confirm-delete-supplement-tracker-${t.id}`}>
+                                    Delete
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
                           </div>
                         </td>
                       </tr>

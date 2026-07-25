@@ -6,11 +6,119 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { useToast } from "@/hooks/use-toast";
 import { useState } from "react";
-import { AlertTriangle, CheckCircle, Clock, DollarSign, TrendingUp, TrendingDown, Plus, RefreshCw } from "lucide-react";
+import { AlertTriangle, CheckCircle, Clock, DollarSign, TrendingUp, TrendingDown, Plus, RefreshCw, Trash2, Pencil } from "lucide-react";
 
 const fmt = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtK = (n: number) => n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : fmt(n);
+
+const AR_EVENT_TYPES = [
+  { value: "invoice_sent", label: "Invoice Sent" },
+  { value: "follow_up_30", label: "30-Day Follow Up" },
+  { value: "follow_up_60", label: "60-Day Follow Up" },
+  { value: "follow_up_90", label: "90-Day Follow Up" },
+  { value: "paid", label: "Payment Received" },
+  { value: "disputed", label: "Disputed" },
+  { value: "denied", label: "Denied" },
+];
+
+function EditCarrierArDialog({ event, onDone }: { event: any; onDone: () => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({
+    jobId: String(event.job_id ?? event.jobId ?? ""),
+    carrier: event.carrier ?? "",
+    eventType: event.event_type ?? event.eventType ?? "invoice_sent",
+    amount: event.amount != null ? String(event.amount) : "",
+    daysOutstanding: event.days_outstanding != null ? String(event.days_outstanding) : (event.daysOutstanding != null ? String(event.daysOutstanding) : ""),
+    notes: event.notes ?? "",
+  });
+
+  const m = useMutation({
+    mutationFn: (data: any) => apiRequest("PATCH", `/api/carrier-ar/${event.id}`, data),
+    onSuccess: () => { toast({ title: "Saved" }); onDone(); setOpen(false); },
+    onError: (e: any) => toast({ title: "Save failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="icon" data-testid={`button-edit-carrier-ar-${event.id}`}>
+          <Pencil className="w-4 h-4" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Edit Carrier AR Event</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <Input placeholder="Job ID" value={form.jobId} onChange={e => setForm(f => ({ ...f, jobId: e.target.value }))} data-testid={`input-job-id-${event.id}`} />
+          <Input placeholder="Carrier name" value={form.carrier} onChange={e => setForm(f => ({ ...f, carrier: e.target.value }))} data-testid={`input-carrier-${event.id}`} />
+          <Select value={form.eventType} onValueChange={v => setForm(f => ({ ...f, eventType: v }))}>
+            <SelectTrigger data-testid={`select-event-type-${event.id}`}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {AR_EVENT_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Input placeholder="Amount" type="number" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} data-testid={`input-amount-${event.id}`} />
+          <Input placeholder="Days outstanding" type="number" value={form.daysOutstanding} onChange={e => setForm(f => ({ ...f, daysOutstanding: e.target.value }))} data-testid={`input-days-${event.id}`} />
+          <Input placeholder="Notes (optional)" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} data-testid={`input-notes-${event.id}`} />
+          <Button
+            className="w-full bg-[hsl(var(--titan-blue))] text-white"
+            onClick={() => m.mutate({
+              jobId: Number(form.jobId),
+              carrier: form.carrier,
+              eventType: form.eventType,
+              amount: Number(form.amount) || undefined,
+              daysOutstanding: Number(form.daysOutstanding) || undefined,
+              notes: form.notes || undefined,
+            })}
+            disabled={!form.jobId || !form.carrier || m.isPending}
+            data-testid={`button-save-carrier-ar-${event.id}`}
+          >
+            Save Changes
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DeleteCarrierArBtn({ id, label, onDone }: { id: number; label: string; onDone: () => void }) {
+  const { toast } = useToast();
+  const m = useMutation({
+    mutationFn: () => apiRequest("DELETE", `/api/carrier-ar/${id}`),
+    onSuccess: () => { toast({ title: "Deleted" }); onDone(); },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="icon" data-testid={`button-delete-carrier-ar-${id}`}>
+          <Trash2 className="w-4 h-4 text-destructive" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this record?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {label ? `"${label}" ` : ""}This permanently removes the record and cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => m.mutate()} data-testid={`button-confirm-delete-carrier-ar-${id}`}>
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
 
 export default function CarrierARIntelligence() {
   const qc = useQueryClient();
@@ -194,9 +302,11 @@ export default function CarrierARIntelligence() {
                   <Badge variant="outline" className="text-xs">{e.event_type.replace(/_/g, " ")}</Badge>
                   {e.notes && <span className="text-muted-foreground ml-2 text-xs">{e.notes}</span>}
                 </div>
-                <div className="text-right text-xs text-muted-foreground">
+                <div className="flex items-center gap-1 text-right text-xs text-muted-foreground">
                   {e.amount ? <span className="font-medium text-foreground mr-2">{fmt(e.amount)}</span> : null}
-                  {e.days_outstanding ? <span>{e.days_outstanding}d outstanding</span> : null}
+                  {e.days_outstanding ? <span className="mr-2">{e.days_outstanding}d outstanding</span> : null}
+                  <EditCarrierArDialog event={e} onDone={() => qc.invalidateQueries({ queryKey: ["/api/carrier-ar"] })} />
+                  <DeleteCarrierArBtn id={e.id} label={e.carrier} onDone={() => qc.invalidateQueries({ queryKey: ["/api/carrier-ar"] })} />
                 </div>
               </div>
             ))}

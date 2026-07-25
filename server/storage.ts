@@ -5,14 +5,13 @@ import BetterSqlite3 from "better-sqlite3";
 import { eq, desc } from "drizzle-orm";
 import * as schema from "@shared/schema";
 import fs from "fs";
-import path from "path";
 
 // DB file location: use DATABASE_PATH env var (set to a persistent volume path in
 // production, e.g. Railway volume mounted at /data/data.db). Falls back to a local
 // "data.db" file for development so nothing changes locally.
 const DB_PATH = process.env.DATABASE_PATH || "data.db";
 try {
-  const dir = path.dirname(DB_PATH);
+  const dir = require("path").dirname(DB_PATH);
   if (dir && dir !== "." && !fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -46,6 +45,7 @@ const db = drizzle(sqlite, { schema });
 // recent BACKUP_KEEP files (default 14) and prunes older ones.
 // Tunable via env: BACKUP_DIR, BACKUP_INTERVAL_HOURS, BACKUP_KEEP.
 // Disable entirely with BACKUP_DISABLED=1.
+const path = require("path") as typeof import("path");
 const BACKUP_DIR = process.env.BACKUP_DIR || path.join(path.dirname(DB_PATH), "backups");
 const BACKUP_KEEP = Math.max(1, parseInt(process.env.BACKUP_KEEP || "14", 10) || 14);
 const BACKUP_INTERVAL_HOURS = Math.max(1, parseInt(process.env.BACKUP_INTERVAL_HOURS || "24", 10) || 24);
@@ -1190,6 +1190,7 @@ class SqliteStorage implements IStorage {
   updateReviewRequest(id: number, data: Partial<schema.InsertReviewRequest>) {
     return db.update(schema.reviewRequests).set(data).where(eq(schema.reviewRequests.id, id)).returning().get();
   }
+  deleteReviewRequest(id: number) { db.delete(schema.reviewRequests).where(eq(schema.reviewRequests.id, id)).run(); }
 
   // Certifications
   getCertifications(employeeName?: string) {
@@ -1269,6 +1270,37 @@ sqlite.exec(`
     read INTEGER DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT ''
   );
+
+  CREATE TABLE IF NOT EXISTS consumables (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    sku TEXT,
+    category TEXT DEFAULT 'general',
+    unit TEXT DEFAULT 'each',
+    on_hand REAL DEFAULT 0,
+    reorder_point REAL DEFAULT 0,
+    unit_cost REAL DEFAULT 0,
+    vendor TEXT,
+    location TEXT,
+    notes TEXT,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT ''
+  );
+
+  CREATE TABLE IF NOT EXISTS consumable_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    consumable_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    unit_cost REAL DEFAULT 0,
+    job_id INTEGER,
+    job_cost_id INTEGER,
+    source TEXT,
+    reference TEXT,
+    entered_by TEXT,
+    balance_after REAL,
+    created_at TEXT NOT NULL DEFAULT ''
+  );
 `);
 
 // Seed job templates
@@ -1284,6 +1316,24 @@ if (tmplCount.c === 0) {
   ];
   for (const t of templates) {
     sqlite.prepare(`INSERT INTO job_templates (name, loss_type, description, default_scope, default_equipment, iicrc_protocol, estimated_days, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(t.name, t.loss_type, t.description, t.default_scope, t.default_equipment, t.iicrc_protocol, t.estimated_days, tnow);
+  }
+}
+
+// Seed a few starter consumables
+const consCount = sqlite.prepare("SELECT COUNT(*) as c FROM consumables").get() as { c: number };
+if (consCount.c === 0) {
+  const cnow = new Date().toISOString();
+  const items = [
+    { name: "Nitrile Gloves (L)", sku: "PPE-GLV-L", category: "ppe", unit: "box", on_hand: 24, reorder_point: 6, unit_cost: 8.5, vendor: "ULINE", location: "Shelf A1" },
+    { name: "6-mil Poly Sheeting (10x100)", sku: "CON-POLY-6", category: "containment", unit: "roll", on_hand: 12, reorder_point: 4, unit_cost: 34.0, vendor: "Home Depot", location: "Shelf B2" },
+    { name: "Antimicrobial (Benefect) 1 Gal", sku: "CLN-AM-1G", category: "cleaning", unit: "gallon", on_hand: 9, reorder_point: 3, unit_cost: 42.0, vendor: "Interlink", location: "Shelf C1" },
+    { name: "HEPA Filter (Air Scrubber)", sku: "DRY-HEPA", category: "drying", unit: "each", on_hand: 8, reorder_point: 2, unit_cost: 65.0, vendor: "Dri-Eaz", location: "Shelf D3" },
+    { name: "Contents Box (Large)", sku: "PKG-BOX-L", category: "packaging", unit: "each", on_hand: 40, reorder_point: 15, unit_cost: 2.25, vendor: "ULINE", location: "Shelf E1" },
+    { name: "Tyvek Suit (XL)", sku: "PPE-TYV-XL", category: "ppe", unit: "each", on_hand: 5, reorder_point: 6, unit_cost: 11.0, vendor: "ULINE", location: "Shelf A2" },
+  ];
+  for (const it of items) {
+    sqlite.prepare(`INSERT INTO consumables (name, sku, category, unit, on_hand, reorder_point, unit_cost, vendor, location, is_active, created_at) VALUES (?,?,?,?,?,?,?,?,?,1,?)`)
+      .run(it.name, it.sku, it.category, it.unit, it.on_hand, it.reorder_point, it.unit_cost, it.vendor, it.location, cnow);
   }
 }
 

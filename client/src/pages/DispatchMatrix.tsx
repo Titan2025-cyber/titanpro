@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
-import { Grid3X3, User, CheckCircle, XCircle, Clock, AlertTriangle } from "lucide-react";
+import { Grid3X3, User, CheckCircle, XCircle, Clock, AlertTriangle, Plane } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const HOURS = Array.from({ length: 13 }, (_, i) => i + 7); // 7am - 7pm
@@ -16,9 +16,21 @@ const STATUS_COLORS: Record<string, { bg: string; text: string; label: string }>
   unavailable: { bg: "bg-red-500", text: "text-white", label: "Unavailable" },
   pto: { bg: "bg-purple-400", text: "text-white", label: "PTO" },
   training: { bg: "bg-yellow-400", text: "text-gray-900", label: "Training" },
+  // Read-only overlay from approved HR time-off (not manually assignable).
+  off: { bg: "bg-amber-400", text: "text-gray-900", label: "Out" },
 };
 
-const STATUSES = Object.entries(STATUS_COLORS).map(([value, { label }]) => ({ value, label }));
+// Manually assignable statuses (excludes the read-only "off" overlay).
+const STATUSES = Object.entries(STATUS_COLORS)
+  .filter(([value]) => value !== "off")
+  .map(([value, { label }]) => ({ value, label }));
+
+// Approved time-off entry from the HR module, surfaced read-only for dispatch.
+type TimeOff = { id: number; employeeId: number; name: string; category: string; startDate: string; endDate: string; hours: number };
+const TO_CAT_LABEL: Record<string, string> = {
+  pto: "PTO", sick: "Sick", unpaid: "Unpaid", bereavement: "Bereavement",
+  jury_duty: "Jury Duty", holiday: "Holiday", other: "Time Off",
+};
 
 export default function DispatchMatrix() {
   const { toast } = useToast();
@@ -47,6 +59,26 @@ export default function DispatchMatrix() {
     queryFn: () => apiRequest("/api/jobs").then(r => r.json()),
   });
 
+  // Visible week range: Monday (selectedWeek) through Sunday (+6 days).
+  const weekEndDate = (() => {
+    const d = new Date(selectedWeek);
+    d.setDate(d.getDate() + 6);
+    return d.toISOString().slice(0, 10);
+  })();
+
+  // Approved time-off overlapping the visible week (read-only, from HR module).
+  const { data: timeOff = [] } = useQuery<TimeOff[]>({
+    queryKey: ["/api/hr/timeoff/calendar", selectedWeek, weekEndDate],
+    queryFn: () => apiRequest(`/api/hr/timeoff/calendar?start=${selectedWeek}&end=${weekEndDate}`).then(r => r.json()),
+  });
+
+  // Look up approved time-off for an employee (by name) covering a given day.
+  const timeOffFor = (empName: string, date: string): TimeOff | undefined => {
+    const n = (empName || "").trim().toLowerCase();
+    if (!n) return undefined;
+    return timeOff.find(t => t.name.trim().toLowerCase() === n && t.startDate <= date && t.endDate >= date);
+  };
+
   const createShiftMutation = useMutation({
     mutationFn: (data: any) => apiRequest("/api/shifts", { method: "POST", body: JSON.stringify(data) }).then(r => r.json()),
     onSuccess: () => {
@@ -64,6 +96,11 @@ export default function DispatchMatrix() {
 
   // Get status for an employee on a given day
   const getStatus = (empId: number, date: string) => {
+    const emp = employees.find((e: any) => e.id === empId);
+
+    // Approved HR time-off takes precedence over everything else.
+    if (emp && timeOffFor(emp.name, date)) return "off";
+
     // Check shifts table for that day/emp
     const dayShifts = shifts.filter((s: any) => {
       const shiftDate = (s.start_time || "").slice(0, 10);
@@ -72,7 +109,6 @@ export default function DispatchMatrix() {
     if (dayShifts.length > 0) return dayShifts[0].status || "on_job";
 
     // Check active jobs for assigned tech
-    const emp = employees.find((e: any) => e.id === empId);
     if (!emp) return "available";
     const hasJob = jobs.some((j: any) =>
       j.assigned_tech === emp.name &&
@@ -82,8 +118,19 @@ export default function DispatchMatrix() {
   };
 
   const handleCellClick = (empId: number, date: string) => {
+    const current = getStatus(empId, date);
+    // "off" is a read-only overlay driven by approved HR time-off — not editable here.
+    if (current === "off") {
+      const emp = employees.find((e: any) => e.id === empId);
+      const t = emp ? timeOffFor(emp.name, date) : undefined;
+      toast({
+        title: "Approved time-off",
+        description: `${emp?.name || "This tech"} is out (${t ? TO_CAT_LABEL[t.category] || "Time Off" : "Time Off"}). Manage it in HR → PTO & Time-Off.`,
+      });
+      return;
+    }
     setEditCell({ empId, day: date, hour: 8 });
-    setCellStatus(getStatus(empId, date));
+    setCellStatus(current);
   };
 
   const saveCell = () => {
@@ -105,7 +152,7 @@ export default function DispatchMatrix() {
     const today = new Date().toISOString().slice(0, 10);
     const avail = employees.filter((e: any) => getStatus(e.id, today) === "available").length;
     const onJob = employees.filter((e: any) => getStatus(e.id, today) === "on_job").length;
-    const unavail = employees.filter((e: any) => ["unavailable","pto","training"].includes(getStatus(e.id, today))).length;
+    const unavail = employees.filter((e: any) => ["unavailable","pto","training","off"].includes(getStatus(e.id, today))).length;
     return { avail, onJob, unavail };
   };
   const todayStats = getTodayStats();
@@ -178,13 +225,19 @@ export default function DispatchMatrix() {
       </div>
 
       {/* Legend */}
-      <div className="flex gap-3 flex-wrap">
+      <div className="flex gap-3 flex-wrap items-center">
         {STATUSES.map(s => (
           <div key={s.value} className="flex items-center gap-1">
             <div className={`w-3 h-3 rounded-sm ${STATUS_COLORS[s.value].bg}`} />
             <span className="text-xs text-muted-foreground">{s.label}</span>
           </div>
         ))}
+        <div className="flex items-center gap-1">
+          <div className={`w-3 h-3 rounded-sm ${STATUS_COLORS.off.bg} flex items-center justify-center`}>
+            <Plane className="w-2 h-2 text-gray-900" />
+          </div>
+          <span className="text-xs text-muted-foreground">Out (approved time-off — read-only)</span>
+        </div>
       </div>
 
       {/* Matrix */}
@@ -233,10 +286,11 @@ export default function DispatchMatrix() {
                     return (
                       <td key={date} className={`p-1 text-center ${isToday ? "bg-blue-50" : ""}`}>
                         <button
-                          className={`w-full rounded py-1 px-2 text-xs font-medium cursor-pointer transition-opacity hover:opacity-80 ${sc.bg} ${sc.text}`}
+                          className={`w-full rounded py-1 px-2 text-xs font-medium transition-opacity hover:opacity-80 ${sc.bg} ${sc.text} ${status === "off" ? "cursor-default flex items-center justify-center gap-1" : "cursor-pointer"}`}
                           onClick={() => handleCellClick(emp.id, date)}
                           data-testid={`cell-${emp.id}-${date}`}
                         >
+                          {status === "off" && <Plane className="w-2.5 h-2.5" />}
                           {sc.label}
                         </button>
                       </td>

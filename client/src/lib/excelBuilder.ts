@@ -14,7 +14,7 @@ export function buildBrandedExcel(cfg: DocConfig): void {
   // ── Summary sheet ──
   const summaryRows: any[][] = [];
   summaryRows.push(["TITAN RESTORATION LLC"]);
-  summaryRows.push(["Recover - Restore - Rebuild  |  706-922-0154  |  titanrestorationllc.com"]);
+  summaryRows.push(["Recover - Restore - Rebuild  |  706-922-0154  |  titanaugusta.pro"]);
   summaryRows.push([]);
   summaryRows.push([cfg.title]);
   if (cfg.subtitle) summaryRows.push([cfg.subtitle]);

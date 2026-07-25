@@ -1,4 +1,5 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { enqueueRequest, isQueueableMethod, isOnline } from "./offlineQueue";
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
@@ -7,7 +8,7 @@ const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 // the customer/partner portal token at window.__titanPortalToken__. We attach them
 // to every same-origin API request automatically so protected endpoints receive
 // credentials without every call site having to remember to add headers.
-function buildAuthHeaders(url: string): Record<string, string> {
+export function buildAuthHeaders(url: string): Record<string, string> {
   const headers: Record<string, string> = {};
   if (typeof window === "undefined") return headers;
   const staffTok = (window as any).__titanToken__ as string | undefined;
@@ -72,9 +73,56 @@ export async function apiRequest(
   // Merge auth headers without clobbering any caller-supplied headers.
   options.headers = { ...buildAuthHeaders(url), ...(options.headers as Record<string, string> | undefined) };
 
-  const res = await fetch(`${API_BASE}${url}`, options);
-  await throwIfResNotOk(res);
-  return res;
+  const fullUrl = `${API_BASE}${url}`;
+
+  // ── Offline-first write path ────────────────────────────────────────────────
+  // For mutating requests, if the device is offline OR the network throws, we
+  // persist the request to the durable outbox and return a synthetic "202
+  // Queued" response so the field UI shows success instead of an error. The
+  // request replays automatically (in order) when connectivity returns. Reads
+  // (GET/HEAD) are never queued — they simply fail as before when offline.
+  const queueable = isQueueableMethod(method);
+
+  if (queueable && !isOnline()) {
+    await queueWrite(fullUrl, method, options);
+    return queuedResponse();
+  }
+
+  try {
+    const res = await fetch(fullUrl, options);
+    await throwIfResNotOk(res);
+    return res;
+  } catch (err) {
+    // A network-level failure (TypeError: Failed to fetch) on a write while the
+    // browser thinks it *might* be online — queue it rather than lose it.
+    if (queueable && isNetworkError(err)) {
+      await queueWrite(fullUrl, method, options);
+      return queuedResponse();
+    }
+    throw err;
+  }
+}
+
+function isNetworkError(err: unknown): boolean {
+  // fetch() rejects with a TypeError on network failure (DNS, offline, CORS-less
+  // connection drop). HTTP error statuses do NOT reject — they're thrown by
+  // throwIfResNotOk as Error("<status>: ..."), which we deliberately do not queue.
+  return err instanceof TypeError;
+}
+
+async function queueWrite(fullUrl: string, method: string, options: RequestInit) {
+  const headers = (options.headers as Record<string, string>) || {};
+  const body = typeof options.body === "string" ? options.body : options.body ? String(options.body) : null;
+  await enqueueRequest({ url: fullUrl, method, headers, body });
+}
+
+// Synthetic response returned for a queued write so callers `.json()` cleanly
+// and mutation onSuccess handlers fire optimistically.
+function queuedResponse(): Response {
+  return new Response(JSON.stringify({ queued: true, offline: true }), {
+    status: 202,
+    headers: { "Content-Type": "application/json", "X-Titan-Queued": "1" },
+  });
 }
 
 type UnauthorizedBehavior = "returnNull" | "throw";

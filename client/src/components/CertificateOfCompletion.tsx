@@ -225,7 +225,7 @@ async function generateCertPDF(data: CertPDFData): Promise<string> {
   setFont("bold", 18, WHITE);
   doc.text("TITAN RESTORATION LLC", M, 14);
   setFont("normal", 8, WHITE);
-  doc.text("Augusta, GA  ·  706-922-0154  ·  titanrestorationllc.com", M, 20);
+  doc.text("Augusta, GA  ·  706-922-0154  ·  titanaugusta.pro", M, 20);
 
   // ── Title ────────────────────────────────────────────────────────────────
   let y = 38;
@@ -370,7 +370,7 @@ async function generateCertPDF(data: CertPDFData): Promise<string> {
   y += 5;
   setFont("normal", 7, GRAY);
   doc.text(`Document ID: ${data.documentId}  ·  Generated: ${new Date(data.signedAt).toLocaleString()}`, M, y);
-  doc.text("Titan Restoration LLC  ·  Augusta, GA  ·  706-922-0154  ·  titanrestorationllc.com", PW - M, y, { align: "right" });
+  doc.text("Titan Restoration LLC  ·  Augusta, GA  ·  706-922-0154  ·  titanaugusta.pro", PW - M, y, { align: "right" });
 
   return doc.output("datauristring");
 }
@@ -512,7 +512,7 @@ export function CertificateOfCompletion({
                 TITAN RESTORATION LLC
               </p>
               <p className="text-muted-foreground">
-                Augusta, GA · 706-922-0154 · titanrestorationllc.com
+                Augusta, GA · 706-922-0154 · titanaugusta.pro
               </p>
             </div>
             <p className="text-muted-foreground">Date: {displayDate}</p>

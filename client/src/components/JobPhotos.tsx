@@ -5,7 +5,7 @@
  */
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import { Camera, Upload, Trash2, FolderOpen, X, ZoomIn } from "lucide-react";
+import { Camera, Upload, Trash2, FolderOpen, X, ZoomIn, CloudUpload, AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Photo } from "@shared/schema";
+import { SyncChip, useJobQueue } from "@/components/SyncChip";
 
 const CATEGORIES = ["general", "before", "during", "after", "damage", "moisture", "equipment"];
 
@@ -101,6 +102,47 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
 
   const filtered = activeFilter === "all" ? phaseScoped : phaseScoped.filter(p => p.category === activeFilter);
 
+  // Offline-queued photo POSTs for this job (saved on-device, not yet synced).
+  const {
+    pending: pendingQueue,
+    pendingCount,
+    failed: failedQueue,
+    failedCount,
+    oldestPendingAt,
+    online,
+    retryFailed,
+    retryOne,
+    discardOne,
+  } = useJobQueue(jobId, "/photos");
+
+  // Parse a queued POST body into a renderable thumbnail preview.
+  const parseQueued = (q: { id: string; body: string | null; lastError?: string }) => {
+    try {
+      const b = q.body ? JSON.parse(q.body) : null;
+      if (!b || b.jobId !== jobId || !b.dataUrl) return null;
+      return {
+        id: q.id,
+        dataUrl: b.dataUrl as string,
+        category: (b.category as string) || "general",
+        caption: (b.caption as string) || "",
+        lastError: q.lastError,
+      };
+    } catch {
+      return null;
+    }
+  };
+  type PendingPhoto = { id: string; dataUrl: string; category: string; caption: string; lastError?: string };
+  const inFilter = (p: PendingPhoto) => activeFilter === "all" || p.category === activeFilter;
+
+  const pendingPhotos = pendingQueue
+    .map(parseQueued)
+    .filter((x): x is PendingPhoto => x !== null)
+    .filter(inFilter);
+  const failedPhotos = failedQueue
+    .map(parseQueued)
+    .filter((x): x is PendingPhoto => x !== null)
+    .filter(inFilter);
+
   return (
     <div className="space-y-4">
       {/* Upload bar */}
@@ -156,6 +198,34 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
         </div>
       )}
 
+      {/* Sync status — pending / failed field captures for this job */}
+      {(pendingCount > 0 || failedCount > 0 || phaseScoped.length > 0) && (
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs text-muted-foreground">
+            {phaseScoped.length > 0 ? `${phaseScoped.length} photo${phaseScoped.length === 1 ? "" : "s"}` : ""}
+          </span>
+          <div className="flex items-center gap-1.5">
+            {failedCount > 0 && (
+              <SyncChip
+                count={0}
+                failedCount={failedCount}
+                online={online}
+                onRetry={retryFailed}
+                data-testid="sync-chip-photos"
+              />
+            )}
+            {pendingCount > 0 && (
+              <SyncChip
+                count={pendingCount}
+                online={online}
+                oldestPendingAt={oldestPendingAt}
+                data-testid={failedCount > 0 ? "sync-chip-photos-pending" : "sync-chip-photos"}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Category filter pills */}
       {phaseScoped.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
@@ -184,13 +254,83 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
             <div key={i} className="aspect-square bg-muted animate-pulse rounded-lg" />
           ))}
         </div>
-      ) : filtered.length === 0 ? (
+      ) : filtered.length === 0 && pendingPhotos.length === 0 && failedPhotos.length === 0 ? (
         <div className="text-center py-10 text-muted-foreground">
           <FolderOpen className="w-10 h-10 mx-auto mb-2 opacity-30" />
           <p className="text-sm">{activeFilter === "all" ? "No photos yet — upload the first one above." : `No ${activeFilter} photos yet.`}</p>
         </div>
       ) : (
         <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+          {/* Failed (offline-queued) photos — sync failed, tap to retry */}
+          {failedPhotos.map(f => (
+            <div
+              key={f.id}
+              className="relative rounded-lg overflow-hidden border-2 border-red-400 dark:border-red-600 bg-muted aspect-square"
+              data-testid={`photo-failed-${f.id}`}
+              title={`Sync failed${f.lastError ? ` (${f.lastError})` : ""} — tap retry to try again`}
+            >
+              <img
+                src={f.dataUrl}
+                alt={f.caption || "Failed upload"}
+                className="w-full h-full object-cover opacity-50"
+              />
+              <div className="absolute inset-0 bg-red-900/20" />
+              <div className="absolute top-1.5 left-1.5">
+                <span className="inline-flex items-center gap-1 rounded-full border border-red-300 bg-red-50/95 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:border-red-700/60 dark:bg-red-950/80 dark:text-red-300">
+                  <AlertTriangle className="h-2.5 w-2.5" />Failed
+                </span>
+              </div>
+              <div className="absolute inset-0 flex items-center justify-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => retryOne(f.id)}
+                  className="inline-flex items-center gap-1 rounded-md bg-white/90 hover:bg-white px-2 py-1 text-[11px] font-medium text-red-700 shadow-sm"
+                  data-testid={`photo-retry-${f.id}`}
+                >
+                  <RefreshCw className="h-3 w-3" />Retry
+                </button>
+                <button
+                  type="button"
+                  onClick={() => discardOne(f.id)}
+                  className="inline-flex items-center rounded-md bg-white/90 hover:bg-white px-2 py-1 text-[11px] font-medium text-muted-foreground shadow-sm"
+                  data-testid={`photo-discard-${f.id}`}
+                >
+                  Discard
+                </button>
+              </div>
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5">
+                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${CATEGORY_COLORS[f.category] || "bg-gray-100 text-gray-700"}`}>
+                  {f.category}
+                </span>
+              </div>
+            </div>
+          ))}
+          {/* Pending (offline-queued) photos — saved on-device, awaiting sync */}
+          {pendingPhotos.map(pending => (
+            <div
+              key={pending.id}
+              className="relative rounded-lg overflow-hidden border border-amber-300 dark:border-amber-700/60 bg-muted aspect-square"
+              data-testid={`photo-pending-${pending.id}`}
+              title="Saved on this device — will sync when back online"
+            >
+              <img
+                src={pending.dataUrl}
+                alt={pending.caption || "Pending upload"}
+                className="w-full h-full object-cover opacity-70"
+              />
+              <div className="absolute inset-0 bg-amber-900/10" />
+              <div className="absolute top-1.5 left-1.5">
+                <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50/95 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-700/60 dark:bg-amber-950/80 dark:text-amber-300">
+                  <CloudUpload className="h-2.5 w-2.5" />Queued
+                </span>
+              </div>
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5">
+                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${CATEGORY_COLORS[pending.category] || "bg-gray-100 text-gray-700"}`}>
+                  {pending.category}
+                </span>
+              </div>
+            </div>
+          ))}
           {filtered.map(photo => (
             <div
               key={photo.id}

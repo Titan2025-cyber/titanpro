@@ -38,54 +38,56 @@
 
     --radius: 0.5rem;
 
-    /* Custom Titan tokens */
-    --titan-red: 0 76% 49%;
-    --titan-red-dark: 0 80% 42%;
-    --titan-blue: 215 74% 49%;
-    --titan-blue-dark: 215 76% 42%;
+    /* Custom Titan tokens — trued to brand logo: blue #005DAD (208°), red #D71317 (359°) */
+    --titan-red: 359 82% 47%;
+    --titan-red-dark: 359 84% 40%;
+    --titan-blue: 208 100% 34%;
+    --titan-blue-dark: 210 100% 27%;
     --sidebar-bg: 220 25% 12%;
     --sidebar-fg: 220 15% 90%;
-    --sidebar-accent: 0 76% 49%;
+    --sidebar-accent: 359 82% 47%;
     --sidebar-border: 220 20% 20%;
   }
 
   .dark {
-    --background: 220 20% 7%;
-    --foreground: 220 15% 95%;
+    /* Command Center — deep cinematic navy base */
+    --background: 222 32% 6%;
+    --foreground: 210 22% 96%;
 
-    --card: 220 20% 10%;
-    --card-foreground: 220 15% 95%;
+    --card: 220 28% 11%;
+    --card-foreground: 210 22% 96%;
 
-    --popover: 220 20% 10%;
-    --popover-foreground: 220 15% 95%;
+    --popover: 220 30% 9%;
+    --popover-foreground: 210 22% 96%;
 
-    --primary: 0 80% 56%;
+    --primary: 359 84% 56%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 215 76% 58%;
+    --secondary: 208 90% 52%;
     --secondary-foreground: 0 0% 100%;
 
-    --muted: 220 15% 18%;
-    --muted-foreground: 220 10% 60%;
+    --muted: 220 20% 16%;
+    --muted-foreground: 214 14% 66%;
 
-    --accent: 215 76% 58%;
+    --accent: 208 90% 52%;
     --accent-foreground: 0 0% 100%;
 
-    --destructive: 0 80% 50%;
+    --destructive: 359 84% 52%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 220 15% 22%;
-    --input: 220 15% 22%;
-    --ring: 0 80% 56%;
+    --border: 218 24% 20%;
+    --input: 218 24% 20%;
+    --ring: 359 84% 58%;
 
-    --titan-red: 0 80% 56%;
-    --titan-red-dark: 0 76% 49%;
-    --titan-blue: 215 76% 58%;
-    --titan-blue-dark: 215 74% 49%;
-    --sidebar-bg: 220 25% 8%;
-    --sidebar-fg: 220 15% 90%;
-    --sidebar-accent: 0 80% 56%;
-    --sidebar-border: 220 20% 15%;
+    /* dark-mode brand tints: brand hue, lifted lightness for contrast on navy */
+    --titan-red: 359 84% 60%;
+    --titan-red-dark: 359 82% 50%;
+    --titan-blue: 208 92% 58%;
+    --titan-blue-dark: 208 100% 40%;
+    --sidebar-bg: 224 38% 7%;
+    --sidebar-fg: 210 20% 92%;
+    --sidebar-accent: 359 84% 60%;
+    --sidebar-border: 220 26% 16%;
   }
 
   * {
@@ -154,3 +156,275 @@
 .print-report th { background: hsl(var(--titan-blue)); color: #fff; text-align: left; }
 .print-report th, .print-report td { border: 1px solid #d8dde3; padding: 6px 9px; font-size: 12px; }
 .print-report tr:nth-child(even) td { background: #f6f8fa; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   COMMAND CENTER — app-wide cinematic dark theme layer
+   All styles are additive and scoped to .dark so they only apply in the dark
+   Command Center theme. Every page inherits these because they target the
+   shared surfaces (body backdrop, shadcn cards, buttons, inputs, tables).
+   Respects prefers-reduced-motion.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Ambient app backdrop: deep navy + red/blue aurora + faint grid ──────── */
+.dark body {
+  background-color: hsl(222 32% 6%);
+  background-image:
+    radial-gradient(1100px 620px at 82% -8%, hsl(208 100% 38% / 0.18), transparent 60%),
+    radial-gradient(1000px 560px at -6% 108%, hsl(359 84% 44% / 0.16), transparent 60%),
+    radial-gradient(760px 520px at 50% 50%, hsl(220 40% 14% / 0.55), transparent 70%),
+    linear-gradient(180deg, hsl(222 34% 7%), hsl(224 40% 5%));
+  background-attachment: fixed;
+}
+
+/* Subtle control-room grid overlay behind all content */
+.dark #root::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(hsl(208 70% 60% / 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(208 70% 60% / 0.05) 1px, transparent 1px);
+  background-size: 46px 46px;
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 30%, #000 40%, transparent 100%);
+          mask-image: radial-gradient(ellipse 80% 70% at 50% 30%, #000 40%, transparent 100%);
+}
+.dark #root > * { position: relative; z-index: 1; }
+
+/* ── Glass cards — target shadcn Card (rounded-lg border bg-card) globally ── */
+.dark .bg-card,
+.dark [class*="rounded-lg"].border.bg-card,
+.dark .rounded-xl.border.bg-card {
+  background:
+    linear-gradient(180deg, hsl(220 28% 13% / 0.92), hsl(222 30% 10% / 0.92));
+  border-color: hsl(216 30% 26% / 0.7);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow:
+    0 1px 0 0 hsl(210 40% 90% / 0.04) inset,
+    0 18px 40px -24px hsl(222 60% 2% / 0.9);
+  transition: transform 0.22s cubic-bezier(.2,.7,.2,1),
+              box-shadow 0.22s ease, border-color 0.22s ease;
+}
+/* Gentle hover lift for cards that already indicate interactivity */
+.dark .bg-card.cursor-pointer:hover,
+.dark a .bg-card:hover,
+.dark .bg-card.hover\:shadow-md:hover,
+.dark .bg-card.hover\:shadow-lg:hover,
+.dark .bg-card.transition-shadow:hover,
+.dark .bg-card.transition-all:hover {
+  transform: translateY(-2px);
+  border-color: hsl(var(--titan-red) / 0.45);
+  box-shadow:
+    0 1px 0 0 hsl(210 40% 90% / 0.06) inset,
+    0 0 0 1px hsl(var(--titan-red) / 0.14),
+    0 24px 50px -22px hsl(359 70% 12% / 0.55);
+}
+
+/* ── Primary buttons: red→blue gradient with sheen ──────────────────────── */
+.dark button.bg-primary,
+.dark .bg-primary:not(input):not(textarea):not(.badge-new):not([class*="badge"]) {
+  background-image: linear-gradient(120deg, hsl(var(--titan-red)), hsl(var(--titan-blue)));
+  box-shadow: 0 8px 22px -12px hsl(var(--titan-red) / 0.7);
+  transition: transform 0.16s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+.dark button.bg-primary:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px -12px hsl(var(--titan-blue) / 0.7);
+}
+.dark button.bg-primary:active { transform: translateY(0); }
+
+/* ── Inputs / selects: glassy fields with focus glow ────────────────────── */
+.dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+.dark textarea,
+.dark select,
+.dark [role="combobox"] {
+  background-color: hsl(220 26% 9% / 0.85) !important;
+  border-color: hsl(216 28% 26%);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
+}
+.dark input:focus,
+.dark input:focus-visible,
+.dark textarea:focus,
+.dark textarea:focus-visible,
+.dark select:focus,
+.dark [role="combobox"]:focus {
+  border-color: hsl(var(--titan-blue) / 0.7) !important;
+  box-shadow: 0 0 0 3px hsl(var(--titan-blue) / 0.2) !important;
+  outline: none;
+}
+
+/* ── Themed scrollbars ──────────────────────────────────────────────────── */
+.dark ::-webkit-scrollbar { width: 10px; height: 10px; }
+.dark ::-webkit-scrollbar-track { background: hsl(222 32% 6%); }
+.dark ::-webkit-scrollbar-thumb {
+  background: linear-gradient(hsl(216 24% 24%), hsl(216 24% 18%));
+  border-radius: 8px;
+  border: 2px solid hsl(222 32% 6%);
+}
+.dark ::-webkit-scrollbar-thumb:hover { background: hsl(var(--titan-red-dark)); }
+.dark * { scrollbar-color: hsl(216 24% 24%) hsl(222 32% 6%); }
+
+/* ── Tables: subtle glow header + row hover ─────────────────────────────── */
+.dark table thead th { color: hsl(214 20% 78%); }
+.dark table tbody tr { transition: background-color 0.14s ease; }
+.dark table tbody tr:hover { background-color: hsl(208 70% 50% / 0.07); }
+
+/* ── Motion: page fade-in + reusable helpers ────────────────────────────── */
+@keyframes tpFadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes tpGlowPulse {
+  0%, 100% { opacity: 0.65; }
+  50%      { opacity: 1; }
+}
+.dark main > * { animation: tpFadeUp 0.42s cubic-bezier(.2,.7,.2,1) both; }
+
+/* Accent glow utility (add className="tp-glow" to emphasize an element) */
+.tp-glow { text-shadow: 0 0 18px hsl(var(--titan-blue) / 0.55); }
+.tp-glow-red { text-shadow: 0 0 18px hsl(var(--titan-red) / 0.55); }
+
+/* Gradient text utility for headings/KPIs (className="tp-gradient-text") */
+.tp-gradient-text {
+  background: linear-gradient(120deg, hsl(var(--titan-red)), hsl(var(--titan-blue)));
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+}
+
+/* ── Titan brand treatments ─────────────────────────────────────────────── */
+
+/* Brand gradient ring around the logo badge (className="tp-logo-ring") */
+.tp-logo-ring {
+  position: relative;
+  border-radius: 9999px;
+  padding: 2px;
+  background: linear-gradient(135deg, hsl(var(--titan-blue)), hsl(var(--titan-red)));
+  box-shadow:
+    0 0 0 1px hsl(var(--titan-blue) / 0.25),
+    0 6px 20px -8px hsl(var(--titan-blue) / 0.6),
+    0 6px 20px -10px hsl(var(--titan-red) / 0.5);
+}
+.tp-logo-ring > * { border-radius: 9999px; display: block; }
+
+/* Animated shimmer variant for the logo ring (adds slow rotation of glow) */
+@keyframes tpRingSpin { to { transform: rotate(360deg); } }
+.tp-logo-ring.tp-logo-ring--live::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 9999px;
+  background: conic-gradient(from 0deg,
+    hsl(var(--titan-blue) / 0.0) 0deg,
+    hsl(var(--titan-blue) / 0.55) 90deg,
+    hsl(var(--titan-red) / 0.55) 200deg,
+    hsl(var(--titan-red) / 0.0) 320deg);
+  filter: blur(6px);
+  z-index: -1;
+  animation: tpRingSpin 6s linear infinite;
+}
+
+/* Faint Titan emblem watermark for hero/empty-state corners.
+   Set as a background on a positioned element; uses currentColor-ish tint. */
+.tp-watermark {
+  position: absolute;
+  pointer-events: none;
+  opacity: 0.05;
+  z-index: 0;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+}
+
+/* Branded page header: gradient eyebrow bar + gradient underline rule */
+.tp-page-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: hsl(var(--titan-blue));
+}
+.tp-page-eyebrow::before {
+  content: "";
+  width: 22px; height: 3px; border-radius: 3px;
+  background: linear-gradient(90deg, hsl(var(--titan-red)), hsl(var(--titan-blue)));
+}
+
+/* Brand gradient divider / accent rule (className="tp-rule") */
+.tp-rule {
+  height: 3px; border: 0; border-radius: 3px;
+  background: linear-gradient(90deg,
+    hsl(var(--titan-red)), hsl(var(--titan-blue)) 55%, transparent);
+}
+
+/* Left accent bar for section headings (className="tp-accent-bar") */
+.tp-accent-bar {
+  border-left: 3px solid transparent;
+  border-image: linear-gradient(180deg, hsl(var(--titan-red)), hsl(var(--titan-blue))) 1;
+  padding-left: 0.75rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dark main > * { animation: none; }
+  .dark .bg-card { transition: none; }
+  .dark #root::before { display: none; }
+  .tp-logo-ring.tp-logo-ring--live::after { animation: none; }
+}
+
+/* ── Cinematic depth & lighting (Pillar 2) ──────────────────────────────────
+   Additive utility layer. Dark "Command Center" theme is tuned first; light
+   mode is deliberately near-invisible so contrast/AA is preserved. */
+
+/* Faint radial ambient glow behind hero regions (Titan blue, very low alpha).
+   Place as an absolutely-positioned background layer inside a relative parent. */
+.titan-glow {
+  position: absolute;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(60% 70% at 20% 0%, hsl(var(--titan-blue) / 0.10), transparent 70%),
+    radial-gradient(55% 65% at 90% 10%, hsl(var(--titan-red) / 0.06), transparent 70%);
+}
+.dark .titan-glow {
+  background:
+    radial-gradient(60% 70% at 20% 0%, hsl(var(--titan-blue) / 0.22), transparent 70%),
+    radial-gradient(55% 65% at 90% 10%, hsl(var(--titan-red) / 0.14), transparent 70%);
+}
+
+/* Elevated, lit card: subtle blue→red gradient border at low alpha, an inner
+   top highlight, and a deeper drop shadow. Text contrast is unchanged (the
+   treatment only affects border/shadow/inset highlight, never text color). */
+.titan-card-lit {
+  position: relative;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(hsl(var(--card)), hsl(var(--card))) padding-box,
+    linear-gradient(135deg, hsl(var(--titan-blue) / 0.35), hsl(var(--titan-red) / 0.30)) border-box;
+  box-shadow:
+    inset 0 1px 0 0 hsl(0 0% 100% / 0.06),
+    0 10px 30px -14px hsl(var(--titan-blue) / 0.35),
+    0 6px 18px -12px rgb(0 0 0 / 0.35);
+}
+.dark .titan-card-lit {
+  box-shadow:
+    inset 0 1px 0 0 hsl(0 0% 100% / 0.08),
+    0 14px 40px -16px hsl(var(--titan-blue) / 0.55),
+    0 8px 22px -12px rgb(0 0 0 / 0.6);
+}
+
+/* Elevation scale via box-shadow (className="elev-1|elev-2|elev-3") */
+.elev-1 { box-shadow: 0 1px 2px rgb(0 0 0 / 0.10), 0 1px 3px -1px rgb(0 0 0 / 0.12); }
+.elev-2 { box-shadow: 0 4px 10px -4px rgb(0 0 0 / 0.18), 0 2px 6px -2px rgb(0 0 0 / 0.14); }
+.elev-3 { box-shadow: 0 18px 40px -18px rgb(0 0 0 / 0.35), 0 8px 20px -10px rgb(0 0 0 / 0.25); }
+.dark .elev-1 { box-shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 1px 3px -1px rgb(0 0 0 / 0.5); }
+.dark .elev-2 { box-shadow: 0 6px 16px -6px rgb(0 0 0 / 0.55), 0 3px 8px -3px rgb(0 0 0 / 0.45); }
+.dark .elev-3 { box-shadow: 0 22px 50px -20px rgb(0 0 0 / 0.7), 0 10px 24px -12px rgb(0 0 0 / 0.55); }
+
+@media (prefers-reduced-motion: reduce) {
+  /* depth classes are static — nothing to disable, listed for clarity */
+}

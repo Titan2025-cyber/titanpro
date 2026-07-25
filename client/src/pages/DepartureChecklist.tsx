@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { UserSelect } from "@/components/UserSelect";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,10 +8,15 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { ClipboardCheck, CheckCircle, AlertTriangle, Plus } from "lucide-react";
+import { ClipboardCheck, CheckCircle, AlertTriangle, Plus, Trash2, Pencil } from "lucide-react";
 
-const TEAM = ["Cody Brantley", "John", "Mason", "Clint", "Blake", "Blake Foster"];
 
 const CHECKLIST_TEMPLATES: Record<string, { label: string; required: boolean }[]> = {
   water: [
@@ -64,6 +70,114 @@ const CHECKLIST_TEMPLATES: Record<string, { label: string; required: boolean }[]
   ],
 };
 
+function EditDepartureChecklistDialog({ checklist, jobs, onDone }: { checklist: any; jobs: any[]; onDone: () => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [employeeName, setEmployeeName] = useState(checklist.employee_name ?? "");
+  const parsedItems: { label: string; required: boolean; checked: boolean }[] = (() => {
+    try { return JSON.parse(checklist.items || "[]"); } catch { return []; }
+  })();
+  const [editItems, setEditItems] = useState(parsedItems);
+
+  const m = useMutation({
+    mutationFn: (data: any) => apiRequest("PATCH", `/api/departure-checklists/${checklist.id}`, data),
+    onSuccess: () => {
+      toast({ title: "Checklist updated" });
+      onDone();
+      setOpen(false);
+    },
+    onError: (e: any) => toast({ title: "Save failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
+  function toggleEditItem(index: number) {
+    setEditItems(prev => prev.map((item, i) => i === index ? { ...item, checked: !item.checked } : item));
+  }
+
+  const requiredDone = editItems.filter(i => i.required && i.checked).length;
+  const requiredTotal = editItems.filter(i => i.required).length;
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="icon" data-testid={`button-edit-departure-checklists-${checklist.id}`}>
+          <Pencil className="w-4 h-4" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
+        <DialogHeader><DialogTitle>Edit Departure Checklist</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label>Tech Name</Label>
+            <UserSelect
+              value={employeeName}
+              onChange={setEmployeeName}
+              roles={["tech"]}
+              placeholder="Select tech..."
+              testId={`select-employee-${checklist.id}`}
+            />
+          </div>
+          {editItems.length > 0 && (
+            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+              {editItems.map((item, i) => (
+                <div key={i} className="flex items-start gap-3 p-2 rounded border border-border">
+                  <Checkbox id={`edit-item-${checklist.id}-${i}`} checked={item.checked} onCheckedChange={() => toggleEditItem(i)} className="mt-0.5" data-testid={`input-item-${checklist.id}-${i}`} />
+                  <label htmlFor={`edit-item-${checklist.id}-${i}`} className="text-sm cursor-pointer flex-1">
+                    {item.label}{item.required && <span className="text-red-500 ml-1">*</span>}
+                  </label>
+                </div>
+              ))}
+            </div>
+          )}
+          <Button
+            className="w-full"
+            disabled={m.isPending}
+            data-testid={`button-save-departure-checklists-${checklist.id}`}
+            onClick={() => m.mutate({
+              employeeName,
+              items: editItems,
+              allRequiredComplete: requiredDone === requiredTotal,
+            })}
+          >
+            Save Changes
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DeleteDepartureChecklistBtn({ id, label, onDone }: { id: number; label: string; onDone: () => void }) {
+  const { toast } = useToast();
+  const m = useMutation({
+    mutationFn: () => apiRequest("DELETE", `/api/departure-checklists/${id}`),
+    onSuccess: () => { toast({ title: "Deleted" }); onDone(); },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="icon" data-testid={`button-delete-departure-checklists-${id}`}>
+          <Trash2 className="w-4 h-4 text-destructive" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this record?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {label ? `"${label}" ` : ""}This permanently removes the record and cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => m.mutate()} data-testid={`button-confirm-delete-departure-checklists-${id}`}>
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 export default function DepartureChecklist() {
   const { toast } = useToast();
   const [selectedJob, setSelectedJob] = useState("");
@@ -103,6 +217,11 @@ export default function DepartureChecklist() {
 
   const recentChecklists = allChecklists.slice(0, 10);
 
+  function invalidateChecklists() {
+    queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/departure-checklists"] });
+  }
+
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
       <div>
@@ -126,10 +245,13 @@ export default function DepartureChecklist() {
             </div>
             <div>
               <Label>Tech Name</Label>
-              <Select value={selectedEmployee} onValueChange={setSelectedEmployee}>
-                <SelectTrigger data-testid="select-employee"><SelectValue placeholder="Select tech..." /></SelectTrigger>
-                <SelectContent>{TEAM.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
-              </Select>
+              <UserSelect
+                value={selectedEmployee}
+                onChange={setSelectedEmployee}
+                roles={["tech"]}
+                placeholder="Select tech..."
+                testId="select-employee"
+              />
             </div>
 
             {items.length > 0 && (
@@ -207,6 +329,10 @@ export default function DepartureChecklist() {
                             <Badge className="bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400 text-xs">Partial</Badge>
                           )}
                           <p className="text-xs text-muted-foreground mt-0.5">{c.created_at ? new Date(c.created_at).toLocaleDateString() : ""}</p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <EditDepartureChecklistDialog checklist={c} jobs={jobs} onDone={invalidateChecklists} />
+                          <DeleteDepartureChecklistBtn id={c.id} label={c.employee_name} onDone={invalidateChecklists} />
                         </div>
                       </div>
                     </div>

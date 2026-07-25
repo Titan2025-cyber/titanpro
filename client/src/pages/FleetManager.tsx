@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { UserSelect } from "@/components/UserSelect";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -294,7 +295,7 @@ export default function FleetManager() {
               <div><Label>Color</Label><Input value={vForm.color} onChange={e => setVForm((f: any) => ({ ...f, color: e.target.value }))} /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div><Label>Assigned To</Label><Input value={vForm.assignedTo} onChange={e => setVForm((f: any) => ({ ...f, assignedTo: e.target.value }))} placeholder="John, Mason..." /></div>
+              <div><Label>Assigned To</Label><UserSelect value={vForm.assignedTo} onChange={v => setVForm((f: any) => ({ ...f, assignedTo: v }))} placeholder="Select driver" allowUnassigned testId="select-fleet-assigned" /></div>
               <div><Label>Current Mileage</Label><Input type="number" value={vForm.currentMileage} onChange={e => setVForm((f: any) => ({ ...f, currentMileage: parseInt(e.target.value) }))} /></div>
             </div>
             <div>

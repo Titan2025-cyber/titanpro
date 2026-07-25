@@ -7,14 +7,23 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useState } from "react";
-import { Plus, AlertTriangle, CheckCircle, Thermometer, Droplets, Activity, TrendingDown } from "lucide-react";
+import { Plus, AlertTriangle, CheckCircle, Thermometer, Droplets, Activity, TrendingDown, Pencil, Trash2 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 export default function IoTDryingDashboard() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [showAddSensor, setShowAddSensor] = useState(false);
   const [showAddReading, setShowAddReading] = useState<number | null>(null);
   const [showPrediction, setShowPrediction] = useState<number | null>(null);
+  const [editingSensorId, setEditingSensorId] = useState<number | null>(null);
   const [sensorForm, setSensorForm] = useState({ jobId: "", sensorId: "", brand: "manual", location: "", material: "drywall", targetWme: "16" });
+  const [editSensorForm, setEditSensorForm] = useState({ jobId: "", sensorId: "", brand: "manual", location: "", material: "drywall", targetWme: "16" });
   const [readingForm, setReadingForm] = useState({ wme: "", tempF: "", rhPct: "" });
   const [prediction, setPrediction] = useState<any>(null);
 
@@ -29,10 +38,36 @@ export default function IoTDryingDashboard() {
     mutationFn: (id: number) => apiRequest(`/api/iot-sensors/${id}`, { method: "DELETE" }).then(r => r.json()),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/iot-sensors"] }),
   });
+  const updateSensor = useMutation({
+    mutationFn: ({ id, data }: any) => apiRequest(`/api/iot-sensors/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).then(r => r.json()),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/iot-sensors"] });
+      setEditingSensorId(null);
+      toast({ title: "Sensor updated" });
+    },
+    onError: (e: any) => toast({ title: "Update failed", description: String(e?.message || e), variant: "destructive" }),
+  });
   const addReading = useMutation({
     mutationFn: ({ sensorId, jobId, data }: any) => apiRequest("/api/iot-readings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sensorId, jobId, ...data }) }).then(r => r.json()),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/iot-readings"] }); setShowAddReading(null); setReadingForm({ wme: "", tempF: "", rhPct: "" }); },
   });
+  const deleteReading = useMutation({
+    mutationFn: (id: number) => apiRequest(`/api/iot-readings/${id}`, { method: "DELETE" }).then(r => r.json()),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/iot-readings"] }); toast({ title: "Reading deleted" }); },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
+  const openEditSensor = (sensor: any) => {
+    setEditSensorForm({
+      jobId: sensor.job_id != null ? String(sensor.job_id) : "",
+      sensorId: sensor.sensor_id || "",
+      brand: sensor.brand || "manual",
+      location: sensor.location || "",
+      material: sensor.material || "drywall",
+      targetWme: sensor.target_wme != null ? String(sensor.target_wme) : "16",
+    });
+    setEditingSensorId(sensor.id);
+  };
 
   const fetchPrediction = async (sensorId: number) => {
     const data = await apiRequest(`/api/iot-sensors/${sensorId}/predict`).then(r => r.json());
@@ -158,9 +193,32 @@ export default function IoTDryingDashboard() {
                         <div className="h-2 bg-muted rounded-full overflow-hidden">
                           <div className={`h-full rounded-full transition-all ${isAlert ? "bg-red-500" : isDry ? "bg-green-500" : "bg-[hsl(var(--titan-blue))]"}`} style={{ width: `${isDry ? 100 : Math.min(100, (1 - (latest.wme - sensor.target_wme) / Math.max(latest.wme, 1)) * 100)}%` }} />
                         </div>
-                        <div className="flex justify-between text-xs text-muted-foreground">
+                        <div className="flex justify-between items-center text-xs text-muted-foreground">
                           <span>{history.length} readings</span>
-                          <span>Last: {new Date(latest.reading_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</span>
+                          <div className="flex items-center gap-1">
+                            <span>Last: {new Date(latest.reading_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</span>
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button variant="ghost" size="icon" className="h-5 w-5" data-testid={`button-delete-iot-readings-${latest.id}`}>
+                                  <Trash2 className="w-3 h-3 text-destructive" />
+                                </Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>Delete this reading?</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    Deletes the most recent reading ({latest.wme}% WME) for {sensor.location}. This cannot be undone.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                  <AlertDialogAction onClick={() => deleteReading.mutate(latest.id)} data-testid={`button-confirm-delete-iot-readings-${latest.id}`}>
+                                    Delete
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          </div>
                         </div>
                       </div>
                       {latest.temp_f && <div className="flex gap-4 text-xs text-muted-foreground"><span><Thermometer className="w-3 h-3 inline" /> {latest.temp_f}°F</span>{latest.rh_pct && <span><Droplets className="w-3 h-3 inline" /> {latest.rh_pct}% RH</span>}</div>}
@@ -186,6 +244,7 @@ export default function IoTDryingDashboard() {
                       </DialogContent>
                     </Dialog>
                     <Button variant="outline" size="sm" onClick={() => fetchPrediction(sensor.id)} data-testid={`button-predict-${sensor.id}`}><TrendingDown className="w-3 h-3 mr-1" />Predict</Button>
+                    <Button variant="outline" size="sm" onClick={() => openEditSensor(sensor)} data-testid={`button-edit-iot-sensors-${sensor.id}`}><Pencil className="w-3 h-3" /></Button>
                     <Button variant="outline" size="sm" onClick={() => deleteSensor.mutate(sensor.id)} className="text-red-500 hover:text-red-700" data-testid={`button-delete-sensor-${sensor.id}`}>✕</Button>
                   </div>
                 </CardContent>
@@ -226,6 +285,52 @@ export default function IoTDryingDashboard() {
               )}
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Sensor Dialog */}
+      <Dialog open={editingSensorId !== null} onOpenChange={v => { if (!v) setEditingSensorId(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Edit Moisture Sensor</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <Input placeholder="Job ID" value={editSensorForm.jobId} onChange={e => setEditSensorForm(f => ({ ...f, jobId: e.target.value }))} data-testid={`input-jobId-${editingSensorId}`} />
+            <Input placeholder="Sensor ID / serial number" value={editSensorForm.sensorId} onChange={e => setEditSensorForm(f => ({ ...f, sensorId: e.target.value }))} data-testid={`input-sensorId-${editingSensorId}`} />
+            <Input placeholder="Location (e.g. Kitchen Wall North)" value={editSensorForm.location} onChange={e => setEditSensorForm(f => ({ ...f, location: e.target.value }))} data-testid={`input-location-${editingSensorId}`} />
+            <div className="grid grid-cols-2 gap-2">
+              <Select value={editSensorForm.brand} onValueChange={v => setEditSensorForm(f => ({ ...f, brand: v }))}>
+                <SelectTrigger data-testid={`input-brand-${editingSensorId}`}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="manual">Manual Entry</SelectItem>
+                  <SelectItem value="tramex">Tramex</SelectItem>
+                  <SelectItem value="omnisense">Omnisense DriFi</SelectItem>
+                  <SelectItem value="govee">Govee Pro</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={editSensorForm.material} onValueChange={v => setEditSensorForm(f => ({ ...f, material: v }))}>
+                <SelectTrigger data-testid={`input-material-${editingSensorId}`}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="drywall">Drywall</SelectItem>
+                  <SelectItem value="subfloor">Subfloor</SelectItem>
+                  <SelectItem value="concrete">Concrete</SelectItem>
+                  <SelectItem value="wood">Wood</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">Target WME % (IICRC S500 — default 16% for drywall)</p>
+              <Input type="number" step="0.5" value={editSensorForm.targetWme} onChange={e => setEditSensorForm(f => ({ ...f, targetWme: e.target.value }))} data-testid={`input-targetWme-${editingSensorId}`} />
+            </div>
+            <Button
+              className="w-full bg-[hsl(var(--titan-blue))] text-white"
+              onClick={() => editingSensorId !== null && updateSensor.mutate({ id: editingSensorId, data: { jobId: Number(editSensorForm.jobId), sensorId: editSensorForm.sensorId, brand: editSensorForm.brand, location: editSensorForm.location, material: editSensorForm.material, targetWme: Number(editSensorForm.targetWme) } })}
+              disabled={!editSensorForm.jobId || !editSensorForm.sensorId || !editSensorForm.location || updateSensor.isPending}
+              data-testid={`button-save-iot-sensors-${editingSensorId}`}
+            >
+              {updateSensor.isPending ? "Saving..." : "Save Changes"}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

@@ -359,11 +359,26 @@ License: [License Number] | Augusta, GA
 
   app.patch("/api/supplement-tracker/:id", (req, res) => {
     try {
-      const fields = req.body;
-      const now = new Date().toISOString();
-      const sets = Object.keys(fields).map(k => `${k.replace(/([A-Z])/g, '_$1').toLowerCase()} = ?`).join(", ");
-      sqlite.prepare(`UPDATE supplement_trackers SET ${sets}, created_at = created_at WHERE id = ?`)
-        .run(...Object.values(fields), req.params.id);
+      const fields = req.body || {};
+      // Whitelist columns against the actual table schema so an attacker can't
+      // inject arbitrary column names (or SQL) through JSON keys.
+      const validCols = new Set(
+        (sqlite.prepare("PRAGMA table_info(supplement_trackers)").all() as any[]).map((c: any) => c.name)
+      );
+      const setCols: string[] = [];
+      const vals: any[] = [];
+      for (const k of Object.keys(fields)) {
+        const col = k.replace(/([A-Z])/g, "_$1").toLowerCase();
+        if (col === "id" || col === "created_at") continue; // never allow overwriting these
+        if (!validCols.has(col)) continue;                  // skip unknown columns
+        setCols.push(`${col} = ?`);
+        vals.push((fields as any)[k]);
+      }
+      if (setCols.length === 0) {
+        return res.json(sqlite.prepare("SELECT * FROM supplement_trackers WHERE id = ?").get(req.params.id));
+      }
+      sqlite.prepare(`UPDATE supplement_trackers SET ${setCols.join(", ")} WHERE id = ?`)
+        .run(...vals, req.params.id);
       res.json(sqlite.prepare("SELECT * FROM supplement_trackers WHERE id = ?").get(req.params.id));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });

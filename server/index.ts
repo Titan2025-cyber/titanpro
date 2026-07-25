@@ -66,9 +66,6 @@ const apiLimiter = rateLimit({
 });
 app.use("/api/auth/login", authLimiter);
 app.use("/api/auth/change-password", authLimiter);
-// 2FA code-entry endpoints get the same brute-force cap as password login.
-app.use("/api/auth/2fa/verify", authLimiter);
-app.use("/api/auth/2fa/setup/verify", authLimiter);
 app.use("/api/", apiLimiter);
 
 // Gzip/deflate every response (HTML, JS, CSS, JSON API payloads).

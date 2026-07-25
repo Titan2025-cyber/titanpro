@@ -1,4 +1,5 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, Fragment } from "react";
+import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -18,7 +19,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import { Lock, FileText, HandshakeIcon, DollarSign, TrendingUp, TrendingDown, Wallet, X, Download, Printer } from "lucide-react";
+import { Lock, FileText, HandshakeIcon, DollarSign, TrendingUp, TrendingDown, Wallet, X, Download, Printer, ChevronRight, ChevronDown, ExternalLink } from "lucide-react";
 
 function fmt(n: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
@@ -132,9 +133,116 @@ const DIVISION_META: Record<string, { label: string; color: string; bg: string }
   unassigned: { label: "Unassigned", color: "#6b7280", bg: "rgba(107,114,128,0.08)" },
 };
 
+// Expandable line-item detail for one period bucket. Fetches the invoices,
+// payments, costs, and settlements that rolled up into the period, with links
+// to open the underlying job for review/editing.
+function PeriodDetail({ periodStart, groupBy, label }: { periodStart: string; groupBy: "week" | "month"; label: string }) {
+  const { data, isLoading } = useQuery<any>({
+    queryKey: ["/api/reports/weekly-billing/detail", periodStart, groupBy],
+    queryFn: async () => {
+      const params = new URLSearchParams({ periodStart, groupBy });
+      const r = await apiRequest("GET", `/api/reports/weekly-billing/detail?${params.toString()}`);
+      return r.json();
+    },
+  });
+
+  if (isLoading) return <div className="h-16 bg-muted/50 rounded animate-pulse" />;
+  if (!data) return <p className="text-sm text-muted-foreground">Couldn't load details.</p>;
+
+  const sections: { title: string; rows: any[]; render: (r: any) => JSX.Element }[] = [
+    {
+      title: `Billed — invoices (${data.billed.length})`,
+      rows: data.billed,
+      render: (r) => (
+        <div key={`b-${r.id}`} className="flex items-center justify-between py-1 text-sm" data-testid={`detail-billed-${r.id}`}>
+          <span className="flex items-center gap-2">
+            <span className="font-medium">{r.invoiceNumber || `Invoice #${r.id}`}</span>
+            <span className="text-muted-foreground">{r.contactName || "—"}</span>
+            {r.jobId && <Link href={`/jobs/${r.jobId}`} className="inline-flex items-center gap-0.5 text-[hsl(var(--titan-blue))] hover:underline" data-testid={`detail-billed-link-${r.id}`}>{r.jobNumber || "job"}<ExternalLink className="w-3 h-3" /></Link>}
+          </span>
+          <span className="font-semibold">{fmt(r.total)}</span>
+        </div>
+      ),
+    },
+    {
+      title: `Brought In — payments (${data.collected.length})`,
+      rows: data.collected,
+      render: (r) => (
+        <div key={`c-${r.id}`} className="flex items-center justify-between py-1 text-sm" data-testid={`detail-collected-${r.id}`}>
+          <span className="flex items-center gap-2">
+            <span className="text-muted-foreground">{r.method || "payment"}</span>
+            {r.jobId && <Link href={`/jobs/${r.jobId}`} className="inline-flex items-center gap-0.5 text-[hsl(var(--titan-blue))] hover:underline">{r.jobNumber || "job"}<ExternalLink className="w-3 h-3" /></Link>}
+          </span>
+          <span className="font-semibold text-green-600 dark:text-green-400">{fmt(r.amount)}</span>
+        </div>
+      ),
+    },
+    {
+      title: `Cost — job costs (${data.costs.length})`,
+      rows: data.costs,
+      render: (r) => (
+        <div key={`ct-${r.id}`} className="flex items-center justify-between py-1 text-sm" data-testid={`detail-cost-${r.id}`}>
+          <span className="flex items-center gap-2">
+            <span className="text-muted-foreground">{r.category || r.description || "cost"}</span>
+            {r.jobId && <Link href={`/jobs/${r.jobId}`} className="inline-flex items-center gap-0.5 text-[hsl(var(--titan-blue))] hover:underline">{r.jobNumber || "job"}<ExternalLink className="w-3 h-3" /></Link>}
+          </span>
+          <span className="font-semibold text-orange-600 dark:text-orange-400">{fmt(r.total)}</span>
+        </div>
+      ),
+    },
+    {
+      title: `Settled — supplements (${data.settled.length})`,
+      rows: data.settled,
+      render: (r) => (
+        <div key={`s-${r.id}`} className="flex items-center justify-between py-1 text-sm" data-testid={`detail-settled-${r.id}`}>
+          <span className="flex items-center gap-2">
+            <Badge variant="outline" className="text-xs">{r.status}</Badge>
+            {r.jobId && <Link href={`/jobs/${r.jobId}`} className="inline-flex items-center gap-0.5 text-[hsl(var(--titan-blue))] hover:underline">{r.jobNumber || "job"}<ExternalLink className="w-3 h-3" /></Link>}
+          </span>
+          <span className="font-semibold text-[hsl(var(--titan-blue))]">{fmt(r.amountApproved)}</span>
+        </div>
+      ),
+    },
+    {
+      title: `Credit Memos (${data.creditMemos.length})`,
+      rows: data.creditMemos,
+      render: (r) => (
+        <div key={`cm-${r.id}`} className="flex items-center justify-between py-1 text-sm" data-testid={`detail-creditmemo-${r.id}`}>
+          <span className="flex items-center gap-2">
+            {r.jobId && <Link href={`/jobs/${r.jobId}`} className="inline-flex items-center gap-0.5 text-[hsl(var(--titan-blue))] hover:underline">{r.jobNumber || "job"}<ExternalLink className="w-3 h-3" /></Link>}
+          </span>
+          <span className="font-semibold text-red-600 dark:text-red-400">{fmt(r.amount)}</span>
+        </div>
+      ),
+    },
+  ];
+
+  const nonEmpty = sections.filter((s) => s.rows.length > 0);
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs font-semibold text-muted-foreground">Details for {label}</p>
+      {nonEmpty.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No line items in this period.</p>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-x-8 gap-y-4">
+          {nonEmpty.map((s) => (
+            <div key={s.title}>
+              <p className="text-xs font-semibold mb-1 pb-1 border-b">{s.title}</p>
+              <div className="divide-y divide-border/50">{s.rows.map(s.render)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function WeeklyBilling() {
   const { user } = useAuth();
   const [groupBy, setGroupBy] = useState<"week" | "month">("week");
+  // Which period row is expanded to show its line-item detail. null = none.
+  const [expandedPeriod, setExpandedPeriod] = useState<string | null>(null);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [division, setDivision] = useState<DivisionFilter>("all");
@@ -680,6 +788,7 @@ export default function WeeklyBilling() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b text-muted-foreground text-left">
+                        <th className="py-2 pr-4 font-medium w-6"></th>
                         <th className="py-2 pr-4 font-medium">{groupBy === "month" ? "Month" : "Week"}</th>
                         <th className="py-2 px-4 font-medium text-right">Billed</th>
                         <th className="py-2 px-4 font-medium text-right">Settled</th>
@@ -690,8 +799,17 @@ export default function WeeklyBilling() {
                       </tr>
                     </thead>
                     <tbody>
-                      {periods.map((p) => (
-                        <tr key={p.periodStart} className="border-b last:border-0 hover:bg-muted/40" data-testid={`period-row-${p.periodStart}`}>
+                      {periods.map((p) => {
+                        const isOpen = expandedPeriod === p.periodStart;
+                        return (
+                        <Fragment key={p.periodStart}>
+                        <tr
+                          className="border-b last:border-0 hover:bg-muted/40 cursor-pointer"
+                          data-testid={`period-row-${p.periodStart}`}
+                          onClick={() => setExpandedPeriod(isOpen ? null : p.periodStart)}
+                          title={isOpen ? "Hide details" : "Click to review what's in this period"}
+                        >
+                          <td className="py-2.5 pr-1 text-muted-foreground">{isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}</td>
                           <td className="py-2.5 pr-4 font-medium whitespace-nowrap">{labelFor(p)}</td>
                           <td className="py-2.5 px-4 text-right">{fmt(p.billed)}</td>
                           <td className="py-2.5 px-4 text-right text-[hsl(var(--titan-blue))]">{fmt(p.settled)}</td>
@@ -700,10 +818,19 @@ export default function WeeklyBilling() {
                           <td className={`py-2.5 px-4 text-right font-medium ${(p.collected - p.cost) >= 0 ? "text-green-700 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>{fmt(p.collected - p.cost)}</td>
                           <td className="py-2.5 pl-4 text-right text-red-600 dark:text-red-400">{p.creditMemos ? fmt(p.creditMemos) : "—"}</td>
                         </tr>
-                      ))}
+                        {isOpen && (
+                          <tr className="border-b bg-muted/20">
+                            <td colSpan={8} className="px-4 py-3">
+                              <PeriodDetail periodStart={p.periodStart} groupBy={groupBy} label={labelFor(p)} />
+                            </td>
+                          </tr>
+                        )}
+                        </Fragment>
+                      );})}
                     </tbody>
                     <tfoot>
                       <tr className="border-t-2 font-bold">
+                        <td className="py-3 pr-1"></td>
                         <td className="py-3 pr-4">Total</td>
                         <td className="py-3 px-4 text-right">{fmt(totals.billed)}</td>
                         <td className="py-3 px-4 text-right text-[hsl(var(--titan-blue))]">{fmt(totals.settled)}</td>

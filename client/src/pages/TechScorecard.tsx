@@ -8,7 +8,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { User, Camera, Droplets, Star, TrendingUp, Award } from "lucide-react";
 
-const TEAM = ["John", "Mason", "Clint", "Blake", "Blake Foster", "Cody Brantley"];
 
 function ScoreBadge({ score, max }: { score: number; max: number }) {
   const pct = max > 0 ? score / max : 0;

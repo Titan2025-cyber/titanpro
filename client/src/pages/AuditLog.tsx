@@ -1,11 +1,18 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { useToast } from "@/hooks/use-toast";
 import { ShieldCheck, Search, LogIn, LogOut, AlertTriangle, Lock, Edit3, FileText, DollarSign, Trash2, Eye } from "lucide-react";
 
 const ACTION_META: Record<string, { label: string; color: string; icon: typeof LogIn }> = {
@@ -22,6 +29,38 @@ const ACTION_META: Record<string, { label: string; color: string; icon: typeof L
 };
 
 function Trash3(props: any) { return <Trash2 {...props} />; }
+
+function DeleteAuditLogBtn({ id, label, onDone }: { id: number; label: string; onDone: () => void }) {
+  const { toast } = useToast();
+  const m = useMutation({
+    mutationFn: () => apiRequest("DELETE", `/api/audit-log/${id}`),
+    onSuccess: () => { toast({ title: "Deleted" }); onDone(); },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="icon" className="h-6 w-6" data-testid={`button-delete-audit-log-${id}`}>
+          <Trash2 className="w-3.5 h-3.5 text-destructive" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this audit log entry?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {label ? `"${label}" ` : ""}This permanently removes the record and cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => m.mutate()} data-testid={`button-confirm-delete-audit-log-${id}`}>
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
 
 function fmtDate(d: string) {
   if (!d) return "";
@@ -177,9 +216,16 @@ export default function AuditLog() {
                         <p className="text-xs text-muted-foreground mt-0.5 truncate">{log.detail}</p>
                       )}
                     </div>
-                    <div className="text-right shrink-0">
+                    <div className="text-right shrink-0 flex flex-col items-end gap-1">
                       <p className="text-[10px] text-muted-foreground whitespace-nowrap">{fmtDate(log.created_at)}</p>
                       {log.ip && <p className="text-[10px] text-muted-foreground/60">{log.ip.split(",")[0].trim()}</p>}
+                      {(user?.role === "owner" || user?.role === "admin") && log.id != null && (
+                        <DeleteAuditLogBtn
+                          id={log.id}
+                          label={log.action}
+                          onDone={() => queryClient.invalidateQueries({ queryKey: ["/api/audit-log"] })}
+                        />
+                      )}
                     </div>
                   </div>
                 );

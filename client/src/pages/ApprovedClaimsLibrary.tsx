@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Library, Plus, Search, Trash2, Copy } from "lucide-react";
+import { Library, Plus, Search, Trash2, Copy, Pencil } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface ApprovedClaim {
@@ -23,6 +23,12 @@ const LOSS_TYPES = ["water", "fire", "mold", "storm", "biohazard", "reconstructi
 export default function ApprovedClaimsLibrary() {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState({
+    carrier: "", claimNumber: "", lossType: "", lineItemCode: "",
+    lineItemDescription: "", approvedAmount: "", approvedDate: "",
+    adjusterName: "", notes: "",
+  });
   const [search, setSearch] = useState("");
   const [filterCarrier, setFilterCarrier] = useState("all");
   const [filterLoss, setFilterLoss] = useState("all");
@@ -56,6 +62,27 @@ export default function ApprovedClaimsLibrary() {
     mutationFn: (id: number) => apiRequest(`/api/approved-claims/${id}`, { method: "DELETE" }).then(r => r.json()),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/approved-claims"] }),
   });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: any }) => apiRequest(`/api/approved-claims/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/approved-claims"] });
+      setEditingId(null);
+      toast({ title: "Approved Line Item Updated" });
+    },
+    onError: (e: any) => toast({ title: "Update failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
+  const openEdit = (claim: ApprovedClaim) => {
+    setEditForm({
+      carrier: claim.carrier || "", claimNumber: claim.claimNumber || "", lossType: claim.lossType || "",
+      lineItemCode: claim.lineItemCode || "", lineItemDescription: claim.lineItemDescription || "",
+      approvedAmount: claim.approvedAmount != null ? String(claim.approvedAmount) : "",
+      approvedDate: claim.approvedDate ? claim.approvedDate.slice(0, 10) : "",
+      adjusterName: claim.adjusterName || "", notes: claim.notes || "",
+    });
+    setEditingId(claim.id);
+  };
 
   const filtered = claims.filter(c =>
     !search ||
@@ -185,6 +212,9 @@ export default function ApprovedClaimsLibrary() {
                     <Button size="sm" variant="outline" onClick={() => copyPrecedent(claim)} className="text-xs">
                       <Copy className="w-3 h-3 mr-1" />Copy Precedent
                     </Button>
+                    <Button size="sm" variant="ghost" onClick={() => openEdit(claim)} className="text-muted-foreground hover:text-foreground" data-testid={`button-edit-approved-claims-${claim.id}`}>
+                      <Pencil className="w-3.5 h-3.5" />
+                    </Button>
                     <Button size="sm" variant="ghost" onClick={() => deleteMutation.mutate(claim.id)} className="text-red-500 hover:text-red-700">
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
@@ -195,6 +225,49 @@ export default function ApprovedClaimsLibrary() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={editingId !== null} onOpenChange={v => { if (!v) setEditingId(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Edit Approved Line Item</DialogTitle></DialogHeader>
+          <div className="space-y-3 pt-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Carrier</Label>
+                <Select value={editForm.carrier} onValueChange={v => setEditForm(f => ({ ...f, carrier: v }))}>
+                  <SelectTrigger data-testid={`input-carrier-${editingId}`}><SelectValue placeholder="Select carrier..." /></SelectTrigger>
+                  <SelectContent>{CARRIERS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div><Label>Claim #</Label><Input data-testid={`input-claimNumber-${editingId}`} value={editForm.claimNumber} onChange={e => setEditForm(f => ({ ...f, claimNumber: e.target.value }))} /></div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Loss Type</Label>
+                <Select value={editForm.lossType} onValueChange={v => setEditForm(f => ({ ...f, lossType: v }))}>
+                  <SelectTrigger data-testid={`input-lossType-${editingId}`}><SelectValue placeholder="Loss type..." /></SelectTrigger>
+                  <SelectContent>{LOSS_TYPES.map(l => <SelectItem key={l} value={l} className="capitalize">{l}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div><Label>Approved Date</Label><Input type="date" data-testid={`input-approvedDate-${editingId}`} value={editForm.approvedDate} onChange={e => setEditForm(f => ({ ...f, approvedDate: e.target.value }))} /></div>
+            </div>
+            <div><Label>Xactimate Code</Label><Input data-testid={`input-lineItemCode-${editingId}`} value={editForm.lineItemCode} onChange={e => setEditForm(f => ({ ...f, lineItemCode: e.target.value.toUpperCase() }))} placeholder="WTREQ" /></div>
+            <div><Label>Description</Label><Input data-testid={`input-lineItemDescription-${editingId}`} value={editForm.lineItemDescription} onChange={e => setEditForm(f => ({ ...f, lineItemDescription: e.target.value }))} placeholder="Equipment monitoring labor" /></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label>Approved Amount ($)</Label><Input type="number" data-testid={`input-approvedAmount-${editingId}`} value={editForm.approvedAmount} onChange={e => setEditForm(f => ({ ...f, approvedAmount: e.target.value }))} /></div>
+              <div><Label>Adjuster Name</Label><Input data-testid={`input-adjusterName-${editingId}`} value={editForm.adjusterName} onChange={e => setEditForm(f => ({ ...f, adjusterName: e.target.value }))} /></div>
+            </div>
+            <div><Label>Notes</Label><Textarea data-testid={`input-notes-${editingId}`} value={editForm.notes} onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))} rows={2} /></div>
+            <Button
+              onClick={() => editingId !== null && updateMutation.mutate({ id: editingId, data: { ...editForm, approvedAmount: parseFloat(editForm.approvedAmount) || null } })}
+              disabled={!editForm.carrier || !editForm.lineItemCode || updateMutation.isPending}
+              className="w-full bg-purple-600 hover:bg-purple-700 text-white"
+              data-testid={`button-save-approved-claims-${editingId}`}
+            >
+              Save Changes
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

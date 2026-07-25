@@ -13,6 +13,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   AlertTriangle,
   ShieldCheck,
   Scan,
@@ -20,6 +25,7 @@ import {
   AlertCircle,
   Biohazard,
   Flame,
+  Trash2,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -62,6 +68,41 @@ function FlagIcon({ type }: { type: string }) {
   if (type === "mold") return <AlertTriangle className="w-4 h-4" />;
   if (type === "lead" || type === "asbestos") return <Flame className="w-4 h-4" />;
   return <AlertCircle className="w-4 h-4" />;
+}
+
+function DeleteFlagBtn({ id, label }: { id: number; label: string }) {
+  const { toast } = useToast();
+  const m = useMutation({
+    mutationFn: () => apiRequest(`/api/hazmat-flags/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      toast({ title: "Flag Deleted" });
+      queryClient.invalidateQueries({ queryKey: ["/api/hazmat-flags"] });
+    },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button size="sm" variant="ghost" className="shrink-0" data-testid={`button-delete-hazmat-flags-${id}`}>
+          <Trash2 className="w-4 h-4 text-destructive" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this hazmat flag?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {label ? `"${label}" ` : ""}This permanently removes the record and cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => m.mutate()} data-testid={`button-confirm-delete-hazmat-flags-${id}`}>
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
 }
 
 export default function HazmatFlags() {
@@ -303,21 +344,24 @@ export default function HazmatFlags() {
                       </div>
                     </div>
 
-                    {flag.status === "open" && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        data-testid={`button-acknowledge-${flag.id}`}
-                        onClick={() =>
-                          acknowledgeMutation.mutate({ id: flag.id, by: "Cody Brantley" })
-                        }
-                        disabled={acknowledgeMutation.isPending}
-                        className="shrink-0"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
-                        Acknowledge
-                      </Button>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {flag.status === "open" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          data-testid={`button-acknowledge-${flag.id}`}
+                          onClick={() =>
+                            acknowledgeMutation.mutate({ id: flag.id, by: "Cody Brantley" })
+                          }
+                          disabled={acknowledgeMutation.isPending}
+                          className="shrink-0"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
+                          Acknowledge
+                        </Button>
+                      )}
+                      <DeleteFlagBtn id={flag.id} label={flag.description || flag.flagType} />
+                    </div>
                   </div>
                 );
               })}

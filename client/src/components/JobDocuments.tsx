@@ -228,7 +228,7 @@ function WorkAuthorizationForm({
           <div className="flex items-center justify-between">
             <div>
               <p className="font-bold text-base text-[hsl(var(--titan-red))]">TITAN RESTORATION LLC</p>
-              <p className="text-muted-foreground">Augusta, GA · 706-922-0154 · titanrestorationllc.com</p>
+              <p className="text-muted-foreground">Augusta, GA · 706-922-0154 · titanaugusta.pro</p>
             </div>
             <p className="text-muted-foreground">Date: {today}</p>
           </div>
@@ -636,7 +636,7 @@ function DeviationOfStandardForm({
           <div className="flex items-center justify-between">
             <div>
               <p className="font-bold text-base text-[hsl(var(--titan-red))]">TITAN RESTORATION LLC</p>
-              <p className="text-muted-foreground">Augusta, GA · 706-922-0154 · titanrestorationllc.com</p>
+              <p className="text-muted-foreground">Augusta, GA · 706-922-0154 · titanaugusta.pro</p>
             </div>
             <p className="text-muted-foreground">Date: {today}</p>
           </div>
@@ -823,7 +823,7 @@ function DocCard({
     } else if (doc.signatureData) {
       const content = [
         `TITAN RESTORATION LLC`,
-        `706-922-0154 | titanrestorationllc.com`,
+        `706-922-0154 | titanaugusta.pro`,
         ``,
         doc.title,
         `${"-".repeat(60)}`,
@@ -1157,7 +1157,7 @@ export default function JobDocuments({ jobId, readOnly = false, phase }: { jobId
   const [activeForm, setActiveForm] = useState<ActiveForm>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [packetBusy, setPacketBusy] = useState<null | "print-all" | "download-all" | "print-sel" | "download-sel">(null);
+  const [packetBusy, setPacketBusy] = useState<null | "print-all" | "download-all" | "print-sel" | "download-sel" | "claim">(null);
   const { toast } = useToast();
 
   const { data: allDocs = [], isLoading } = useQuery<JobDocument[]>({
@@ -1224,6 +1224,105 @@ export default function JobDocuments({ jobId, readOnly = false, phase }: { jobId
     [docs, selectedIds, job, contact, jobId, toast]
   );
 
+  // ── Defensible Claim Packet ────────────────────────────────────────────────
+  // One-click carrier/court-ready evidence file: standard doc packet + drying log
+  // + AI insurance narrative (with provenance receipts) + photos-with-metadata.
+  const runClaimPacket = useCallback(async () => {
+    setPacketBusy("claim");
+    try {
+      const { buildDefensibleClaimPacket, downloadPdfDataUri } = await loadDocumentPacket();
+
+      // Drying / moisture records (IICRC S500 log)
+      let dryingRecords: any[] = [];
+      try {
+        const r = await apiRequest("GET", `/api/jobs/${jobId}/drying-records`);
+        const j = await r.json();
+        dryingRecords = (Array.isArray(j) ? j : []).map((d: any) => ({
+          dayNumber: d.dayNumber ?? d.day_number,
+          readingDate: d.readingDate ?? d.reading_date,
+          readingTime: d.readingTime ?? d.reading_time,
+          techName: d.techName ?? d.tech_name,
+          waterCategory: d.waterCategory ?? d.water_category,
+          waterClass: d.waterClass ?? d.water_class,
+          tempF: d.tempF ?? d.temp_f,
+          rhPct: d.rhPct ?? d.rh_pct,
+          gpp: d.gpp,
+          dewPointF: d.dewPointF ?? d.dew_point_f,
+          dryingGoalMet: d.dryingGoalMet ?? d.drying_goal_met,
+          structuralDryingComplete: d.structuralDryingComplete ?? d.structural_drying_complete,
+          observations: d.observations,
+        }));
+      } catch { dryingRecords = []; }
+
+      // AI insurance narrative + its provenance receipts (from agent_drafts)
+      let aiNarrative: any = null;
+      try {
+        const r = await apiRequest("GET", `/api/ai-agent/drafts`);
+        const j = await r.json();
+        const rows = Array.isArray(j) ? j : (j?.drafts || []);
+        const mine = rows
+          .filter((d: any) => Number(d.jobId ?? d.job_id) === Number(jobId) && (d.kind === "insurance_narrative"))
+          .sort((a: any, b: any) => String(b.createdAt ?? b.created_at).localeCompare(String(a.createdAt ?? a.created_at)));
+        const n = mine[0];
+        if (n) {
+          let meta: any = {};
+          try { meta = typeof (n.metaJson ?? n.meta_json) === "string" ? JSON.parse(n.metaJson ?? n.meta_json) : (n.metaJson ?? n.meta_json ?? {}); } catch { meta = {}; }
+          aiNarrative = {
+            subject: n.subject,
+            body: n.body,
+            status: n.status,
+            createdAt: n.createdAt ?? n.created_at,
+            usedLlm: !!meta.usedLlm,
+            dryingReadings: meta.dryingReadings,
+            equipmentUnits: meta.equipmentUnits,
+          };
+        }
+      } catch { aiNarrative = null; }
+
+      // Photos with full metadata (Titan photos first, then CompanyCam)
+      let photos: any[] = [];
+      try {
+        const r = await apiRequest("GET", `/api/jobs/${jobId}/photos`);
+        const j = await r.json();
+        photos = (Array.isArray(j) ? j : []).map((p: any) => ({
+          id: p.id,
+          dataUrl: p.dataUrl ?? p.data_url,
+          caption: p.caption,
+          category: p.category,
+          takenAt: p.takenAt ?? p.taken_at,
+          phase: p.phase,
+        }));
+      } catch { photos = []; }
+      if (photos.length === 0) {
+        try {
+          const pr = await apiRequest("GET", `/api/jobs/${jobId}/companycam-photos`);
+          const pj = await pr.json();
+          photos = (Array.isArray(pj?.photos) ? pj.photos : []).map((p: any) => ({
+            id: p.id, uri: p.uri, caption: p.caption, category: p.category, takenAt: p.capturedAt ?? p.taken_at,
+          }));
+        } catch { /* none */ }
+      }
+
+      if (docs.length === 0 && dryingRecords.length === 0 && !aiNarrative && photos.length === 0) {
+        toast({ title: "Nothing to include yet", description: "Add documents, drying logs, an AI narrative, or photos first.", variant: "destructive" });
+        setPacketBusy(null);
+        return;
+      }
+
+      const uri = await buildDefensibleClaimPacket(job, contact, docs, { dryingRecords, aiNarrative, photos });
+      downloadPdfDataUri(uri, `Titan_${job?.jobNumber || "job"}_Claim_Packet.pdf`);
+      const parts: string[] = [`${docs.length} doc${docs.length !== 1 ? "s" : ""}`];
+      if (dryingRecords.length) parts.push(`${dryingRecords.length} drying reading${dryingRecords.length !== 1 ? "s" : ""}`);
+      if (aiNarrative) parts.push("AI narrative");
+      if (photos.length) parts.push(`${photos.length} photo${photos.length !== 1 ? "s" : ""}`);
+      toast({ title: "Claim packet built", description: parts.join(" · ") });
+    } catch (err: any) {
+      toast({ title: "Could not build claim packet", description: String(err?.message || err), variant: "destructive" });
+    } finally {
+      setPacketBusy(null);
+    }
+  }, [docs, job, contact, jobId, toast]);
+
   const signedCount = docs.filter(d => d.status === "signed").length;
   const uploadedCount = docs.filter(d => d.status === "uploaded").length;
   const unsignedCount = docs.filter(d => d.status === "unsigned").length;
@@ -1252,8 +1351,21 @@ export default function JobDocuments({ jobId, readOnly = false, phase }: { jobId
         </div>
 
         {/* Packet actions — combine every document into one branded PDF */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {/* Defensible Claim Packet — always available (docs + drying log + AI narrative + photos) */}
+          <Button
+            size="sm"
+            className="h-8 text-xs gap-1.5 bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
+            onClick={runClaimPacket}
+            disabled={packetBusy !== null}
+            data-testid="button-build-claim-packet"
+            title="Build a carrier/court-ready claim packet: signed docs, drying log, AI narrative with receipts, and photos with metadata"
+          >
+            {packetBusy === "claim" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+            Build Claim Packet
+          </Button>
         {docs.length > 0 && (
-          <div className="flex items-center gap-1.5 flex-wrap">
+          <>
             <Button
               size="sm"
               className="h-8 text-xs gap-1.5 bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red-dark))] text-white"
@@ -1288,8 +1400,9 @@ export default function JobDocuments({ jobId, readOnly = false, phase }: { jobId
               <CheckSquare className="w-3.5 h-3.5" />
               {selectMode ? "Cancel Select" : "Select"}
             </Button>
-          </div>
+          </>
         )}
+        </div>
       </div>
 
       {/* Multi-select action bar */}

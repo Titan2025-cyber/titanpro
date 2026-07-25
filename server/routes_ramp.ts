@@ -1,5 +1,18 @@
-import type { Express } from "express";
+import type { Express, RequestHandler } from "express";
 import type Database from "better-sqlite3";
+
+type RampAuth = { requireRole: (...roles: string[]) => RequestHandler };
+// No-op fallback so the module still works if auth isn't wired in.
+const passthrough: RequestHandler = (_req, _res, next) => next();
+
+// Parse a currency amount that may contain thousands separators / symbols
+// (e.g. "$1,234.56") without silently truncating at the comma.
+function parseAmount(raw: any): number {
+  if (typeof raw === "number") return raw;
+  const cleaned = String(raw ?? "").replace(/[^0-9.\-]/g, "");
+  const n = parseFloat(cleaned);
+  return Number.isFinite(n) ? n : NaN;
+}
 
 // Cost category inference from merchant name / category
 function inferCostCategory(merchant: string, category: string, memo: string): string {
@@ -35,7 +48,9 @@ function inferJobId(memo: string, merchant: string, jobs: any[]): number | null 
   return null;
 }
 
-export function registerRampRoutes(app: Express, sqlite: Database.Database) {
+export function registerRampRoutes(app: Express, sqlite: Database.Database, auth?: RampAuth) {
+  // Mutating Ramp routes touch the company-card financial ledger — owner/admin only.
+  const requireFinanceRole: RequestHandler = auth ? auth.requireRole("owner", "admin") : passthrough;
 
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS ramp_transactions (
@@ -72,7 +87,7 @@ export function registerRampRoutes(app: Express, sqlite: Database.Database) {
   });
 
   // POST /api/ramp-transactions/import  — bulk import parsed CSV rows
-  app.post("/api/ramp-transactions/import", (req, res) => {
+  app.post("/api/ramp-transactions/import", requireFinanceRole, (req, res) => {
     try {
       const { rows } = req.body as { rows: any[] };
       if (!rows || !Array.isArray(rows)) return res.status(400).json({ error: "rows array required" });
@@ -93,7 +108,7 @@ export function registerRampRoutes(app: Express, sqlite: Database.Database) {
         const category = row.merchant_category || row.Category || row.category || "";
         const memo = row.memo || row.Memo || row.description || row.Description || "";
         const cardHolder = row.card_holder || row["Card Holder"] || row.cardholder || "";
-        const amount = Math.abs(parseFloat(row.amount || row.Amount || "0"));
+        const amount = Math.abs(parseAmount(row.amount ?? row.Amount ?? "0"));
         const currency = row.currency || row.Currency || "USD";
         const date = row.transaction_date || row["Transaction Date"] || row.date || row.Date || now.split("T")[0];
 
@@ -117,7 +132,7 @@ export function registerRampRoutes(app: Express, sqlite: Database.Database) {
   });
 
   // PATCH /api/ramp-transactions/:id — update job assignment or category
-  app.patch("/api/ramp-transactions/:id", (req, res) => {
+  app.patch("/api/ramp-transactions/:id", requireFinanceRole, (req, res) => {
     try {
       const { jobId, costCategory, matchStatus, notes } = req.body;
       const status = matchStatus || (jobId ? "manual" : "skipped");
@@ -129,7 +144,7 @@ export function registerRampRoutes(app: Express, sqlite: Database.Database) {
   });
 
   // DELETE a single transaction
-  app.delete("/api/ramp-transactions/:id", (req, res) => {
+  app.delete("/api/ramp-transactions/:id", requireFinanceRole, (req, res) => {
     try {
       sqlite.prepare("DELETE FROM ramp_transactions WHERE id = ?").run(req.params.id);
       res.json({ success: true });

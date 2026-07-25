@@ -21,10 +21,8 @@ import NotFound from "@/pages/not-found";
 
 // Pages — Suite 7 (11 Upgrades)
 import SessionTimeout from "@/components/SessionTimeout";
+import OfflineIndicator from "@/components/OfflineIndicator";
 import Login from "@/pages/Login";
-import ForceEnroll2FA from "@/components/ForceEnroll2FA";
-import ForcePinChange from "@/components/ForcePinChange";
-import EnvBanner from "@/components/EnvBanner";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { PresenceTracker } from "@/lib/presence";
 
@@ -61,6 +59,7 @@ const DryingComplianceHub = lazy(() => import("@/pages/DryingComplianceHub"));
 const SafetyHub = lazy(() => import("@/pages/SafetyHub"));
 const SchedulingHub = lazy(() => import("@/pages/SchedulingHub"));
 const ARHub = lazy(() => import("@/pages/ARHub"));
+const HRHub = lazy(() => import("@/pages/HRHub"));
 const ProfitabilityHub = lazy(() => import("@/pages/ProfitabilityHub"));
 const PartnerHub = lazy(() => import("@/pages/PartnerHub"));
 const MarketingHub = lazy(() => import("@/pages/MarketingHub"));
@@ -166,8 +165,8 @@ const TechDailySummary = lazy(() => import("@/pages/TechDailySummary"));
 const JobAgeAlerts = lazy(() => import("@/pages/JobAgeAlerts"));
 const Integrations = lazy(() => import("@/pages/Integrations"));
 const UserManagement = lazy(() => import("@/pages/UserManagement"));
-const Security = lazy(() => import("@/pages/Security"));
 const Terms = lazy(() => import("@/pages/Terms"));
+const Privacy = lazy(() => import("@/pages/Privacy"));
 
 // Route matching must ignore any "?query" that lives inside the hash so that
 // deep links like #/reports?report=weekly-billing&print=1 still match the
@@ -209,12 +208,6 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     </div>
   );
   if (!user) return <Login />;
-  // Force-enrollment gate: staff with a valid session but no 2FA configured
-  // (e.g. cached session from before 2FA became mandatory) cannot proceed.
-  if (user.twoFactorEnabled === false) return <ForceEnroll2FA />;
-  // PIN gate (lower priority than 2FA): defensive fallback for a session whose
-  // PIN is flagged for reset but that skipped the forced-change login step.
-  if (user.mustChangePin === true) return <ForcePinChange />;
   return <><PresenceTracker />{children}</>;
 }
 
@@ -225,6 +218,9 @@ function AppRoutes() {
     <Switch>
       <Route path="/terms" component={() => (
         <Suspense fallback={<PageLoader />}><Page component={Terms} name="Terms" /></Suspense>
+      )} />
+      <Route path="/privacy" component={() => (
+        <Suspense fallback={<PageLoader />}><Page component={Privacy} name="Privacy" /></Suspense>
       )} />
       {/* Public customer/partner portals — reachable via QR code WITHOUT staff
          login. Each portal renders its own self-contained login gate. */}
@@ -264,6 +260,8 @@ function AuthenticatedRoutes() {
         <Route path="/scheduling"><Redirect to="/scheduling-hub?tab=schedule" /></Route>
         <Route path="/technician"><Redirect to="/technician-hub?tab=technician" /></Route>
         <Route path="/equipment"><Redirect to="/equipment-hub?tab=inventory" /></Route>
+        <Route path="/inventory"><Redirect to="/equipment-hub?tab=consumables" /></Route>
+        <Route path="/consumables"><Redirect to="/equipment-hub?tab=consumables" /></Route>
         <Route path="/equipment-roi"><Redirect to="/equipment-hub?tab=roi" /></Route>
         <Route path="/inspections" component={() => <Page component={InspectionChecklist} name="InspectionChecklist" />} />
         <Route path="/safety"><Redirect to="/safety-hub?tab=log" /></Route>
@@ -281,6 +279,7 @@ function AuthenticatedRoutes() {
         <Route path="/safety-hub" component={() => <Page component={SafetyHub} name="SafetyHub" />} />
         <Route path="/scheduling-hub" component={() => <Page component={SchedulingHub} name="SchedulingHub" />} />
         <Route path="/ar-hub" component={() => <Page component={ARHub} name="ARHub" />} />
+        <Route path="/hr-hub" component={() => <Page component={HRHub} name="HRHub" />} />
         <Route path="/profitability-hub" component={() => <Page component={ProfitabilityHub} name="ProfitabilityHub" />} />
         <Route path="/partner-hub" component={() => <Page component={PartnerHub} name="PartnerHub" />} />
         <Route path="/marketing-hub" component={() => <Page component={MarketingHub} name="MarketingHub" />} />
@@ -380,7 +379,6 @@ function AuthenticatedRoutes() {
 
         {/* User Management */}
         <Route path="/user-management" component={() => <Page component={UserManagement} name="UserManagement" />} />
-        <Route path="/security" component={() => <Page component={Security} name="Security" />} />
         <Route path="/audit-log" component={() => <Page component={AuditLog} name="AuditLog" />} />
         <Route path="/integrations" component={() => <Page component={Integrations} name="Integrations" />} />
 
@@ -436,14 +434,11 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        {/* Non-production banner — hidden entirely on the live site. Rendered
-            above the Router so it appears on the login screen and every
-            authenticated view. */}
-        <EnvBanner />
         <Router hook={useHashLocationNoQuery}>
           <AppRoutes />
         </Router>
         <SessionTimeout />
+        <OfflineIndicator />
         <Toaster />
       </AuthProvider>
     </QueryClientProvider>

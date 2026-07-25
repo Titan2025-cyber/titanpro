@@ -9,7 +9,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { GraduationCap, Plus, Users, Award, BookOpen, CheckCircle2 } from "lucide-react";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { GraduationCap, Plus, Users, Award, BookOpen, CheckCircle2, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface Course { id: number; title: string; category: string; creditHours: number; description: string; status: string; }
@@ -20,6 +25,76 @@ const CAT_COLORS: Record<string, string> = {
   mold: "bg-green-100 text-green-700", storm: "bg-purple-100 text-purple-700",
   general: "bg-gray-100 text-gray-700",
 };
+
+function DeleteCourseBtn({ id, label }: { id: number; label: string }) {
+  const { toast } = useToast();
+  const m = useMutation({
+    mutationFn: () => apiRequest("DELETE", `/api/adjuster-courses/${id}`),
+    onSuccess: () => {
+      toast({ title: "Course Deleted" });
+      queryClient.invalidateQueries({ queryKey: ["/api/adjuster-courses"] });
+    },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="icon" data-testid={`button-delete-adjuster-courses-${id}`}>
+          <Trash2 className="w-4 h-4 text-destructive" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this course?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {label ? `"${label}" ` : ""}This permanently removes the record and cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => m.mutate()} data-testid={`button-confirm-delete-adjuster-courses-${id}`}>
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function DeleteEnrollmentBtn({ id, label }: { id: number; label: string }) {
+  const { toast } = useToast();
+  const m = useMutation({
+    mutationFn: () => apiRequest("DELETE", `/api/adjuster-enrollments/${id}`),
+    onSuccess: () => {
+      toast({ title: "Enrollment Deleted" });
+      queryClient.invalidateQueries({ queryKey: ["/api/adjuster-enrollments"] });
+    },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="icon" data-testid={`button-delete-adjuster-enrollments-${id}`}>
+          <Trash2 className="w-4 h-4 text-destructive" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this enrollment?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {label ? `"${label}" ` : ""}This permanently removes the record and cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => m.mutate()} data-testid={`button-confirm-delete-adjuster-enrollments-${id}`}>
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
 
 export default function AdjusterCE() {
   const { toast } = useToast();
@@ -106,14 +181,17 @@ export default function AdjusterCE() {
                     <span className="flex items-center gap-1"><Award className="w-3.5 h-3.5" />{course.creditHours} CE credit{course.creditHours !== 1 ? "s" : ""}</span>
                     <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" />{courseEnrollments.length} enrolled ({completed} completed)</span>
                   </div>
-                  <Button
-                    size="sm"
-                    data-testid={`button-enroll-${course.id}`}
-                    onClick={() => { setSelectedCourse(course); setEnrollOpen(true); }}
-                    className="bg-blue-600 hover:bg-blue-700 text-white w-full"
-                  >
-                    <Plus className="w-3.5 h-3.5 mr-1.5" />Enroll an Adjuster
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      data-testid={`button-enroll-${course.id}`}
+                      onClick={() => { setSelectedCourse(course); setEnrollOpen(true); }}
+                      className="bg-blue-600 hover:bg-blue-700 text-white flex-1"
+                    >
+                      <Plus className="w-3.5 h-3.5 mr-1.5" />Enroll an Adjuster
+                    </Button>
+                    <DeleteCourseBtn id={course.id} label={course.title} />
+                  </div>
                 </CardContent>
               </Card>
             );
@@ -158,11 +236,14 @@ export default function AdjusterCE() {
                           )}
                         </td>
                         <td className="px-4 py-3">
-                          {!e.completedAt && (
-                            <Button size="sm" variant="outline" className="text-xs" onClick={() => completeMutation.mutate({ id: e.id, score: 100 })}>
-                              <Award className="w-3 h-3 mr-1" />Issue Certificate
-                            </Button>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {!e.completedAt && (
+                              <Button size="sm" variant="outline" className="text-xs" onClick={() => completeMutation.mutate({ id: e.id, score: 100 })}>
+                                <Award className="w-3 h-3 mr-1" />Issue Certificate
+                              </Button>
+                            )}
+                            <DeleteEnrollmentBtn id={e.id} label={e.adjusterName} />
+                          </div>
                         </td>
                       </tr>
                     );

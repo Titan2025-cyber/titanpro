@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { UserSelect } from "@/components/UserSelect";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,7 +11,6 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { Clock, MapPin, LogIn, LogOut, Users, Timer, Briefcase } from "lucide-react";
 
-const TEAM = ["Cody Brantley", "John", "Mason", "Clint", "Blake", "Blake Foster"];
 
 export default function TimeClock() {
   const { toast } = useToast();
@@ -104,10 +104,12 @@ export default function TimeClock() {
           <CardContent className="space-y-3">
             <div>
               <Label>Employee</Label>
-              <Select value={selectedEmployee} onValueChange={setSelectedEmployee}>
-                <SelectTrigger data-testid="select-employee"><SelectValue placeholder="Select employee..." /></SelectTrigger>
-                <SelectContent>{TEAM.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
-              </Select>
+              <UserSelect
+                value={selectedEmployee}
+                onChange={setSelectedEmployee}
+                placeholder="Select employee..."
+                testId="select-employee"
+              />
             </div>
             <div>
               <Label>Job (optional)</Label>

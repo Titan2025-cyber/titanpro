@@ -5,6 +5,7 @@
  * Viewable by techs, admins, and portals (read-only for portals).
  */
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { UserSelect } from "@/components/UserSelect";
 import { useState } from "react";
 import {
   Plus, Trash2, ChevronDown, ChevronUp, CheckCircle2,
@@ -20,6 +21,9 @@ import { Badge } from "@/components/ui/badge";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { DryingRecord } from "@shared/schema";
+import { SyncChip, useJobQueue } from "@/components/SyncChip";
+import { CloudUpload, AlertTriangle, RefreshCw } from "lucide-react";
+import { formatAge } from "@/lib/offlineQueue";
 
 // ── IICRC S500 Reference Data ────────────────────────────────────────────────
 const WATER_CATEGORIES = [
@@ -45,13 +49,28 @@ const EQUIPMENT_TYPES = [
 ];
 
 const MATERIAL_TYPES = [
-  "Drywall", "Plywood Subfloor", "OSB Subfloor", "Concrete Slab", "Hardwood Floor",
-  "Carpet", "Carpet Pad", "Baseboards", "Insulation (Batt)", "Insulation (Spray)",
-  "Ceiling Drywall", "Framing (2x4)", "Framing (2x6)", "LVL Beam", "Plaster",
-  "Tile Backer", "Exterior Sheathing", "Brick/Masonry",
+  // ── Flooring — finished surfaces ──
+  "Solid Hardwood Floor", "Engineered Hardwood Floor", "Laminate Flooring",
+  "Luxury Vinyl Plank (LVP)", "Luxury Vinyl Tile (LVT)", "Sheet Vinyl",
+  "Vinyl Composition Tile (VCT)", "Ceramic Tile", "Porcelain Tile",
+  "Natural Stone Tile", "Marble Tile", "Travertine Tile", "Slate Tile",
+  "Terrazzo", "Polished/Stained Concrete", "Epoxy Floor Coating",
+  "Bamboo Flooring", "Cork Flooring", "Parquet Flooring", "Linoleum",
+  "Rubber Flooring", "Carpet", "Carpet Tile", "Area Rug",
+  // ── Flooring — underlayment / pad / substrate ──
+  "Carpet Pad", "Foam Underlayment", "Cork Underlayment", "Felt Underlayment",
+  "Cement Board (Tile Backer)", "Self-Leveling Underlayment", "Thinset/Mortar Bed",
+  "Gypsum Underlayment", "Rosin Paper",
+  // ── Subfloor / structure ──
+  "Plywood Subfloor", "OSB Subfloor", "Particle Board Subfloor", "Concrete Slab",
+  "Floor Joist", "Sill Plate", "Framing (2x4)", "Framing (2x6)", "LVL Beam",
+  // ── Walls / ceiling / other ──
+  "Drywall", "Ceiling Drywall", "Plaster", "Baseboards", "Trim/Millwork",
+  "Cabinetry (Base)", "Cabinetry (Upper)", "Vanity", "Wood Paneling",
+  "Insulation (Batt)", "Insulation (Spray)", "Insulation (Blown)",
+  "Tile Backer", "Exterior Sheathing", "Brick/Masonry", "Wall Base (Vinyl/Rubber)",
 ];
 
-const TEAM = ["John", "Mason", "Clint", "Blake", "Blake Foster", "Cody Brantley"];
 
 // ── Helper: Calculate GPP from temp + RH ─────────────────────────────────────
 function calcGPP(tempF: number, rh: number): number {
@@ -73,7 +92,23 @@ function calcDewPoint(tempF: number, rh: number): number {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 interface MoistureRow { id: number; location: string; material: string; reading: number; target: number; }
-interface EquipRow { id: number; type: string; qty: number; placement: string; serialNumber: string; }
+interface DehuReading {
+  id: number;
+  date: string;      // YYYY-MM-DD
+  intakeTemp: number;  // °F at dehu air intake
+  intakeRh: number;    // % RH at intake
+  outTemp: number;     // °F of dry air output
+  outRh: number;       // % RH of dry air output
+  notes?: string;
+}
+interface EquipRow {
+  id: number;
+  type: string;
+  qty: number;
+  placement: string;
+  serialNumber: string;
+  dailyReadings?: DehuReading[]; // per-day intake/output readings (dehumidifiers)
+}
 interface AreaRow { id: number; room: string; material: string; sqft: number; wetPct: number; }
 
 function MoistureTable({ rows, onChange, readOnly }: { rows: MoistureRow[]; onChange: (r: MoistureRow[]) => void; readOnly?: boolean }) {
@@ -126,8 +161,75 @@ function MoistureTable({ rows, onChange, readOnly }: { rows: MoistureRow[]; onCh
   );
 }
 
+// Per-dehumidifier daily readings sub-table. Captures intake + dry-air output
+// temp/RH; grain depression (GPP removed) is auto-calculated to verify the unit
+// is actually pulling moisture. Data lives inside the EquipRow JSON — no schema
+// change needed.
+function DehuReadingsPanel({ readings, onChange, readOnly }: { readings: DehuReading[]; onChange: (r: DehuReading[]) => void; readOnly?: boolean }) {
+  const today = new Date().toISOString().split("T")[0];
+  const add = () => onChange([...readings, { id: Date.now(), date: today, intakeTemp: 0, intakeRh: 0, outTemp: 0, outRh: 0 }]);
+  const del = (id: number) => onChange(readings.filter(r => r.id !== id));
+  const upd = (id: number, field: keyof DehuReading, val: any) =>
+    onChange(readings.map(r => r.id === id ? { ...r, [field]: val } : r));
+
+  return (
+    <div className="col-span-12 ml-3 mt-1 mb-2 pl-3 border-l-2 border-blue-200 dark:border-blue-900">
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-[11px] font-semibold text-blue-700 dark:text-blue-300 uppercase tracking-wide">Daily Dehu Readings</p>
+        {!readOnly && <Button size="sm" variant="outline" onClick={add} className="h-6 text-[11px] px-2"><Plus className="w-3 h-3 mr-1" />Reading</Button>}
+      </div>
+      {readings.length > 0 && (
+        <div className="grid grid-cols-12 gap-1 text-[10px] font-medium text-muted-foreground uppercase mb-0.5">
+          <span className="col-span-3">Date</span>
+          <span className="col-span-2 text-center">Intake °F</span>
+          <span className="col-span-2 text-center">Intake RH%</span>
+          <span className="col-span-2 text-center">Dry-Air °F</span>
+          <span className="col-span-2 text-center">Dry-Air RH%</span>
+          <span className="col-span-1"></span>
+        </div>
+      )}
+      <div className="space-y-1">
+        {readings.map(r => {
+          const intakeGpp = r.intakeTemp && r.intakeRh ? calcGPP(Number(r.intakeTemp), Number(r.intakeRh)) : null;
+          const outGpp = r.outTemp && r.outRh ? calcGPP(Number(r.outTemp), Number(r.outRh)) : null;
+          const depression = intakeGpp != null && outGpp != null ? Math.round((intakeGpp - outGpp) * 10) / 10 : null;
+          return (
+            <div key={r.id}>
+              <div className="grid grid-cols-12 gap-1 items-center">
+                <Input className="col-span-3 h-7 text-xs" type="date" value={r.date} disabled={readOnly}
+                  onChange={e => upd(r.id, "date", e.target.value)} />
+                <Input className="col-span-2 h-7 text-xs text-center" type="number" placeholder="°F" value={r.intakeTemp || ""}
+                  disabled={readOnly} onChange={e => upd(r.id, "intakeTemp", Number(e.target.value))} />
+                <Input className="col-span-2 h-7 text-xs text-center" type="number" placeholder="%" value={r.intakeRh || ""}
+                  disabled={readOnly} onChange={e => upd(r.id, "intakeRh", Number(e.target.value))} />
+                <Input className="col-span-2 h-7 text-xs text-center" type="number" placeholder="°F" value={r.outTemp || ""}
+                  disabled={readOnly} onChange={e => upd(r.id, "outTemp", Number(e.target.value))} />
+                <Input className="col-span-2 h-7 text-xs text-center" type="number" placeholder="%" value={r.outRh || ""}
+                  disabled={readOnly} onChange={e => upd(r.id, "outRh", Number(e.target.value))} />
+                {!readOnly && <Button size="sm" variant="ghost" className="col-span-1 h-7 px-1 text-destructive" onClick={() => del(r.id)}><Trash2 className="w-3 h-3" /></Button>}
+              </div>
+              {depression != null && (
+                <div className="grid grid-cols-12 gap-1 mt-0.5 mb-0.5">
+                  <div className="col-span-11 flex gap-3 text-[10px] text-muted-foreground pl-1">
+                    <span>Intake: <strong>{intakeGpp} GPP</strong></span>
+                    <span>Dry-air: <strong>{outGpp} GPP</strong></span>
+                    <span className={depression > 0 ? "text-green-600 dark:text-green-400" : "text-red-500"}>
+                      Grain depression: <strong>{depression} GPP {depression > 0 ? "✓ removing moisture" : "— check unit"}</strong>
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {readings.length === 0 && <p className="text-[11px] text-muted-foreground italic py-1">No daily readings yet. Log intake and dry-air temp/RH each visit.</p>}
+      </div>
+    </div>
+  );
+}
+
 function EquipmentTable({ rows, onChange, readOnly }: { rows: EquipRow[]; onChange: (r: EquipRow[]) => void; readOnly?: boolean }) {
-  const add = () => onChange([...rows, { id: Date.now(), type: "LGR Dehumidifier", qty: 1, placement: "", serialNumber: "" }]);
+  const add = () => onChange([...rows, { id: Date.now(), type: "LGR Dehumidifier", qty: 1, placement: "", serialNumber: "", dailyReadings: [] }]);
   const del = (id: number) => onChange(rows.filter(r => r.id !== id));
   const upd = (id: number, field: keyof EquipRow, val: any) =>
     onChange(rows.map(r => r.id === id ? { ...r, [field]: val } : r));
@@ -142,21 +244,35 @@ function EquipmentTable({ rows, onChange, readOnly }: { rows: EquipRow[]; onChan
         {!readOnly && <Button size="sm" variant="outline" onClick={add} className="h-7 text-xs"><Plus className="w-3 h-3 mr-1" />Add</Button>}
       </div>
       <div className="space-y-1.5">
-        {rows.map(row => (
-          <div key={row.id} className="grid grid-cols-12 gap-1 items-center">
-            <Select value={row.type} onValueChange={v => upd(row.id, "type", v)} disabled={readOnly}>
-              <SelectTrigger className="col-span-4 h-7 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>{EQUIPMENT_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
-            </Select>
-            <Input className="col-span-1 h-7 text-xs" type="number" min="1" placeholder="Qty" value={row.qty || ""}
-              disabled={readOnly} onChange={e => upd(row.id, "qty", Number(e.target.value))} />
-            <Input className="col-span-3 h-7 text-xs" placeholder="Placement/Room" value={row.placement}
-              disabled={readOnly} onChange={e => upd(row.id, "placement", e.target.value)} />
-            <Input className="col-span-3 h-7 text-xs" placeholder="Serial / Asset #" value={row.serialNumber}
-              disabled={readOnly} onChange={e => upd(row.id, "serialNumber", e.target.value)} />
-            {!readOnly && <Button size="sm" variant="ghost" className="col-span-1 h-7 px-1 text-destructive" onClick={() => del(row.id)}><Trash2 className="w-3 h-3" /></Button>}
-          </div>
-        ))}
+        {rows.map(row => {
+          const isDehu = row.type.toLowerCase().includes("dehumid");
+          const dr = row.dailyReadings || [];
+          return (
+            <div key={row.id} className="grid grid-cols-12 gap-1 items-center">
+              <Select value={row.type} onValueChange={v => upd(row.id, "type", v)} disabled={readOnly}>
+                <SelectTrigger className="col-span-4 h-7 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>{EQUIPMENT_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
+              </Select>
+              <Input className="col-span-1 h-7 text-xs" type="number" min="1" placeholder="Qty" value={row.qty || ""}
+                disabled={readOnly} onChange={e => upd(row.id, "qty", Number(e.target.value))} />
+              <Input className="col-span-3 h-7 text-xs" placeholder="Placement/Room" value={row.placement}
+                disabled={readOnly} onChange={e => upd(row.id, "placement", e.target.value)} />
+              <Input className={`${isDehu ? "col-span-2" : "col-span-3"} h-7 text-xs`} placeholder="Serial / Asset #" value={row.serialNumber}
+                disabled={readOnly} onChange={e => upd(row.id, "serialNumber", e.target.value)} />
+              {isDehu && (
+                <Button size="sm" variant="outline" className="col-span-1 h-7 px-1 text-[10px]"
+                  onClick={() => upd(row.id, "dailyReadings", dr.length ? dr : [{ id: Date.now(), date: new Date().toISOString().split("T")[0], intakeTemp: 0, intakeRh: 0, outTemp: 0, outRh: 0 }])}
+                  title="Show daily readings">
+                  <Droplets className="w-3 h-3" />{dr.length > 0 ? dr.length : ""}
+                </Button>
+              )}
+              {!readOnly && <Button size="sm" variant="ghost" className="col-span-1 h-7 px-1 text-destructive" onClick={() => del(row.id)}><Trash2 className="w-3 h-3" /></Button>}
+              {isDehu && dr.length > 0 && (
+                <DehuReadingsPanel readings={dr} onChange={v => upd(row.id, "dailyReadings", v)} readOnly={readOnly} />
+              )}
+            </div>
+          );
+        })}
         {rows.length === 0 && <p className="text-xs text-muted-foreground italic py-2">No equipment logged yet.</p>}
       </div>
       {rows.length > 0 && (
@@ -358,10 +474,7 @@ function RecordCard({ record, jobId, readOnly }: { record: DryingRecord; jobId: 
               </div>
               <div>
                 <Label className="text-xs">Technician</Label>
-                <Select value={form.techName} onValueChange={v => setForm(f => ({ ...f, techName: v }))} disabled={!editing}>
-                  <SelectTrigger className="h-8 text-xs mt-1"><SelectValue /></SelectTrigger>
-                  <SelectContent>{TEAM.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
-                </Select>
+                <UserSelect value={form.techName} onChange={v => setForm(f => ({ ...f, techName: v }))} roles={["tech"]} disabled={!editing} placeholder="Select tech" className="h-8 text-xs mt-1" testId="select-drying-tech" />
               </div>
               <div>
                 <Label className="text-xs">Day #</Label>
@@ -524,7 +637,7 @@ function NewRecordForm({ jobId, onClose }: { jobId: number; onClose: () => void 
   const [form, setForm] = useState({
     readingDate: new Date().toISOString().slice(0, 10),
     readingTime: new Date().toTimeString().slice(0, 5),
-    techName: TEAM[0],
+    techName: "",
     dayNumber: 1,
     waterCategory: "category2",
     waterClass: "class2",
@@ -598,10 +711,7 @@ function NewRecordForm({ jobId, onClose }: { jobId: number; onClose: () => void 
           </div>
           <div>
             <Label className="text-xs">Technician</Label>
-            <Select value={form.techName} onValueChange={v => setForm(f => ({ ...f, techName: v }))}>
-              <SelectTrigger className="h-8 text-xs mt-1"><SelectValue /></SelectTrigger>
-              <SelectContent>{TEAM.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
-            </Select>
+            <UserSelect value={form.techName} onChange={v => setForm(f => ({ ...f, techName: v }))} roles={["tech"]} placeholder="Select tech" className="h-8 text-xs mt-1" testId="select-drying-tech-2" />
           </div>
           <div>
             <Label className="text-xs">Day #</Label>
@@ -688,6 +798,17 @@ export default function DryingRecords({ jobId, readOnly = false }: { jobId: numb
     return readings.some(m => m.reading > m.target);
   }).length;
 
+  // Offline-queued drying-record POSTs for this job (matched by URL path).
+  const {
+    pendingCount,
+    failedCount,
+    oldestPendingAt,
+    online,
+    retryFailed,
+  } = useJobQueue(jobId, "/drying-records");
+  const pendingAge = oldestPendingAt != null ? formatAge(oldestPendingAt) : null;
+  const showPendingAge = pendingAge && pendingAge !== "just now";
+
   return (
     <div className="space-y-4">
       {/* Summary bar */}
@@ -702,6 +823,23 @@ export default function DryingRecords({ jobId, readOnly = false }: { jobId: numb
               {dryCount > 0 && <Badge className="bg-green-500 text-white">{dryCount} Dry</Badge>}
               {wetCount > 0 && <Badge variant="destructive">{wetCount} Active</Badge>}
             </div>
+          )}
+          {failedCount > 0 && (
+            <SyncChip
+              count={0}
+              failedCount={failedCount}
+              online={online}
+              onRetry={retryFailed}
+              data-testid="sync-chip-drying"
+            />
+          )}
+          {pendingCount > 0 && (
+            <SyncChip
+              count={pendingCount}
+              online={online}
+              oldestPendingAt={oldestPendingAt}
+              data-testid={failedCount > 0 ? "sync-chip-drying-pending" : "sync-chip-drying"}
+            />
           )}
         </div>
         {!readOnly && !showNew && (
@@ -731,6 +869,40 @@ export default function DryingRecords({ jobId, readOnly = false }: { jobId: numb
         <div className="space-y-2">{[1,2].map(i => <div key={i} className="h-14 bg-muted animate-pulse rounded-lg" />)}</div>
       ) : (
         <div className="space-y-2">
+          {/* Failed (offline-queued) drying records — sync failed, tap to retry */}
+          {failedCount > 0 && (
+            <div
+              className="flex items-center gap-3 p-3 rounded-lg border-2 border-red-400 dark:border-red-600 bg-red-50/60 dark:bg-red-950/30"
+              data-testid="drying-record-failed"
+              title="Sync failed — tap retry to try again"
+            >
+              <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+              <span className="text-sm text-red-800 dark:text-red-300 flex-1">
+                {failedCount} drying {failedCount === 1 ? "record" : "records"} failed to sync
+              </span>
+              <button
+                type="button"
+                onClick={retryFailed}
+                className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-white/90 hover:bg-white px-2 py-1 text-xs font-medium text-red-700 dark:bg-red-950/60 dark:hover:bg-red-950 dark:text-red-300 shrink-0"
+                data-testid="drying-record-retry"
+              >
+                <RefreshCw className="w-3 h-3" />Retry
+              </button>
+            </div>
+          )}
+          {/* Pending (offline-queued) drying records — saved on-device, awaiting sync */}
+          {pendingCount > 0 && (
+            <div
+              className="flex items-center gap-3 p-3 rounded-lg border border-amber-300 dark:border-amber-700/60 bg-amber-50/60 dark:bg-amber-950/30"
+              data-testid="drying-record-pending"
+              title="Saved on this device — will sync when back online"
+            >
+              <CloudUpload className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+              <span className="text-sm text-amber-800 dark:text-amber-300">
+                {pendingCount} drying {pendingCount === 1 ? "record" : "records"} saved on this device{online ? " — syncing…" : " — will sync when back online"}{showPendingAge ? ` · ${pendingAge}` : ""}
+              </span>
+            </div>
+          )}
           {records.map(r => <RecordCard key={r.id} record={r} jobId={jobId} readOnly={readOnly} />)}
         </div>
       )}
