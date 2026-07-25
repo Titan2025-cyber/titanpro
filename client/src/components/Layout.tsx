@@ -216,6 +216,7 @@ const navGroups: NavGroup[] = [
     icon: ShieldCheck,
     description: "Audit logs, integrations & settings",
     items: [
+      { href: "/security", label: "Security & 2FA", icon: KeyRound },
       { href: "/user-management", label: "User Management", icon: UserCog, permission: "user-management" },
       { href: "/team-activity", label: "Team Activity", icon: Activity, ownerOnly: true },
       { href: "/activity", label: "Activity Log", icon: Activity, permission: "activity-log" },

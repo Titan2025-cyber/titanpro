@@ -23,6 +23,9 @@ import NotFound from "@/pages/not-found";
 import SessionTimeout from "@/components/SessionTimeout";
 import OfflineIndicator from "@/components/OfflineIndicator";
 import Login from "@/pages/Login";
+import ForceEnroll2FA from "@/components/ForceEnroll2FA";
+import ForcePinChange from "@/components/ForcePinChange";
+import EnvBanner from "@/components/EnvBanner";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { PresenceTracker } from "@/lib/presence";
 
@@ -165,6 +168,7 @@ const TechDailySummary = lazy(() => import("@/pages/TechDailySummary"));
 const JobAgeAlerts = lazy(() => import("@/pages/JobAgeAlerts"));
 const Integrations = lazy(() => import("@/pages/Integrations"));
 const UserManagement = lazy(() => import("@/pages/UserManagement"));
+const Security = lazy(() => import("@/pages/Security"));
 const Terms = lazy(() => import("@/pages/Terms"));
 const Privacy = lazy(() => import("@/pages/Privacy"));
 
@@ -208,6 +212,12 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     </div>
   );
   if (!user) return <Login />;
+  // Force-enrollment gate: staff with a valid session but no 2FA configured
+  // (e.g. cached session from before 2FA became mandatory) cannot proceed.
+  if (user.twoFactorEnabled === false) return <ForceEnroll2FA />;
+  // PIN gate (lower priority than 2FA): defensive fallback for a session whose
+  // PIN is flagged for reset but that skipped the forced-change login step.
+  if (user.mustChangePin === true) return <ForcePinChange />;
   return <><PresenceTracker />{children}</>;
 }
 
@@ -379,6 +389,7 @@ function AuthenticatedRoutes() {
 
         {/* User Management */}
         <Route path="/user-management" component={() => <Page component={UserManagement} name="UserManagement" />} />
+        <Route path="/security" component={() => <Page component={Security} name="Security" />} />
         <Route path="/audit-log" component={() => <Page component={AuditLog} name="AuditLog" />} />
         <Route path="/integrations" component={() => <Page component={Integrations} name="Integrations" />} />
 
@@ -434,6 +445,10 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
+        {/* Non-production banner — hidden entirely on the live site. Rendered
+            above the Router so it appears on the login screen and every
+            authenticated view. */}
+        <EnvBanner />
         <Router hook={useHashLocationNoQuery}>
           <AppRoutes />
         </Router>

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { UserPlus, Pencil, Power, ShieldCheck, Key, RefreshCw, Trash2, Mail, Link2, LogOut, CheckCircle } from "lucide-react";
+import { UserPlus, Pencil, Power, ShieldCheck, Key, RefreshCw, Trash2, Mail, Link2, LogOut, CheckCircle, ShieldOff } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,6 +42,7 @@ interface StaffMember {
   permissions: string;
   avatarInitials: string;
   createdAt: string;
+  twoFactorEnabled?: boolean;
 }
 
 const ROLE_LABELS: Record<string, { label: string; color: string; desc: string }> = {
@@ -71,6 +72,8 @@ export default function UserManagement() {
   const [newPw, setNewPw] = useState("");
   const [newPin, setNewPin] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<StaffMember | null>(null);
+  const [reset2FATarget, setReset2FATarget] = useState<StaffMember | null>(null);
+  const canReset2FA = me?.role === "owner" || me?.role === "admin";
 
   const { data: staff = [], isLoading } = useQuery<StaffMember[]>({
     queryKey: ["/api/staff"],
@@ -142,6 +145,11 @@ export default function UserManagement() {
     mutationFn: (id: number) => apiRequest("DELETE", `/api/staff/${id}?hard=true`),
     onSuccess: () => { refresh(); setDeleteTarget(null); toast({ title: "Account deleted" }); },
     onError: async (err) => toast({ title: "Couldn't delete user", description: await errMsg(err), variant: "destructive" }),
+  });
+
+  const reset2FAMutation = useMutation({
+    mutationFn: (id: number) => apiRequest("POST", `/api/staff/${id}/reset-2fa`),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/staff"] }); setReset2FATarget(null); },
   });
 
   if (!can("user-management")) {
@@ -253,6 +261,9 @@ export default function UserManagement() {
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="font-semibold text-sm">{emp.name} {isMe && <span className="text-xs text-muted-foreground">(you)</span>}</p>
                         <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${rl.color}`}>{rl.label}</span>
+                        {emp.twoFactorEnabled && (
+                          <Badge variant="outline" className="text-xs text-green-700 border-green-300" data-testid={`badge-2fa-${emp.id}`}>2FA ✓</Badge>
+                        )}
                         {!emp.isActive && <Badge variant="outline" className="text-xs text-muted-foreground">Inactive</Badge>}
                       </div>
                       <p className="text-xs text-muted-foreground mt-0.5">
@@ -339,6 +350,16 @@ export default function UserManagement() {
                           {emp.isActive ? <Power className="w-3.5 h-3.5" /> : <RefreshCw className="w-3.5 h-3.5" />}
                         </button>
                       )}
+                      {canReset2FA && emp.twoFactorEnabled && (
+                        <button
+                          onClick={() => setReset2FATarget(emp)}
+                          className="p-1.5 rounded transition-colors hover:bg-orange-50 text-muted-foreground hover:text-orange-600"
+                          title="Reset 2FA"
+                          data-testid={`button-reset-2fa-${emp.id}`}
+                        >
+                          <ShieldOff className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       {!isMe && emp.role !== "owner" && (
                         <button
                           onClick={() => setDeleteTarget(emp)}
@@ -376,6 +397,29 @@ export default function UserManagement() {
               disabled={deleteMutation.isPending}
             >
               {deleteMutation.isPending ? "Deleting\u2026" : "Delete Permanently"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Reset 2FA confirmation */}
+      <AlertDialog open={!!reset2FATarget} onOpenChange={(open) => { if (!open) setReset2FATarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset 2FA for {reset2FATarget?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This clears {reset2FATarget?.name}'s authenticator secret, backup codes, and trusted devices.
+              They will be required to set up two-factor authentication again on their next password login.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={reset2FAMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-orange-600 hover:bg-orange-600/90 text-white"
+              onClick={(e) => { e.preventDefault(); if (reset2FATarget) reset2FAMutation.mutate(reset2FATarget.id); }}
+              disabled={reset2FAMutation.isPending}
+            >
+              {reset2FAMutation.isPending ? "Resetting\u2026" : "Reset 2FA"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
