@@ -5,13 +5,14 @@ import BetterSqlite3 from "better-sqlite3";
 import { eq, desc } from "drizzle-orm";
 import * as schema from "@shared/schema";
 import fs from "fs";
+import path from "path";
 
 // DB file location: use DATABASE_PATH env var (set to a persistent volume path in
 // production, e.g. Railway volume mounted at /data/data.db). Falls back to a local
 // "data.db" file for development so nothing changes locally.
 const DB_PATH = process.env.DATABASE_PATH || "data.db";
 try {
-  const dir = require("path").dirname(DB_PATH);
+  const dir = path.dirname(DB_PATH);
   if (dir && dir !== "." && !fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -45,7 +46,6 @@ const db = drizzle(sqlite, { schema });
 // recent BACKUP_KEEP files (default 14) and prunes older ones.
 // Tunable via env: BACKUP_DIR, BACKUP_INTERVAL_HOURS, BACKUP_KEEP.
 // Disable entirely with BACKUP_DISABLED=1.
-const path = require("path") as typeof import("path");
 const BACKUP_DIR = process.env.BACKUP_DIR || path.join(path.dirname(DB_PATH), "backups");
 const BACKUP_KEEP = Math.max(1, parseInt(process.env.BACKUP_KEEP || "14", 10) || 14);
 const BACKUP_INTERVAL_HOURS = Math.max(1, parseInt(process.env.BACKUP_INTERVAL_HOURS || "24", 10) || 24);
