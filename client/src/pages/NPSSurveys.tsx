@@ -12,8 +12,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Star, Send, TrendingUp, ThumbsUp, ThumbsDown, Minus, ExternalLink, Plus } from "lucide-react";
+import { Star, Send, TrendingUp, ThumbsUp, ThumbsDown, Minus, ExternalLink, Plus, Trash2 } from "lucide-react";
 import type { Job, Contact } from "@shared/schema";
 
 const GOOGLE_REVIEW = "https://g.page/r/CbTitanRestorationAugusta/review";
@@ -23,6 +28,41 @@ const CATEGORY_META: Record<string, { label: string; color: string; icon: any }>
   passive: { label: "Passive", color: "bg-yellow-100 text-yellow-700", icon: Minus },
   detractor: { label: "Detractor", color: "bg-red-100 text-red-700", icon: ThumbsDown },
 };
+
+function DeleteSurveyBtn({ id, label }: { id: number; label: string }) {
+  const { toast } = useToast();
+  const m = useMutation({
+    mutationFn: () => apiRequest("DELETE", `/api/nps-surveys/${id}`),
+    onSuccess: () => {
+      toast({ title: "Survey Deleted" });
+      queryClient.invalidateQueries({ queryKey: ["/api/nps-surveys"] });
+    },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button size="sm" variant="ghost" data-testid={`button-delete-nps-surveys-${id}`}>
+          <Trash2 className="w-4 h-4 text-destructive" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this survey?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {label ? `"${label}" ` : ""}This permanently removes the record and cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => m.mutate()} data-testid={`button-confirm-delete-nps-surveys-${id}`}>
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
 
 export default function NPSSurveys() {
   const { toast } = useToast();
@@ -136,6 +176,7 @@ export default function NPSSurveys() {
                         {catMeta && <Badge className={`text-xs ${catMeta.color} gap-1`}>{CatIcon && <CatIcon className="w-2.5 h-2.5" />}{catMeta.label}</Badge>}
                         {survey.score !== null && <span className="text-sm font-bold">{survey.score}/10</span>}
                         {survey.score === null && <Badge className="text-xs bg-gray-100 text-gray-600">Awaiting response</Badge>}
+                        <DeleteSurveyBtn id={survey.id} label={survey.contactName || job?.jobNumber || `Survey #${survey.id}`} />
                       </div>
                       {survey.feedback && <p className="text-xs text-muted-foreground mt-1 italic">"{survey.feedback}"</p>}
                       {cat === "promoter" && (

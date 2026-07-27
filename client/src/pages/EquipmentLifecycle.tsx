@@ -6,10 +6,121 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { useToast } from "@/hooks/use-toast";
 import { useState } from "react";
-import { Plus, Wrench, AlertTriangle, CheckCircle, TrendingUp, Package } from "lucide-react";
+import { Plus, Wrench, AlertTriangle, CheckCircle, TrendingUp, Package, Trash2, Pencil } from "lucide-react";
 
 const fmt = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+
+const MAINT_TYPES = [
+  { value: "filter_replace", label: "Filter Replacement" },
+  { value: "inspection", label: "Inspection" },
+  { value: "repair", label: "Repair" },
+  { value: "calibration", label: "Calibration" },
+  { value: "service", label: "Full Service" },
+];
+
+function EditMaintenanceDialog({ log, onDone }: { log: any; onDone: () => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({
+    maintenanceType: log.maintenance_type ?? log.maintenanceType ?? "filter_replace",
+    performedBy: log.performed_by ?? log.performedBy ?? "",
+    cost: log.cost != null ? String(log.cost) : "",
+    runtimeHoursAtService: log.runtime_hours_at_service != null ? String(log.runtime_hours_at_service) : (log.runtimeHoursAtService != null ? String(log.runtimeHoursAtService) : ""),
+    notes: log.notes ?? "",
+    nextServiceDue: (log.next_service_due ?? log.nextServiceDue ?? "").slice(0, 10),
+    status: log.status ?? "",
+  });
+
+  const m = useMutation({
+    mutationFn: (data: any) => apiRequest("PATCH", `/api/equipment-maintenance/${log.id}`, data),
+    onSuccess: () => { toast({ title: "Saved" }); onDone(); setOpen(false); },
+    onError: (e: any) => toast({ title: "Save failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="icon" data-testid={`button-edit-equipment-maintenance-${log.id}`}>
+          <Pencil className="w-4 h-4" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Edit Maintenance Log</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <Select value={form.maintenanceType} onValueChange={v => setForm(f => ({ ...f, maintenanceType: v }))}>
+            <SelectTrigger data-testid={`select-maintenance-type-${log.id}`}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {MAINT_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Input placeholder="Performed by" value={form.performedBy} onChange={ev => setForm(f => ({ ...f, performedBy: ev.target.value }))} data-testid={`input-performedBy-${log.id}`} />
+          <div className="grid grid-cols-2 gap-2">
+            <div><p className="text-xs text-muted-foreground mb-1">Cost ($)</p><Input type="number" value={form.cost} onChange={ev => setForm(f => ({ ...f, cost: ev.target.value }))} data-testid={`input-cost-${log.id}`} /></div>
+            <div><p className="text-xs text-muted-foreground mb-1">Runtime hrs at service</p><Input type="number" value={form.runtimeHoursAtService} onChange={ev => setForm(f => ({ ...f, runtimeHoursAtService: ev.target.value }))} data-testid={`input-runtimeHoursAtService-${log.id}`} /></div>
+          </div>
+          <Input placeholder="Notes" value={form.notes} onChange={ev => setForm(f => ({ ...f, notes: ev.target.value }))} data-testid={`input-notes-${log.id}`} />
+          <div><p className="text-xs text-muted-foreground mb-1">Next service due date</p><Input type="date" value={form.nextServiceDue} onChange={ev => setForm(f => ({ ...f, nextServiceDue: ev.target.value }))} data-testid={`input-nextServiceDue-${log.id}`} /></div>
+          <Input placeholder="Status" value={form.status} onChange={ev => setForm(f => ({ ...f, status: ev.target.value }))} data-testid={`input-status-${log.id}`} />
+          <Button
+            className="w-full bg-[hsl(var(--titan-blue))] text-white"
+            disabled={m.isPending}
+            data-testid={`button-save-equipment-maintenance-${log.id}`}
+            onClick={() => m.mutate({
+              maintenanceType: form.maintenanceType,
+              performedBy: form.performedBy || undefined,
+              cost: Number(form.cost) || 0,
+              runtimeHoursAtService: form.runtimeHoursAtService ? Number(form.runtimeHoursAtService) : undefined,
+              notes: form.notes || undefined,
+              nextServiceDue: form.nextServiceDue || undefined,
+              status: form.status || undefined,
+            })}
+          >
+            Save Changes
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DeleteMaintenanceBtn({ id, label, onDone }: { id: number; label: string; onDone: () => void }) {
+  const { toast } = useToast();
+  const m = useMutation({
+    mutationFn: () => apiRequest("DELETE", `/api/equipment-maintenance/${id}`),
+    onSuccess: () => { toast({ title: "Deleted" }); onDone(); },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="icon" data-testid={`button-delete-equipment-maintenance-${id}`}>
+          <Trash2 className="w-4 h-4 text-destructive" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this record?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {label ? `"${label}" ` : ""}This permanently removes the record and cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => m.mutate()} data-testid={`button-confirm-delete-equipment-maintenance-${id}`}>
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
 
 export default function EquipmentLifecycle() {
   const qc = useQueryClient();
@@ -153,6 +264,26 @@ export default function EquipmentLifecycle() {
                     </DialogContent>
                   </Dialog>
                 </div>
+
+                {maintLogs.filter((l: any) => (l.equipment_id ?? l.equipmentId) === e.id).length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-border space-y-1.5">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Maintenance Log</p>
+                    {maintLogs.filter((l: any) => (l.equipment_id ?? l.equipmentId) === e.id).map((l: any) => (
+                      <div key={l.id} className="flex items-center justify-between text-xs py-1" data-testid={`row-maintenance-${l.id}`}>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Badge variant="outline" className="text-xs">{(l.maintenance_type ?? l.maintenanceType ?? "").replace(/_/g, " ")}</Badge>
+                          {l.performed_by && <span className="text-muted-foreground">by {l.performed_by}</span>}
+                          {l.cost != null && <span className="font-medium">{fmt(l.cost)}</span>}
+                          {l.notes && <span className="text-muted-foreground">{l.notes}</span>}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <EditMaintenanceDialog log={l} onDone={() => { qc.invalidateQueries({ queryKey: ["/api/equipment-maintenance"] }); qc.invalidateQueries({ queryKey: ["/api/reports/equipment-roi"] }); }} />
+                          <DeleteMaintenanceBtn id={l.id} label={(l.maintenance_type ?? l.maintenanceType ?? "").replace(/_/g, " ")} onDone={() => { qc.invalidateQueries({ queryKey: ["/api/equipment-maintenance"] }); qc.invalidateQueries({ queryKey: ["/api/reports/equipment-roi"] }); }} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
           ))}

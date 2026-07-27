@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useState } from "react";
 import { Plus, Mail, MessageSquare, Phone, FileText, Users, Tag, Search } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 const TAG_COLORS: Record<string, string> = {
   supplement: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400",
@@ -25,11 +26,14 @@ const CHANNEL_ICON: Record<string, any> = {
 
 export default function CommTimeline() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [showAdd, setShowAdd] = useState(false);
   const [filterTag, setFilterTag] = useState("all");
   const [filterChannel, setFilterChannel] = useState("all");
   const [search, setSearch] = useState("");
   const [form, setForm] = useState({ jobId: "", contactId: "", channel: "email", direction: "inbound", from: "", to: "", subject: "", body: "" });
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState({ jobId: "", contactId: "", channel: "email", direction: "inbound", from: "", to: "", subject: "", body: "" });
 
   const { data: entries = [], isLoading } = useQuery<any[]>({ queryKey: ["/api/comm-timeline"], queryFn: () => apiRequest("/api/comm-timeline").then(r => r.json()) });
 
@@ -41,6 +45,30 @@ export default function CommTimeline() {
     mutationFn: (id: number) => apiRequest(`/api/comm-timeline/${id}`, { method: "DELETE" }).then(r => r.json()),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/comm-timeline"] }),
   });
+
+  const updateEntry = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: any }) => apiRequest(`/api/comm-timeline/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).then(r => r.json()),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/comm-timeline"] });
+      setEditingId(null);
+      toast({ title: "Entry updated" });
+    },
+    onError: (e: any) => toast({ title: "Update failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
+  const openEdit = (entry: any) => {
+    setEditForm({
+      jobId: entry.job_id != null ? String(entry.job_id) : "",
+      contactId: entry.contact_id != null ? String(entry.contact_id) : "",
+      channel: entry.channel || "email",
+      direction: entry.direction || "inbound",
+      from: entry.from || "",
+      to: entry.to || "",
+      subject: entry.subject || "",
+      body: entry.body || "",
+    });
+    setEditingId(entry.id);
+  };
 
   const filtered = entries.filter((e: any) => {
     if (filterTag !== "all" && e.ai_tag !== filterTag) return false;
@@ -169,7 +197,10 @@ export default function CommTimeline() {
                         <div className="text-right shrink-0">
                           <p className="text-xs text-muted-foreground">{new Date(entry.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</p>
                           <p className="text-xs text-muted-foreground">{new Date(entry.created_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</p>
-                          <button onClick={() => deleteEntry.mutate(entry.id)} className="text-xs text-red-400 hover:text-red-600 mt-1">delete</button>
+                          <div className="flex items-center gap-2 mt-1 justify-end">
+                            <button onClick={() => openEdit(entry)} className="text-xs text-muted-foreground hover:text-foreground" data-testid={`button-edit-comm-timeline-${entry.id}`}>edit</button>
+                            <button onClick={() => deleteEntry.mutate(entry.id)} className="text-xs text-red-400 hover:text-red-600" data-testid={`button-delete-comm-timeline-${entry.id}`}>delete</button>
+                          </div>
                         </div>
                       </div>
                     </CardContent>
@@ -180,6 +211,53 @@ export default function CommTimeline() {
           </div>
         </div>
       )}
+
+      {/* Edit Dialog */}
+      <Dialog open={editingId !== null} onOpenChange={v => { if (!v) setEditingId(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Edit Communication</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <Select value={editForm.channel} onValueChange={v => setEditForm(f => ({ ...f, channel: v }))}>
+                <SelectTrigger data-testid={`input-channel-${editingId}`}><SelectValue placeholder="Channel" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="email">Email</SelectItem>
+                  <SelectItem value="sms">SMS/Text</SelectItem>
+                  <SelectItem value="call">Phone Call</SelectItem>
+                  <SelectItem value="internal">Internal</SelectItem>
+                  <SelectItem value="note">Note</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={editForm.direction} onValueChange={v => setEditForm(f => ({ ...f, direction: v }))}>
+                <SelectTrigger data-testid={`input-direction-${editingId}`}><SelectValue placeholder="Direction" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="inbound">Inbound</SelectItem>
+                  <SelectItem value="outbound">Outbound</SelectItem>
+                  <SelectItem value="internal">Internal</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Input placeholder="Job ID (optional)" value={editForm.jobId} onChange={e => setEditForm(f => ({ ...f, jobId: e.target.value }))} data-testid={`input-jobId-${editingId}`} />
+              <Input placeholder="Contact ID (optional)" value={editForm.contactId} onChange={e => setEditForm(f => ({ ...f, contactId: e.target.value }))} data-testid={`input-contactId-${editingId}`} />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Input placeholder="From" value={editForm.from} onChange={e => setEditForm(f => ({ ...f, from: e.target.value }))} data-testid={`input-from-${editingId}`} />
+              <Input placeholder="To" value={editForm.to} onChange={e => setEditForm(f => ({ ...f, to: e.target.value }))} data-testid={`input-to-${editingId}`} />
+            </div>
+            {editForm.channel === "email" && <Input placeholder="Subject" value={editForm.subject} onChange={e => setEditForm(f => ({ ...f, subject: e.target.value }))} data-testid={`input-subject-${editingId}`} />}
+            <Textarea placeholder="Message body / notes" value={editForm.body} onChange={e => setEditForm(f => ({ ...f, body: e.target.value }))} rows={4} data-testid={`input-body-${editingId}`} />
+            <Button
+              className="w-full bg-[hsl(var(--titan-blue))] text-white"
+              onClick={() => editingId !== null && updateEntry.mutate({ id: editingId, data: { jobId: editForm.jobId ? Number(editForm.jobId) : undefined, contactId: editForm.contactId ? Number(editForm.contactId) : undefined, channel: editForm.channel, direction: editForm.direction, from: editForm.from || undefined, to: editForm.to || undefined, subject: editForm.subject || undefined, body: editForm.body } })}
+              disabled={!editForm.body || updateEntry.isPending}
+              data-testid={`button-save-comm-timeline-${editingId}`}
+            >
+              {updateEntry.isPending ? "Saving..." : "Save Changes"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

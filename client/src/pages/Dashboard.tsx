@@ -9,6 +9,11 @@ import {
   Droplets, Hammer,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import CountUp from "@/components/CountUp";
+import { Reveal, Stagger, StaggerChild } from "@/components/motion";
+import Sparkline from "@/components/Sparkline";
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { motion, useReducedMotion } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -100,6 +105,21 @@ export default function Dashboard() {
   const reconPct = pipelinePhase.total > 0 ? 100 - mitPct : 0;
   const totalRevenue = payments.filter(p => p.type === "received").reduce((s, p) => s + (p.amount || 0), 0);
   const outstanding = invoices.filter(i => i.status !== "paid" && i.status !== "draft").reduce((s, i) => s + (i.total || 0), 0);
+
+  // ── Overdue A/R (Needs You Now) ──────────────────────────────────────────────
+  // Unpaid, non-draft invoices whose due date has passed. Ordered by most days
+  // overdue first (oldest debt = highest collection priority). Built entirely
+  // from existing /api/invoices data — no new backend.
+  const todayMs = new Date(new Date().toDateString()).getTime();
+  const overdueInvoices = invoices
+    .filter(i => i.status !== "paid" && i.status !== "draft" && i.dueDate && new Date(i.dueDate).getTime() < todayMs && (i.total || 0) > 0)
+    .map(i => ({
+      ...i,
+      daysOverdue: Math.max(1, Math.floor((todayMs - new Date(i.dueDate as string).getTime()) / 86400000)),
+    }))
+    .sort((a, b) => b.daysOverdue - a.daysOverdue);
+  const overdueTotal = overdueInvoices.reduce((s, i) => s + (i.total || 0), 0);
+
   const newJobs = jobs.filter(j => j.status === "new").length;
   const completedThisMonth = jobs.filter(j => {
     if (j.status !== "complete") return false;
@@ -123,6 +143,46 @@ export default function Dashboard() {
   })();
 
   const maxWeek = Math.max(...weeklyRevenue, 1);
+
+  const reducedMotion = useReducedMotion();
+
+  // ── 8-week series for the Weekly Revenue chart + KPI sparklines (Pillar 3) ──
+  const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  const weekIndex = (dateStr?: string | null): number => {
+    if (!dateStr) return -1;
+    const t = new Date(dateStr).getTime();
+    if (Number.isNaN(t)) return -1;
+    const diff = Math.floor((Date.now() - t) / WEEK_MS);
+    return diff >= 0 && diff < 8 ? 7 - diff : -1;
+  };
+  const revenue8 = (() => {
+    const w = new Array(8).fill(0);
+    payments.filter(p => p.type === "received").forEach(p => {
+      const i = weekIndex(p.paidAt);
+      if (i >= 0) w[i] += p.amount || 0;
+    });
+    return w as number[];
+  })();
+  const jobsCreated8 = (() => {
+    const w = new Array(8).fill(0);
+    jobs.forEach(j => { const i = weekIndex(j.createdAt); if (i >= 0) w[i] += 1; });
+    return w as number[];
+  })();
+  const arByWeek8 = (() => {
+    const w = new Array(8).fill(0);
+    invoices.filter(i => i.status !== "paid" && i.status !== "draft").forEach(inv => {
+      const i = weekIndex((inv as any).issueDate || inv.createdAt);
+      if (i >= 0) w[i] += inv.total || 0;
+    });
+    return w as number[];
+  })();
+  const revenueHasData = revenue8.some(v => v > 0);
+  // Cycle-time trend: last ~8 completed jobs, chronological by completion.
+  const cycleSpark = jobs
+    .filter(j => j.status === "complete" && j.jobComplete && j.createdAt)
+    .sort((a, b) => new Date(a.jobComplete!).getTime() - new Date(b.jobComplete!).getTime())
+    .slice(-8)
+    .map(j => Math.max(0, Math.floor((new Date(j.jobComplete!).getTime() - new Date(j.createdAt!).getTime()) / 86400000)));
 
   const recentActivity = activityRaw.slice(0, 8);
 
@@ -306,68 +366,139 @@ export default function Dashboard() {
 
   return (
     <>
-    <div className="space-y-6">
+    <div className="relative">
+      {/* Cinematic ambient glow behind KPI row + pipeline (Pillar 2) */}
+      <div className="titan-glow" style={{ top: 0, left: 0, right: 0, height: 660 }} aria-hidden="true" />
+      <div className="relative z-[1] space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-foreground">Command Center</h1>
-          <p className="text-sm text-muted-foreground">Titan Restoration LLC · Augusta, GA · {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</p>
+      <div className="relative flex items-center justify-between overflow-hidden rounded-xl border border-border/60 bg-card/40 px-5 py-4">
+        {/* faint Titan emblem watermark */}
+        <div
+          className="tp-watermark hidden sm:block"
+          style={{ width: 190, height: 190, right: -30, top: -40, backgroundImage: "url('/titan-logo.png')" }}
+          aria-hidden="true"
+        />
+        <div className="relative">
+          <span className="tp-page-eyebrow">Titan Restoration LLC</span>
+          <h1 className="mt-1.5 text-xl font-bold text-foreground">Command Center</h1>
+          <p className="text-sm text-muted-foreground">Augusta, GA · {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</p>
         </div>
-        <Link href="/jobs">
+        <Link href="/jobs" className="relative z-10">
           <Button className="bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red-dark))] text-white" data-testid="button-new-job">
             <Plus className="w-4 h-4 mr-2" />New Job
           </Button>
         </Link>
       </div>
 
+      {/* Needs You Now — Overdue A/R */}
+      {overdueInvoices.length > 0 && (
+        <Card className="titan-card-lit border-l-4 border-l-[hsl(var(--titan-red))] bg-[hsl(var(--titan-red)/0.04)]" data-testid="strip-overdue-ar">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 text-[hsl(var(--titan-red))]" />
+                <div>
+                  <p className="text-sm font-bold text-foreground">Needs You Now — Overdue A/R</p>
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-semibold text-[hsl(var(--titan-red))]" data-testid="text-overdue-total">{fmtMoney(overdueTotal)}</span>
+                    {" "}past due across {overdueInvoices.length} invoice{overdueInvoices.length !== 1 ? "s" : ""}
+                  </p>
+                </div>
+              </div>
+              <Link href="/invoices">
+                <Button size="sm" variant="outline" className="h-8 text-xs border-[hsl(var(--titan-red))] text-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red)/0.08)]" data-testid="button-view-all-overdue">
+                  View all invoices <ArrowRight className="w-3 h-3 ml-1" />
+                </Button>
+              </Link>
+            </div>
+            <div className="space-y-1.5">
+              {overdueInvoices.slice(0, 5).map(inv => (
+                <Link key={inv.id} href={`/jobs/${inv.jobId}`}>
+                  <div
+                    className="flex items-center justify-between gap-3 rounded-md bg-background/70 hover:bg-background px-3 py-2 cursor-pointer transition-colors border border-transparent hover:border-[hsl(var(--titan-red)/0.3)]"
+                    data-testid={`row-overdue-${inv.id}`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold truncate">
+                        {inv.invoiceNumber}
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">Job #{inv.jobId}</span>
+                      </p>
+                    </div>
+                    <Badge variant="outline" className="text-xs border-[hsl(var(--titan-red)/0.4)] text-[hsl(var(--titan-red))] shrink-0">
+                      {inv.daysOverdue}d overdue
+                    </Badge>
+                    <p className="text-sm font-bold text-foreground shrink-0 w-20 text-right">{fmtMoney(inv.total || 0)}</p>
+                  </div>
+                </Link>
+              ))}
+              {overdueInvoices.length > 5 && (
+                <p className="text-xs text-muted-foreground text-center pt-1">
+                  + {overdueInvoices.length - 5} more overdue
+                </p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <Card role="button" tabIndex={0} onClick={() => openBucketPanel("active")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openBucketPanel("active"); } }} data-testid="bucket-active-jobs" className="border-l-4 border-l-[hsl(var(--titan-blue))] cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-2 focus:ring-[hsl(var(--titan-blue))]">
+      <Stagger className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <StaggerChild>
+        <Card role="button" tabIndex={0} onClick={() => openBucketPanel("active")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openBucketPanel("active"); } }} data-testid="bucket-active-jobs" className="titan-card-lit border-l-4 border-l-[hsl(var(--titan-blue))] cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-2 focus:ring-[hsl(var(--titan-blue))]">
           <CardContent className="p-4">
             <div className="flex items-start justify-between">
               <div>
                 <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Active Jobs</p>
-                <p className="text-3xl font-bold text-foreground mt-1">{activeJobs.length}</p>
+                <p className="text-3xl font-bold text-foreground mt-1"><CountUp value={activeJobs.length} /></p>
                 <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">{newJobs} new leads <ArrowRight className="w-3 h-3 opacity-60" /></p>
               </div>
               <div className="p-2 bg-[hsl(var(--titan-blue)/0.1)] rounded-lg">
                 <Briefcase className="w-5 h-5 text-[hsl(var(--titan-blue))]" />
               </div>
             </div>
+            <div className="mt-2 -mb-1"><Sparkline data={jobsCreated8} color="hsl(var(--titan-blue))" testid="spark-active-jobs" /></div>
           </CardContent>
         </Card>
+        </StaggerChild>
 
-        <Card role="button" tabIndex={0} onClick={() => openBucketPanel("revenue")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openBucketPanel("revenue"); } }} data-testid="bucket-revenue" className="border-l-4 border-l-green-500 cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-2 focus:ring-green-500">
+        <StaggerChild>
+        <Card role="button" tabIndex={0} onClick={() => openBucketPanel("revenue")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openBucketPanel("revenue"); } }} data-testid="bucket-revenue" className="titan-card-lit border-l-4 border-l-green-500 cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-2 focus:ring-green-500">
           <CardContent className="p-4">
             <div className="flex items-start justify-between">
               <div>
                 <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Revenue MTD</p>
-                <p className="text-3xl font-bold text-foreground mt-1">${(totalRevenue / 1000).toFixed(1)}k</p>
+                <p className="text-3xl font-bold text-foreground mt-1"><CountUp value={totalRevenue / 1000} decimals={1} prefix="$" suffix="k" /></p>
                 <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">{completedThisMonth} jobs complete <ArrowRight className="w-3 h-3 opacity-60" /></p>
               </div>
-              <div className="p-2 bg-green-100 rounded-lg">
-                <DollarSign className="w-5 h-5 text-green-600" />
+              <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg">
+                <DollarSign className="w-5 h-5 text-green-600 dark:text-green-400" />
               </div>
             </div>
+            <div className="mt-2 -mb-1"><Sparkline data={revenue8} color="#16a34a" testid="spark-revenue" /></div>
           </CardContent>
         </Card>
+        </StaggerChild>
 
-        <Card role="button" tabIndex={0} onClick={() => openBucketPanel("ar")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openBucketPanel("ar"); } }} data-testid="bucket-ar" className="border-l-4 border-l-orange-500 cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-2 focus:ring-orange-500">
+        <StaggerChild>
+        <Card role="button" tabIndex={0} onClick={() => openBucketPanel("ar")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openBucketPanel("ar"); } }} data-testid="bucket-ar" className="titan-card-lit border-l-4 border-l-orange-500 cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-2 focus:ring-orange-500">
           <CardContent className="p-4">
             <div className="flex items-start justify-between">
               <div>
                 <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Outstanding A/R</p>
-                <p className="text-3xl font-bold text-foreground mt-1">${outstanding.toLocaleString()}</p>
+                <p className="text-3xl font-bold text-foreground mt-1"><CountUp value={outstanding} prefix="$" /></p>
                 <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">{invoices.filter(i => i.status === "overdue").length} overdue <ArrowRight className="w-3 h-3 opacity-60" /></p>
               </div>
-              <div className="p-2 bg-orange-100 rounded-lg">
-                <FileText className="w-5 h-5 text-orange-600" />
+              <div className="p-2 bg-orange-100 dark:bg-orange-900/30 rounded-lg">
+                <FileText className="w-5 h-5 text-orange-600 dark:text-orange-400" />
               </div>
             </div>
+            <div className="mt-2 -mb-1"><Sparkline data={arByWeek8} color="#ea580c" testid="spark-ar" /></div>
           </CardContent>
         </Card>
+        </StaggerChild>
 
-        <Card role="button" tabIndex={0} onClick={() => openBucketPanel("cycle")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openBucketPanel("cycle"); } }} data-testid="bucket-cycle" className="border-l-4 border-l-purple-500 cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-2 focus:ring-purple-500">
+        <StaggerChild>
+        <Card role="button" tabIndex={0} onClick={() => openBucketPanel("cycle")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openBucketPanel("cycle"); } }} data-testid="bucket-cycle" className="titan-card-lit border-l-4 border-l-purple-500 cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-2 focus:ring-purple-500">
           <CardContent className="p-4">
             <div className="flex items-start justify-between">
               <div>
@@ -376,27 +507,32 @@ export default function Dashboard() {
                 <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">job completion <ArrowRight className="w-3 h-3 opacity-60" /></p>
               </div>
               <div className="p-2 bg-purple-100 dark:bg-purple-900/30 rounded-lg">
-                <Timer className="w-5 h-5 text-purple-600" />
+                <Timer className="w-5 h-5 text-purple-600 dark:text-purple-400" />
               </div>
             </div>
+            <div className="mt-2 -mb-1"><Sparkline data={cycleSpark} color="#9333ea" testid="spark-cycle" /></div>
           </CardContent>
         </Card>
+        </StaggerChild>
 
-        <Card role="button" tabIndex={0} onClick={() => openBucketPanel("payouts")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openBucketPanel("payouts"); } }} data-testid="bucket-payouts" className="border-l-4 border-l-[hsl(var(--titan-red))] cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-2 focus:ring-[hsl(var(--titan-red))]">
+        <StaggerChild>
+        <Card role="button" tabIndex={0} onClick={() => openBucketPanel("payouts")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openBucketPanel("payouts"); } }} data-testid="bucket-payouts" className="titan-card-lit border-l-4 border-l-[hsl(var(--titan-red))] cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-2 focus:ring-[hsl(var(--titan-red))]">
           <CardContent className="p-4">
             <div className="flex items-start justify-between">
               <div>
                 <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Pending Payouts</p>
-                <p className="text-3xl font-bold text-foreground mt-1">{pendingPayouts}</p>
+                <p className="text-3xl font-bold text-foreground mt-1"><CountUp value={pendingPayouts} /></p>
                 <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">${pendingPayoutAmount.toLocaleString()} total <ArrowRight className="w-3 h-3 opacity-60" /></p>
               </div>
               <div className="p-2 bg-[hsl(var(--titan-red)/0.1)] rounded-lg">
                 <AlertCircle className="w-5 h-5 text-[hsl(var(--titan-red))]" />
               </div>
             </div>
+            <div className="mt-2 -mb-1"><Sparkline data={pendingPayoutList.map((p: any) => p.amount || 0)} color="hsl(var(--titan-red))" testid="spark-payouts" /></div>
           </CardContent>
         </Card>
-      </div>
+        </StaggerChild>
+      </Stagger>
 
       {/* Job Age Alert Banner */}
       {criticalStuck > 0 && (
@@ -419,6 +555,7 @@ export default function Dashboard() {
         {/* Left: Pipeline + Recent Jobs */}
         <div className="lg:col-span-2 space-y-6">
           {/* Pipeline Visual */}
+          <Reveal delay={0.05}>
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
@@ -449,8 +586,20 @@ export default function Dashboard() {
                 </div>
                 {/* Split bar */}
                 <div className="flex h-2 w-full rounded-full overflow-hidden bg-muted" title={`Mitigation ${mitPct}% · Reconstruction ${reconPct}%`}>
-                  <div className="bg-[hsl(var(--titan-blue))]" style={{ width: `${mitPct}%` }} />
-                  <div className="bg-[hsl(var(--titan-red))]" style={{ width: `${reconPct}%` }} />
+                  <motion.div
+                    className="bg-[hsl(var(--titan-blue))]"
+                    initial={reducedMotion ? false : { width: 0 }}
+                    animate={{ width: `${mitPct}%` }}
+                    transition={{ duration: 0.8, ease: [0.2, 0.7, 0.2, 1] }}
+                    style={reducedMotion ? { width: `${mitPct}%` } : undefined}
+                  />
+                  <motion.div
+                    className="bg-[hsl(var(--titan-red))]"
+                    initial={reducedMotion ? false : { width: 0 }}
+                    animate={{ width: `${reconPct}%` }}
+                    transition={{ duration: 0.8, ease: [0.2, 0.7, 0.2, 1], delay: 0.1 }}
+                    style={reducedMotion ? { width: `${reconPct}%` } : undefined}
+                  />
                 </div>
                 <div className="grid grid-cols-2 gap-2 mt-2">
                   <div className="rounded-lg border p-2 bg-[hsl(var(--titan-blue)/0.06)] border-[hsl(var(--titan-blue)/0.25)]">
@@ -470,29 +619,51 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Revenue Trend Bars */}
+              {/* Weekly Revenue — recharts area (last 8 weeks) */}
               <div className="mt-4 pt-4 border-t">
-                <p className="text-xs font-medium text-muted-foreground mb-3">WEEKLY REVENUE (last 4 weeks)</p>
-                {weeklyRevenue.every(v => v === 0) ? (
-                  <div className="flex items-center justify-center h-16 text-xs text-muted-foreground italic">
-                    No payments recorded yet — bars will appear as revenue is collected
-                  </div>
-                ) : (
-                  <div className="flex items-end gap-2 h-16">
-                    {weeklyRevenue.map((v, i) => (
-                      <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                        <div
-                          className="w-full rounded-t bg-[hsl(var(--titan-blue)/0.7)] transition-all"
-                          style={{ height: `${Math.max((v / maxWeek) * 52, v > 0 ? 4 : 0)}px` }}
-                        />
-                        <span className="text-xs text-muted-foreground">W{i + 1}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <p className="text-xs font-medium text-muted-foreground mb-3">WEEKLY REVENUE (last 8 weeks)</p>
+                <div className="relative h-40" data-testid="weekly-revenue-chart">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart
+                      data={revenue8.map((v, i) => ({ week: `W${i + 1}`, revenue: v }))}
+                      margin={{ top: 6, right: 6, bottom: 0, left: 0 }}
+                    >
+                      <defs>
+                        <linearGradient id="weeklyRevFill" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="hsl(var(--titan-blue))" stopOpacity={revenueHasData ? 0.4 : 0.08} />
+                          <stop offset="100%" stopColor="hsl(var(--titan-blue))" stopOpacity={0.02} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" opacity={0.4} />
+                      <XAxis dataKey="week" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
+                      <YAxis hide domain={[0, (dataMax: number) => (dataMax > 0 ? dataMax : 1)]} />
+                      <Tooltip
+                        formatter={(value: any) => [fmtMoney(Number(value) || 0), "Revenue"]}
+                        contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid hsl(var(--border))", background: "hsl(var(--card))" }}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="revenue"
+                        stroke="hsl(var(--titan-blue))"
+                        strokeWidth={2}
+                        strokeDasharray={revenueHasData ? undefined : "5 5"}
+                        fill="url(#weeklyRevFill)"
+                        isAnimationActive
+                        animationDuration={800}
+                        dot={false}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                  {!revenueHasData && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <span className="text-xs text-muted-foreground italic bg-card/70 px-2 py-0.5 rounded">awaiting first payment</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </CardContent>
           </Card>
+          </Reveal>
 
           {/* Active Jobs List */}
           <Card>
@@ -539,6 +710,7 @@ export default function Dashboard() {
         {/* Right: Activity Feed + Quick Actions */}
         <div className="space-y-6">
           {/* Quick Actions */}
+          <Reveal delay={0.12}>
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base flex items-center gap-2"><Zap className="w-4 h-4 text-yellow-500" />Quick Actions</CardTitle>
@@ -561,8 +733,10 @@ export default function Dashboard() {
               ))}
             </CardContent>
           </Card>
+          </Reveal>
 
           {/* Live Activity Feed */}
+          <Reveal delay={0.19}>
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
@@ -590,6 +764,7 @@ export default function Dashboard() {
               )}
             </CardContent>
           </Card>
+          </Reveal>
 
           {/* Company Card */}
           <Card className="border-[hsl(var(--titan-red)/0.3)]">
@@ -614,6 +789,7 @@ export default function Dashboard() {
             </CardContent>
           </Card>
         </div>
+      </div>
       </div>
     </div>
 

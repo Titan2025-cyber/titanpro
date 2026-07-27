@@ -11,6 +11,7 @@
  *   7. Dash Sync — pulls notes + documents to keep each file complete
  */
 import { useState } from "react";
+import { UserSelect } from "@/components/UserSelect";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
@@ -245,7 +246,7 @@ function ScheduleTab({ token, toast }: any) {
               <Card key={i} data-testid={`card-shift-${i}`}>
                 <CardContent className="py-3 grid grid-cols-12 gap-2 items-center">
                   <div className="col-span-12 md:col-span-2 text-sm font-semibold">{s.jobNumber}</div>
-                  <Input className="col-span-6 md:col-span-3 h-8 text-xs" value={s.techName} onChange={e => update(i, "techName", e.target.value)} data-testid={`input-shift-tech-${i}`} />
+                  <div className="col-span-6 md:col-span-3"><UserSelect value={s.techName} onChange={v => update(i, "techName", v)} roles={["tech"]} placeholder="Tech" className="h-8 text-xs" testId={`select-shift-tech-${i}`} /></div>
                   <Input className="col-span-6 md:col-span-4 h-8 text-xs" value={s.title} onChange={e => update(i, "title", e.target.value)} data-testid={`input-shift-title-${i}`} />
                   <Input className="col-span-4 md:col-span-1 h-8 text-xs" value={s.startTime} onChange={e => update(i, "startTime", e.target.value)} />
                   <Input className="col-span-4 md:col-span-1 h-8 text-xs" value={s.endTime} onChange={e => update(i, "endTime", e.target.value)} />

@@ -26,6 +26,7 @@ export const ROLE_PERMISSIONS: Record<string, string[]> = {
     "ramp", "route-planner", "business-dev", "finance",
     "weekly-billing", // owner-only executive report
     "ai-agent", // AI Agent Center (owner + general manager)
+    "hr", // HR Management Module + AI HR Assistant
   ],
   general_manager: [
     // General Manager — operational oversight + AI Agent Center
@@ -37,6 +38,7 @@ export const ROLE_PERMISSIONS: Record<string, string[]> = {
     "follow-ups", "reports", "reports:advanced", "activity-log", "sms",
     "time-clock", "route-planner", "business-dev",
     "ai-agent", // AI Agent Center
+    "hr", // HR Management Module + AI HR Assistant
   ],
   admin: [
     "dashboard", "jobs", "jobs:write", "estimates", "estimates:write",
@@ -48,6 +50,7 @@ export const ROLE_PERMISSIONS: Record<string, string[]> = {
     "safety", "certifications", "follow-ups", "reports", "reports:advanced",
     "activity-log", "sms", "time-clock",
     "ramp", "route-planner", "business-dev", "finance",
+    "hr", // HR Management Module + AI HR Assistant
   ],
   tech: [
     // Field technicians — job/field data + field estimating
@@ -277,6 +280,12 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
   if (!cols.includes("last_login_at")) sqlite.exec("ALTER TABLE employees ADD COLUMN last_login_at TEXT");
   if (!cols.includes("position")) sqlite.exec("ALTER TABLE employees ADD COLUMN position TEXT");
   if (!cols.includes("avatar_initials")) sqlite.exec("ALTER TABLE employees ADD COLUMN avatar_initials TEXT");
+  // Gmail OAuth integration columns (per-employee live Gmail connection).
+  if (!cols.includes("gmail_refresh_token")) sqlite.exec("ALTER TABLE employees ADD COLUMN gmail_refresh_token TEXT");
+  if (!cols.includes("gmail_access_token")) sqlite.exec("ALTER TABLE employees ADD COLUMN gmail_access_token TEXT");
+  if (!cols.includes("gmail_token_expiry")) sqlite.exec("ALTER TABLE employees ADD COLUMN gmail_token_expiry TEXT");
+  if (!cols.includes("gmail_connected")) sqlite.exec("ALTER TABLE employees ADD COLUMN gmail_connected INTEGER NOT NULL DEFAULT 0");
+  if (!cols.includes("gmail_connected_at")) sqlite.exec("ALTER TABLE employees ADD COLUMN gmail_connected_at TEXT");
   // ── Two-factor authentication columns ──
   if (!cols.includes("totp_secret")) sqlite.exec("ALTER TABLE employees ADD COLUMN totp_secret TEXT");
   if (!cols.includes("totp_enabled")) sqlite.exec("ALTER TABLE employees ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0");
@@ -551,7 +560,7 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
     ).get(token, new Date().toISOString());
     if (!session) return res.status(401).json({ error: "Not authenticated" });
 
-    const { currentPassword, newPassword, newPin } = req.body;
+    const { currentPassword, newPassword, newPin, newEmail } = req.body;
     const emp: any = sqlite.prepare("SELECT * FROM employees WHERE id = ?").get(session.employee_id);
 
     if (currentPassword && !verifyPassword(currentPassword, emp.password_hash || "")) {
@@ -567,14 +576,30 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
       const perr = validatePinStrength(String(newPin));
       if (perr) return res.status(400).json({ error: perr });
     }
+    if (newEmail !== undefined && newEmail !== null && String(newEmail).trim() !== "") {
+      const em = String(newEmail).trim();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) {
+        return res.status(400).json({ error: "Enter a valid email address." });
+      }
+      const clash: any = sqlite.prepare(
+        "SELECT id FROM employees WHERE LOWER(gmail_email) = LOWER(?) AND id != ?"
+      ).get(em, emp.id);
+      if (clash) return res.status(400).json({ error: "That email is already used by another account." });
+    }
 
     const updates: any = {};
     if (newPassword) updates.password_hash = hashPassword(newPassword);
+    if (newPin) updates.pin = hashPassword(newPin);
+    if (newEmail !== undefined && newEmail !== null && String(newEmail).trim() !== "") {
+      updates.gmail_email = String(newEmail).trim();
+    }
     if (newPin) { updates.pin = hashPassword(newPin); updates.must_change_pin = 0; }
 
     if (Object.keys(updates).length > 0) {
       const setClause = Object.keys(updates).map(k => `${k} = ?`).join(", ");
       sqlite.prepare(`UPDATE employees SET ${setClause} WHERE id = ?`).run(...Object.values(updates), emp.id);
+      writeAudit(sqlite, emp.id, emp.name, "self_credential_change", "auth", null,
+        `Self-service update: ${Object.keys(updates).join(", ")}`, req.ip || "");
     }
     res.json({ ok: true });
   });
@@ -775,12 +800,40 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
 
   // ── User Management (owner/admin only) ──────────────────────────────────
 
+  // GET /api/staff/assignable — lightweight list of ACTIVE users for assignment
+  // dropdowns throughout the app. Any authenticated staff member may read it
+  // (techs need it to see who's assignable too). Returns only non-sensitive
+  // fields. Optional ?role=tech,sales filter (comma-separated) narrows by role.
+  // The User Management "Active" toggle is the single control: inactive users
+  // never appear here, so deactivating a user hides them app-wide instantly.
+  app.get("/api/staff/assignable", requireStaffAuth, (req, res) => {
+    const roleParam = String(req.query.role || "").trim();
+    const rows: any[] = sqlite.prepare(
+      "SELECT id, name, role, position, avatar_initials FROM employees WHERE is_active = 1 ORDER BY name"
+    ).all();
+    let list = rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      role: r.role,
+      position: r.position || null,
+      avatarInitials: r.avatar_initials || r.name.split(" ").map((w: string) => w[0]).join("").toUpperCase().slice(0, 2),
+    }));
+    if (roleParam) {
+      const wanted = new Set(roleParam.split(",").map(s => s.trim()).filter(Boolean));
+      // Owner and admin are always assignable regardless of the role filter,
+      // since they can act in any capacity.
+      list = list.filter(u => wanted.has(u.role) || u.role === "owner" || u.role === "admin");
+    }
+    res.json(list);
+  });
+
   // GET /api/staff — list all employees (owner/admin only)
   app.get("/api/staff", requireRole("owner", "admin"), (req, res) => {
-    const rows: any[] = sqlite.prepare("SELECT id, name, role, position, gmail_email, phone, is_active, last_login_at, permissions, avatar_initials, created_at, totp_enabled FROM employees ORDER BY id").all();
+    const rows: any[] = sqlite.prepare("SELECT id, name, role, position, gmail_email, gmail_connected, gmail_connected_at, phone, is_active, last_login_at, permissions, avatar_initials, created_at, totp_enabled FROM employees ORDER BY id").all();
     res.json(rows.map(r => ({
       id: r.id, name: r.name, role: r.role, position: r.position,
-      gmailEmail: r.gmail_email, phone: r.phone, isActive: !!r.is_active,
+      gmailEmail: r.gmail_email, gmailConnected: !!r.gmail_connected, gmailConnectedAt: r.gmail_connected_at,
+      phone: r.phone, isActive: !!r.is_active,
       lastLoginAt: r.last_login_at, permissions: r.permissions || "[]",
       avatarInitials: r.avatar_initials || r.name.split(" ").map((w: string) => w[0]).join("").toUpperCase().slice(0, 2),
       createdAt: r.created_at,
@@ -796,6 +849,13 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
     if (password) {
       const err = validatePasswordStrength(password);
       if (err) return res.status(400).json({ error: err });
+    }
+    if (pin && !/^\d{4,8}$/.test(String(pin))) return res.status(400).json({ error: "PIN must be 4–8 digits." });
+    if (gmailEmail && String(gmailEmail).trim()) {
+      const em = String(gmailEmail).trim();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) return res.status(400).json({ error: "Enter a valid email address." });
+      const clash: any = sqlite.prepare("SELECT id FROM employees WHERE LOWER(gmail_email) = LOWER(?)").get(em);
+      if (clash) return res.status(400).json({ error: "That email is already used by another account." });
     }
     if (pin) {
       if (!/^\d{6,8}$/.test(String(pin))) return res.status(400).json({ error: "PIN must be 6–8 digits." });
@@ -830,6 +890,17 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
     const { name, role, position, phone, gmailEmail, password, pin, permissions, isActive, avatarInitials } = req.body;
     const emp: any = sqlite.prepare("SELECT * FROM employees WHERE id = ?").get(id);
     if (!emp) return res.status(404).json({ error: "Employee not found" });
+    if (password) {
+      const err = validatePasswordStrength(password);
+      if (err) return res.status(400).json({ error: err });
+    }
+    if (pin && !/^\d{4,8}$/.test(String(pin))) return res.status(400).json({ error: "PIN must be 4–8 digits." });
+    if (gmailEmail && String(gmailEmail).trim()) {
+      const em = String(gmailEmail).trim();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) return res.status(400).json({ error: "Enter a valid email address." });
+      const clash: any = sqlite.prepare("SELECT id FROM employees WHERE LOWER(gmail_email) = LOWER(?) AND id != ?").get(em, id);
+      if (clash) return res.status(400).json({ error: "That email is already used by another account." });
+    }
 
     if (pin) {
       if (!/^\d{6,8}$/.test(String(pin))) return res.status(400).json({ error: "PIN must be 6–8 digits." });

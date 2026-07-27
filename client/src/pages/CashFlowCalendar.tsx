@@ -2,19 +2,75 @@
  * CashFlowCalendar.tsx — #3 13-Week Rolling Cash Flow Calendar
  * Maps expected invoice payment dates vs scheduled costs
  */
+import { useState, Fragment } from "react";
+import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { TrendingUp, TrendingDown, DollarSign, AlertTriangle, CalendarDays } from "lucide-react";
+import { AlertTriangle, CalendarDays, ChevronRight, ChevronDown, ExternalLink } from "lucide-react";
 
 const fmt$ = (n: number) => "$" + Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
+
+// Expandable line-item detail for one week bucket. `detail` is delivered inline
+// with the week row (from /api/cash-flow/13-week), so no extra fetch is needed —
+// we just render the inflow invoices and scheduled costs with links to open jobs.
+function WeekDetail({ detail, weekStart, weekEnd }: { detail: { inflow: any[]; costs: any[] }; weekStart: string; weekEnd: string }) {
+  const inflow = detail?.inflow || [];
+  const costs = detail?.costs || [];
+  if (inflow.length === 0 && costs.length === 0) {
+    return <p className="text-sm text-muted-foreground">No expected inflow or scheduled costs in this week.</p>;
+  }
+  return (
+    <div className="space-y-3">
+      <p className="text-xs font-semibold text-muted-foreground">Details for {weekStart} – {weekEnd}</p>
+      <div className="grid md:grid-cols-2 gap-x-8 gap-y-4">
+        {inflow.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold mb-1 pb-1 border-b text-green-700 dark:text-green-400">Expected Inflow — open invoices ({inflow.length})</p>
+            <div className="divide-y divide-border/50">
+              {inflow.map((r) => (
+                <div key={`in-${r.id}`} className="flex items-center justify-between py-1 text-sm" data-testid={`cf-inflow-${r.id}`}>
+                  <span className="flex items-center gap-2">
+                    <span className="font-medium">{r.invoiceNumber || `Invoice #${r.id}`}</span>
+                    <span className="text-muted-foreground">{r.contactName || "—"}</span>
+                    {r.jobId && <Link href={`/jobs/${r.jobId}`} className="inline-flex items-center gap-0.5 text-[hsl(var(--titan-blue))] hover:underline" data-testid={`cf-inflow-link-${r.id}`}>{r.jobNumber || "job"}<ExternalLink className="w-3 h-3" /></Link>}
+                  </span>
+                  <span className="font-semibold text-green-600 dark:text-green-400">{fmt$(r.amount)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {costs.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold mb-1 pb-1 border-b text-orange-700 dark:text-orange-400">Scheduled Costs ({costs.length})</p>
+            <div className="divide-y divide-border/50">
+              {costs.map((r) => (
+                <div key={`co-${r.type}-${r.id}`} className="flex items-center justify-between py-1 text-sm" data-testid={`cf-cost-${r.type}-${r.id}`}>
+                  <span className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-xs capitalize">{r.type}</Badge>
+                    <span className="text-muted-foreground">{r.label}</span>
+                    {r.jobId && <Link href={`/jobs/${r.jobId}`} className="inline-flex items-center gap-0.5 text-[hsl(var(--titan-blue))] hover:underline">{r.jobNumber || "job"}<ExternalLink className="w-3 h-3" /></Link>}
+                  </span>
+                  <span className="font-semibold text-orange-600 dark:text-orange-400">{fmt$(r.amount)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function CashFlowCalendar() {
   const { data: cf = [], isLoading } = useQuery<any[]>({
     queryKey: ["/api/cash-flow/13-week"],
     queryFn: () => apiRequest("GET", "/api/cash-flow/13-week").then(r => r.json()),
   });
+  // Which week row is expanded to show its line-item detail. null = none.
+  const [expandedWeek, setExpandedWeek] = useState<number | null>(null);
 
   const totalInflow = cf.reduce((s, w) => s + (w.expectedInflow || 0), 0);
   const totalOutflow = cf.reduce((s, w) => s + (w.scheduledCosts || 0), 0);
@@ -64,6 +120,7 @@ export default function CashFlowCalendar() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-muted/40 text-xs text-muted-foreground">
+                    <th className="px-2 py-2 w-6"></th>
                     <th className="text-left px-4 py-2">Week</th>
                     <th className="text-right px-4 py-2">Expected In</th>
                     <th className="text-right px-4 py-2">Scheduled Out</th>
@@ -76,8 +133,16 @@ export default function CashFlowCalendar() {
                   {cf.map((week: any, i: number) => {
                     const net = (week.expectedInflow || 0) - (week.scheduledCosts || 0);
                     const isNeg = net < 0;
+                    const isOpen = expandedWeek === i;
                     return (
-                      <tr key={i} className="border-b hover:bg-muted/20 transition-colors">
+                      <Fragment key={i}>
+                      <tr
+                        className="border-b hover:bg-muted/20 transition-colors cursor-pointer"
+                        data-testid={`cf-week-row-${i}`}
+                        onClick={() => setExpandedWeek(isOpen ? null : i)}
+                        title={isOpen ? "Hide details" : "Click to review what's in this week"}
+                      >
+                        <td className="px-2 py-2.5 text-muted-foreground">{isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}</td>
                         <td className="px-4 py-2.5">
                           <div className="font-medium">Week {i + 1}</div>
                           <div className="text-xs text-muted-foreground">{week.weekStart} – {week.weekEnd}</div>
@@ -98,6 +163,14 @@ export default function CashFlowCalendar() {
                           )}
                         </td>
                       </tr>
+                      {isOpen && (
+                        <tr className="border-b bg-muted/20">
+                          <td colSpan={7} className="px-4 py-3">
+                            <WeekDetail detail={week.detail} weekStart={week.weekStart} weekEnd={week.weekEnd} />
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
                     );
                   })}
                 </tbody>

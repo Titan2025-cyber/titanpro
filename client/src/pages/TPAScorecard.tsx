@@ -6,14 +6,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useState } from "react";
-import { Plus, AlertTriangle, CheckCircle, Minus, ShieldCheck } from "lucide-react";
+import { Plus, AlertTriangle, CheckCircle, Minus, ShieldCheck, Pencil } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 export default function TPAScorecard() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [showAdd, setShowAdd] = useState(false);
   const [showMetric, setShowMetric] = useState<number | null>(null);
   const [form, setForm] = useState({ name: "", carrier: "", thresholdResponseHrs: "2", thresholdCycleDays: "30", thresholdCsatMin: "4.0", thresholdDocPct: "95" });
   const [metricForm, setMetricForm] = useState({ jobId: "", responseHrs: "", cycleDays: "", csatScore: "", docComplete: false, disputed: false, notes: "" });
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState({ name: "", carrier: "", thresholdResponseHrs: "2", thresholdCycleDays: "30", thresholdCsatMin: "4.0", thresholdDocPct: "95" });
 
   const { data: scorecard = [], isLoading } = useQuery<any[]>({ queryKey: ["/api/reports/tpa-scorecard"], queryFn: () => apiRequest("/api/reports/tpa-scorecard").then(r => r.json()) });
   const { data: programs = [] } = useQuery<any[]>({ queryKey: ["/api/tpa-programs"], queryFn: () => apiRequest("/api/tpa-programs").then(r => r.json()) });
@@ -26,10 +30,31 @@ export default function TPAScorecard() {
     mutationFn: (id: number) => apiRequest(`/api/tpa-programs/${id}`, { method: "DELETE" }).then(r => r.json()),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/tpa-programs"] }); qc.invalidateQueries({ queryKey: ["/api/reports/tpa-scorecard"] }); },
   });
+  const updateProgram = useMutation({
+    mutationFn: ({ id, data }: any) => apiRequest(`/api/tpa-programs/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).then(r => r.json()),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/tpa-programs"] });
+      qc.invalidateQueries({ queryKey: ["/api/reports/tpa-scorecard"] });
+      setEditingId(null);
+      toast({ title: "TPA Program updated" });
+    },
+    onError: (e: any) => toast({ title: "Update failed", description: String(e?.message || e), variant: "destructive" }),
+  });
   const addMetric = useMutation({
     mutationFn: ({ programId, data }: any) => apiRequest(`/api/tpa-programs/${programId}/metrics`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).then(r => r.json()),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/reports/tpa-scorecard"] }); setShowMetric(null); },
   });
+
+  const openEdit = (prog: any) => {
+    setEditForm({
+      name: prog.name || "", carrier: prog.carrier || "",
+      thresholdResponseHrs: prog.thresholds?.responseHrs != null ? String(prog.thresholds.responseHrs) : "2",
+      thresholdCycleDays: prog.thresholds?.cycleDays != null ? String(prog.thresholds.cycleDays) : "30",
+      thresholdCsatMin: prog.thresholds?.csatMin != null ? String(prog.thresholds.csatMin) : "4.0",
+      thresholdDocPct: prog.thresholds?.docPct != null ? String(prog.thresholds.docPct) : "95",
+    });
+    setEditingId(prog.id);
+  };
 
   const trafficColor = (light: string) => light === "green" ? "text-green-500" : light === "yellow" ? "text-yellow-500" : "text-red-500";
   const TrafficIcon = ({ light }: { light: string }) => light === "green" ? <CheckCircle className="w-5 h-5 text-green-500" /> : light === "yellow" ? <Minus className="w-5 h-5 text-yellow-500" /> : <AlertTriangle className="w-5 h-5 text-red-500" />;
@@ -130,6 +155,7 @@ export default function TPAScorecard() {
                       </div>
                     </DialogContent>
                   </Dialog>
+                  <Button variant="outline" size="sm" onClick={() => openEdit(prog)} data-testid={`button-edit-tpa-programs-${prog.id}`}><Pencil className="w-3 h-3" /></Button>
                   <Button variant="outline" size="sm" onClick={() => deleteProgram.mutate(prog.id)} className="text-red-500 hover:text-red-700" data-testid={`button-delete-tpa-${prog.id}`}>Delete</Button>
                 </div>
               </CardContent>
@@ -137,6 +163,31 @@ export default function TPAScorecard() {
           ))}
         </div>
       )}
+
+      {/* Edit Dialog */}
+      <Dialog open={editingId !== null} onOpenChange={v => { if (!v) setEditingId(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Edit TPA Program</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <Input placeholder="Program name (e.g. Contractor Connection)" value={editForm.name} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} data-testid={`input-name-${editingId}`} />
+            <Input placeholder="Carrier / TPA company" value={editForm.carrier} onChange={e => setEditForm(f => ({ ...f, carrier: e.target.value }))} data-testid={`input-carrier-${editingId}`} />
+            <div className="grid grid-cols-2 gap-2">
+              <div><p className="text-xs text-muted-foreground mb-1">Max Response (hrs)</p><Input type="number" value={editForm.thresholdResponseHrs} onChange={e => setEditForm(f => ({ ...f, thresholdResponseHrs: e.target.value }))} data-testid={`input-thresholdResponseHrs-${editingId}`} /></div>
+              <div><p className="text-xs text-muted-foreground mb-1">Max Cycle (days)</p><Input type="number" value={editForm.thresholdCycleDays} onChange={e => setEditForm(f => ({ ...f, thresholdCycleDays: e.target.value }))} data-testid={`input-thresholdCycleDays-${editingId}`} /></div>
+              <div><p className="text-xs text-muted-foreground mb-1">Min CSAT (0–5)</p><Input type="number" step="0.1" value={editForm.thresholdCsatMin} onChange={e => setEditForm(f => ({ ...f, thresholdCsatMin: e.target.value }))} data-testid={`input-thresholdCsatMin-${editingId}`} /></div>
+              <div><p className="text-xs text-muted-foreground mb-1">Min Doc % complete</p><Input type="number" value={editForm.thresholdDocPct} onChange={e => setEditForm(f => ({ ...f, thresholdDocPct: e.target.value }))} data-testid={`input-thresholdDocPct-${editingId}`} /></div>
+            </div>
+            <Button
+              className="w-full bg-[hsl(var(--titan-blue))] text-white"
+              onClick={() => editingId !== null && updateProgram.mutate({ id: editingId, data: { name: editForm.name, carrier: editForm.carrier, thresholdResponseHrs: Number(editForm.thresholdResponseHrs), thresholdCycleDays: Number(editForm.thresholdCycleDays), thresholdCsatMin: Number(editForm.thresholdCsatMin), thresholdDocPct: Number(editForm.thresholdDocPct) } })}
+              disabled={!editForm.name || updateProgram.isPending}
+              data-testid={`button-save-tpa-programs-${editingId}`}
+            >
+              {updateProgram.isPending ? "Saving..." : "Save Changes"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

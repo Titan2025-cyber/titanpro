@@ -21,6 +21,7 @@ import NotFound from "@/pages/not-found";
 
 // Pages — Suite 7 (11 Upgrades)
 import SessionTimeout from "@/components/SessionTimeout";
+import OfflineIndicator from "@/components/OfflineIndicator";
 import Login from "@/pages/Login";
 import ForceEnroll2FA from "@/components/ForceEnroll2FA";
 import ForcePinChange from "@/components/ForcePinChange";
@@ -61,6 +62,7 @@ const DryingComplianceHub = lazy(() => import("@/pages/DryingComplianceHub"));
 const SafetyHub = lazy(() => import("@/pages/SafetyHub"));
 const SchedulingHub = lazy(() => import("@/pages/SchedulingHub"));
 const ARHub = lazy(() => import("@/pages/ARHub"));
+const HRHub = lazy(() => import("@/pages/HRHub"));
 const ProfitabilityHub = lazy(() => import("@/pages/ProfitabilityHub"));
 const PartnerHub = lazy(() => import("@/pages/PartnerHub"));
 const MarketingHub = lazy(() => import("@/pages/MarketingHub"));
@@ -168,6 +170,7 @@ const Integrations = lazy(() => import("@/pages/Integrations"));
 const UserManagement = lazy(() => import("@/pages/UserManagement"));
 const Security = lazy(() => import("@/pages/Security"));
 const Terms = lazy(() => import("@/pages/Terms"));
+const Privacy = lazy(() => import("@/pages/Privacy"));
 
 // Route matching must ignore any "?query" that lives inside the hash so that
 // deep links like #/reports?report=weekly-billing&print=1 still match the
@@ -226,6 +229,9 @@ function AppRoutes() {
       <Route path="/terms" component={() => (
         <Suspense fallback={<PageLoader />}><Page component={Terms} name="Terms" /></Suspense>
       )} />
+      <Route path="/privacy" component={() => (
+        <Suspense fallback={<PageLoader />}><Page component={Privacy} name="Privacy" /></Suspense>
+      )} />
       {/* Public customer/partner portals — reachable via QR code WITHOUT staff
          login. Each portal renders its own self-contained login gate. */}
       <Route path="/customer-portal" component={() => (
@@ -264,6 +270,8 @@ function AuthenticatedRoutes() {
         <Route path="/scheduling"><Redirect to="/scheduling-hub?tab=schedule" /></Route>
         <Route path="/technician"><Redirect to="/technician-hub?tab=technician" /></Route>
         <Route path="/equipment"><Redirect to="/equipment-hub?tab=inventory" /></Route>
+        <Route path="/inventory"><Redirect to="/equipment-hub?tab=consumables" /></Route>
+        <Route path="/consumables"><Redirect to="/equipment-hub?tab=consumables" /></Route>
         <Route path="/equipment-roi"><Redirect to="/equipment-hub?tab=roi" /></Route>
         <Route path="/inspections" component={() => <Page component={InspectionChecklist} name="InspectionChecklist" />} />
         <Route path="/safety"><Redirect to="/safety-hub?tab=log" /></Route>
@@ -281,6 +289,7 @@ function AuthenticatedRoutes() {
         <Route path="/safety-hub" component={() => <Page component={SafetyHub} name="SafetyHub" />} />
         <Route path="/scheduling-hub" component={() => <Page component={SchedulingHub} name="SchedulingHub" />} />
         <Route path="/ar-hub" component={() => <Page component={ARHub} name="ARHub" />} />
+        <Route path="/hr-hub" component={() => <Page component={HRHub} name="HRHub" />} />
         <Route path="/profitability-hub" component={() => <Page component={ProfitabilityHub} name="ProfitabilityHub" />} />
         <Route path="/partner-hub" component={() => <Page component={PartnerHub} name="PartnerHub" />} />
         <Route path="/marketing-hub" component={() => <Page component={MarketingHub} name="MarketingHub" />} />
@@ -444,6 +453,7 @@ export default function App() {
           <AppRoutes />
         </Router>
         <SessionTimeout />
+        <OfflineIndicator />
         <Toaster />
       </AuthProvider>
     </QueryClientProvider>

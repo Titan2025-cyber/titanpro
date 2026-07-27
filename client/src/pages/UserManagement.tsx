@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { UserPlus, Pencil, Power, ShieldCheck, Key, RefreshCw, Trash2, ShieldOff } from "lucide-react";
+import { UserPlus, Pencil, Power, ShieldCheck, Key, RefreshCw, Trash2, Mail, Link2, LogOut, CheckCircle, ShieldOff } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,6 +14,19 @@ import {
 } from "@/components/ui/alert-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
+import { useToast } from "@/hooks/use-toast";
+
+// apiRequest throws Error(`<status>: <body>`) where <body> is usually JSON like
+// {"error":"..."}. Pull out the human message.
+async function errMsg(err: any): Promise<string> {
+  const raw = typeof err?.message === "string" ? err.message : "";
+  const m = raw.match(/^\d+:\s*([\s\S]*)$/);
+  const body = (m ? m[1] : raw).trim();
+  if (body.startsWith("{")) {
+    try { const j = JSON.parse(body); return j.error || j.message || body; } catch { /* fall through */ }
+  }
+  return body || "Something went wrong. Please try again.";
+}
 
 interface StaffMember {
   id: number;
@@ -21,6 +34,8 @@ interface StaffMember {
   role: string;
   position: string | null;
   gmailEmail: string | null;
+  gmailConnected: boolean;
+  gmailConnectedAt: string | null;
   phone: string | null;
   isActive: boolean;
   lastLoginAt: string | null;
@@ -49,6 +64,7 @@ const blank = { name: "", role: "tech", position: "", phone: "", gmailEmail: "",
 
 export default function UserManagement() {
   const { user: me, can } = useAuth();
+  const { toast } = useToast();
   const [editing, setEditing] = useState<StaffMember | null>(null);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<typeof blank>({ ...blank });
@@ -64,22 +80,71 @@ export default function UserManagement() {
     queryFn: () => apiRequest("GET", "/api/staff").then(r => r.json()),
   });
 
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/staff"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/staff/assignable"] });
+  };
+
   const createMutation = useMutation({
     mutationFn: (data: any) => apiRequest("POST", "/api/staff", data),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/staff"] }); setCreating(false); setForm({ ...blank }); },
+    onSuccess: () => { refresh(); setCreating(false); setForm({ ...blank }); toast({ title: "Staff member created" }); },
+    onError: async (err) => toast({ title: "Couldn't create user", description: await errMsg(err), variant: "destructive" }),
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: number; data: any }) => apiRequest("PATCH", `/api/staff/${id}`, data),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/staff"] }); setEditing(null); setResetPasswordId(null); },
+    onSuccess: () => { refresh(); setEditing(null); setResetPasswordId(null); setNewPw(""); setNewPin(""); toast({ title: "Changes saved" }); },
+    onError: async (err) => toast({ title: "Couldn't save changes", description: await errMsg(err), variant: "destructive" }),
   });
 
   const toggleActive = (emp: StaffMember) =>
     updateMutation.mutate({ id: emp.id, data: { isActive: !emp.isActive } });
 
+  // ── Gmail integration (per-employee) ────────────────────────────────────────
+  // configured = server has Google credentials. When not configured, no Gmail
+  // controls are shown (dormant / test-safe).
+  const { data: gmailAdmin } = useQuery<{ configured: boolean; employees: any[] }>({
+    queryKey: ["/api/gmail/admin/status"],
+    queryFn: () => apiRequest("GET", "/api/gmail/admin/status").then(r => r.json()),
+  });
+  const gmailConfigured = !!gmailAdmin?.configured;
+
+  // Connect MY OWN Gmail (each person must connect their own Google account —
+  // Google issues tokens to whoever completes the consent screen).
+  const connectMyGmail = async () => {
+    try {
+      const res = await apiRequest("GET", "/api/gmail/oauth/start");
+      const { authUrl, error } = await res.json();
+      if (error || !authUrl) { toast({ title: "Cannot connect", description: error || "No auth URL returned.", variant: "destructive" }); return; }
+      const popup = window.open(authUrl, "gmail_oauth", "width=520,height=680");
+      const timer = setInterval(() => {
+        if (popup?.closed) {
+          clearInterval(timer);
+          refresh();
+          queryClient.invalidateQueries({ queryKey: ["/api/gmail/admin/status"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/gmail/status"] });
+        }
+      }, 800);
+    } catch (e: any) {
+      toast({ title: "Cannot connect", description: String(e?.message || e), variant: "destructive" });
+    }
+  };
+
+  const disconnectGmail = useMutation({
+    mutationFn: (employeeId: number) => apiRequest("POST", `/api/gmail/admin/disconnect/${employeeId}`),
+    onSuccess: () => {
+      refresh();
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/admin/status"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/status"] });
+      toast({ title: "Gmail disconnected" });
+    },
+    onError: async (err) => toast({ title: "Couldn't disconnect", description: await errMsg(err), variant: "destructive" }),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/staff/${id}?hard=true`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/staff"] }); setDeleteTarget(null); },
+    onSuccess: () => { refresh(); setDeleteTarget(null); toast({ title: "Account deleted" }); },
+    onError: async (err) => toast({ title: "Couldn't delete user", description: await errMsg(err), variant: "destructive" }),
   });
 
   const reset2FAMutation = useMutation({
@@ -205,6 +270,43 @@ export default function UserManagement() {
                         {emp.position || "No position set"}
                         {emp.phone && <span className="ml-2">· {emp.phone}</span>}
                       </p>
+                      <p className="text-xs text-muted-foreground" data-testid={`text-staff-email-${emp.id}`}>
+                        <Key className="w-3 h-3 inline mr-1 opacity-60" />
+                        {emp.gmailEmail || <span className="italic">signs in by name: {emp.name}</span>}
+                      </p>
+                      {/* Gmail connection status + controls (only when configured) */}
+                      {gmailConfigured && (
+                        <div className="mt-1 flex items-center gap-2 flex-wrap" data-testid={`gmail-status-${emp.id}`}>
+                          {emp.gmailConnected ? (
+                            <>
+                              <span className="inline-flex items-center gap-1 text-xs text-green-600 font-medium">
+                                <CheckCircle className="w-3 h-3" /> Gmail connected
+                              </span>
+                              <button
+                                onClick={() => disconnectGmail.mutate(emp.id)}
+                                disabled={disconnectGmail.isPending}
+                                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-destructive"
+                                data-testid={`button-gmail-disconnect-${emp.id}`}
+                              >
+                                <LogOut className="w-3 h-3" /> Disconnect
+                              </button>
+                            </>
+                          ) : isMe ? (
+                            <button
+                              onClick={connectMyGmail}
+                              className="inline-flex items-center gap-1 text-xs font-semibold text-[hsl(var(--titan-blue))] hover:underline"
+                              data-testid={`button-gmail-connect-${emp.id}`}
+                            >
+                              <Link2 className="w-3 h-3" /> Connect Gmail
+                            </button>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                              <Mail className="w-3 h-3 opacity-60" /> Gmail not connected
+                              <span className="opacity-60">— {emp.name.split(" ")[0]} connects from their own login</span>
+                            </span>
+                          )}
+                        </div>
+                      )}
                       {emp.lastLoginAt && (
                         <p className="text-xs text-muted-foreground">
                           Last login: {new Date(emp.lastLoginAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
@@ -366,19 +468,30 @@ function StaffForm({ form, setForm, onSave, onCancel, isPending, isNew }: {
         <Label className="text-xs">Phone</Label>
         <Input className="h-8 text-xs mt-1" value={form.phone} onChange={e => setForm((f: any) => ({ ...f, phone: e.target.value }))} placeholder="706-555-0101" />
       </div>
-      <div>
-        <Label className="text-xs">Gmail (for Email module)</Label>
-        <Input className="h-8 text-xs mt-1" value={form.gmailEmail} onChange={e => setForm((f: any) => ({ ...f, gmailEmail: e.target.value }))} placeholder="name@gmail.com" />
+      <div className="sm:col-span-2">
+        <Label className="text-xs">Login Email <span className="text-muted-foreground">(used to sign in + for Email module)</span></Label>
+        <Input className="h-8 text-xs mt-1" value={form.gmailEmail} onChange={e => setForm((f: any) => ({ ...f, gmailEmail: e.target.value }))} placeholder="name@company.com" data-testid="input-staff-email" />
       </div>
-      {isNew && (
+      {isNew ? (
         <>
           <div>
             <Label className="text-xs">Password <span className="text-muted-foreground">(default: titan1234)</span></Label>
-            <Input className="h-8 text-xs mt-1" type="password" value={form.password} onChange={e => setForm((f: any) => ({ ...f, password: e.target.value }))} placeholder="titan1234" />
+            <Input className="h-8 text-xs mt-1" type="password" value={form.password} onChange={e => setForm((f: any) => ({ ...f, password: e.target.value }))} placeholder="titan1234" data-testid="input-staff-password" />
           </div>
           <div>
             <Label className="text-xs">PIN <span className="text-muted-foreground">(default: 1234)</span></Label>
-            <Input className="h-8 text-xs mt-1" type="password" maxLength={6} value={form.pin} onChange={e => setForm((f: any) => ({ ...f, pin: e.target.value }))} placeholder="1234" />
+            <Input className="h-8 text-xs mt-1" type="password" maxLength={8} value={form.pin} onChange={e => setForm((f: any) => ({ ...f, pin: e.target.value }))} placeholder="1234" data-testid="input-staff-pin" />
+          </div>
+        </>
+      ) : (
+        <>
+          <div>
+            <Label className="text-xs">New Password <span className="text-muted-foreground">(leave blank to keep)</span></Label>
+            <Input className="h-8 text-xs mt-1" type="password" value={form.password} onChange={e => setForm((f: any) => ({ ...f, password: e.target.value }))} placeholder="••••••••" data-testid="input-staff-password" />
+          </div>
+          <div>
+            <Label className="text-xs">New PIN <span className="text-muted-foreground">(4–8 digits, blank keeps)</span></Label>
+            <Input className="h-8 text-xs mt-1" type="password" maxLength={8} value={form.pin} onChange={e => setForm((f: any) => ({ ...f, pin: e.target.value }))} placeholder="••••" data-testid="input-staff-pin" />
           </div>
         </>
       )}

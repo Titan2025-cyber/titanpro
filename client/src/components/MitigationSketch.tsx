@@ -88,6 +88,11 @@ const ROOM_COLORS = [
 
 const DEFAULT_SKETCH: SketchData = { shapes: [], scale: 10, notes: "" };
 
+// Grid: 50px = 10 ft  →  5px per foot. Keep in sync with gridSize/scale math.
+const PX_PER_FT = 5;
+const pxToFt = (px: number) => Math.abs(px) / PX_PER_FT;
+const ftToPx = (ft: number) => ft * PX_PER_FT;
+
 function uid() {
   return Math.random().toString(36).slice(2, 9);
 }
@@ -325,6 +330,8 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
   const [moistureMaterial, setMoistureMaterial] = useState("");
   const [moistureAlert, setMoistureAlert] = useState(false);
   const [roomLabel, setRoomLabel] = useState("Living Room");
+  const [roomW, setRoomW] = useState(12); // ft — used when clicking to drop a fixed-size room
+  const [roomH, setRoomH] = useState(10); // ft
   const [dirty, setDirty] = useState(false);
   const [historyStack, setHistoryStack] = useState<SketchData[]>([DEFAULT_SKETCH]);
   const [histIdx, setHistIdx] = useState(0);
@@ -580,6 +587,20 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
       const next = { ...sketch, shapes: [...sketch.shapes, newRoom] };
       setSketch(next);
       pushHistory(next);
+    } else if (tool === "room" && !moved) {
+      // Click (no drag) with Room tool → drop a room at the exact typed W×H (ft)
+      const wPx = ftToPx(Math.max(1, roomW));
+      const hPx = ftToPx(Math.max(1, roomH));
+      const newRoom: RoomShape = {
+        type: "room", id: uid(),
+        x: ds.x, y: ds.y, w: wPx, h: hPx,
+        label: roomLabel, color,
+        sqft: Math.round(roomW * roomH),
+      };
+      const next = { ...sketch, shapes: [...sketch.shapes, newRoom] };
+      setSketch(next);
+      pushHistory(next);
+      setSelectedId(newRoom.id);
     } else if (tool === "circle" && moved) {
       const r = Math.sqrt((w.x - ds.x) ** 2 + (w.y - ds.y) ** 2);
       const newCircle: CircleShape = { type: "circle", id: uid(), cx: ds.x, cy: ds.y, r, color, label: "" };
@@ -647,7 +668,39 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
     setSelectedId(null);
   };
 
+  // ── Update a room's dimensions / label from the manual editor ──────────────
+  const updateRoom = (id: string, patch: Partial<{ wFt: number; hFt: number; label: string }>) => {
+    setSketch(prev => {
+      const next = {
+        ...prev,
+        shapes: prev.shapes.map(s => {
+          if (s.id !== id || s.type !== "room") return s;
+          const r = s as RoomShape;
+          const newW = patch.wFt != null ? ftToPx(Math.max(1, patch.wFt)) : r.w;
+          const newH = patch.hFt != null ? ftToPx(Math.max(1, patch.hFt)) : r.h;
+          const newLabel = patch.label != null ? patch.label : r.label;
+          return {
+            ...r,
+            w: newW,
+            h: newH,
+            label: newLabel,
+            sqft: Math.round(pxToFt(newW) * pxToFt(newH)),
+          } as RoomShape;
+        }),
+      };
+      return next;
+    });
+    setDirty(true);
+  };
+
+  // Snapshot to history after the user finishes editing a field (on blur)
+  const commitRoomEdit = () => { setSketch(prev => { pushHistory(prev); return prev; }); };
+
   const selectedShape = sketch.shapes.find(s => s.id === selectedId);
+
+  // Total floor area across all rooms on the sketch
+  const roomShapes = sketch.shapes.filter(s => s.type === "room");
+  const totalSqft = roomShapes.reduce((sum, s) => sum + (s.sqft ?? Math.abs((s.w / 50 * 10) * (s.h / 50 * 10))), 0);
 
   const TOOLS: { id: ToolMode; icon: any; label: string; tip: string }[] = [
     { id: "select", icon: MousePointer, label: "Select", tip: "Select & move shapes" },
@@ -667,6 +720,11 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
         <div className="flex items-center gap-2">
           <Ruler className="w-4 h-4 text-[hsl(var(--titan-blue))]" />
           <span className="text-sm font-semibold">Floor Plan Sketch</span>
+          {roomShapes.length > 0 && (
+            <Badge variant="outline" className="text-xs font-medium" data-testid="text-sketch-total-sqft">
+              {roomShapes.length} {roomShapes.length === 1 ? "room" : "rooms"} · {Math.round(totalSqft).toLocaleString()} sq ft total
+            </Badge>
+          )}
           {dirty && <Badge variant="outline" className="text-xs text-orange-500 border-orange-300">Unsaved</Badge>}
         </div>
         {!readOnly && (
@@ -750,6 +808,25 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
                   data-testid="input-sketch-room-label"
                 />
               </div>
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-muted-foreground">W</span>
+                <Input
+                  type="number" min={1}
+                  className="h-7 w-14 text-xs"
+                  value={roomW}
+                  onChange={e => setRoomW(Math.max(1, Number(e.target.value) || 1))}
+                  data-testid="input-sketch-room-w"
+                />
+                <span className="text-xs text-muted-foreground">×</span>
+                <Input
+                  type="number" min={1}
+                  className="h-7 w-14 text-xs"
+                  value={roomH}
+                  onChange={e => setRoomH(Math.max(1, Number(e.target.value) || 1))}
+                  data-testid="input-sketch-room-h"
+                />
+                <span className="text-xs text-muted-foreground">ft</span>
+              </div>
             </>
           )}
 
@@ -794,18 +871,51 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-center text-muted-foreground">
               <Ruler className="w-8 h-8 mx-auto mb-2 opacity-30" />
-              <p className="text-sm font-medium opacity-50">Select "Room" and drag to draw your floor plan</p>
-              <p className="text-xs opacity-40 mt-1">Grid = 10 ft per square · Scroll to zoom · Middle-click drag to pan</p>
+              <p className="text-sm font-medium opacity-50">Select "Room" and drag to draw — or set W×H (ft) and click to drop an exact-size room</p>
+              <p className="text-xs opacity-40 mt-1">Select a room to edit its dimensions · Grid = 10 ft per square · Scroll to zoom · Middle-click drag to pan</p>
             </div>
           </div>
         )}
 
         {/* Selected shape info */}
         {selectedShape && !readOnly && (
-          <div className="absolute bottom-3 left-3 right-3 bg-background/90 backdrop-blur-sm border rounded-lg p-2 flex items-center gap-3 text-xs shadow">
+          <div className="absolute bottom-3 left-3 right-3 bg-background/90 backdrop-blur-sm border rounded-lg p-2 flex items-center gap-3 text-xs shadow flex-wrap">
             <Badge variant="outline" className="capitalize">{selectedShape.type}</Badge>
             {selectedShape.type === "room" && (
-              <span className="text-muted-foreground">{(selectedShape as RoomShape).label} · {(selectedShape as RoomShape).sqft} sq ft</span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1">
+                  <span className="text-muted-foreground">Name</span>
+                  <Input
+                    className="h-7 w-32 text-xs"
+                    value={(selectedShape as RoomShape).label}
+                    onChange={e => updateRoom(selectedShape.id, { label: e.target.value })}
+                    onBlur={commitRoomEdit}
+                    data-testid="input-sketch-selected-room-label"
+                  />
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-muted-foreground">W</span>
+                  <Input
+                    type="number" min={1}
+                    className="h-7 w-14 text-xs"
+                    value={Math.round(pxToFt((selectedShape as RoomShape).w))}
+                    onChange={e => updateRoom(selectedShape.id, { wFt: Math.max(1, Number(e.target.value) || 1) })}
+                    onBlur={commitRoomEdit}
+                    data-testid="input-sketch-selected-room-w"
+                  />
+                  <span className="text-muted-foreground">×</span>
+                  <Input
+                    type="number" min={1}
+                    className="h-7 w-14 text-xs"
+                    value={Math.round(pxToFt((selectedShape as RoomShape).h))}
+                    onChange={e => updateRoom(selectedShape.id, { hFt: Math.max(1, Number(e.target.value) || 1) })}
+                    onBlur={commitRoomEdit}
+                    data-testid="input-sketch-selected-room-h"
+                  />
+                  <span className="text-muted-foreground">ft</span>
+                </div>
+                <span className="text-muted-foreground font-medium">{(selectedShape as RoomShape).sqft} sq ft</span>
+              </div>
             )}
             {selectedShape.type === "moisture" && (
               <span className={`font-mono font-semibold ${(selectedShape as MoisturePin).alert ? "text-red-600" : "text-green-600"}`}>

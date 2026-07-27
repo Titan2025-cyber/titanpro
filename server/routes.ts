@@ -2,6 +2,8 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage, sqlite } from "./storage";
 import crypto from "crypto";
+import Anthropic from "@anthropic-ai/sdk";
+import { registerCrudGapRoutes } from "./routes_crud_gaps";
 import { registerSuite4Routes } from "./routes_suite4";
 import { registerAuthRoutes, makeAuthMiddleware } from "./routes_auth";
 import { registerRampRoutes } from "./routes_ramp";
@@ -10,7 +12,10 @@ import { registerSuite5Routes } from "./routes_suite5";
 import { registerSuite6Routes } from "./routes_suite6";
 import { registerAIAgentRoutes } from "./routes_aiagent";
 import { registerMarketingAIRoutes } from "./routes_marketing_ai";
+import { registerHRRoutes } from "./routes_hr";
+import { registerGmailRoutes } from "./routes_gmail";
 import { registerPresenceRoutes } from "./routes_presence";
+import { sendEmail, sendSms, getNotifySettings, saveNotifySettings, providerStatus } from "./notify";
 
 // ── Error handler wrapper ────────────────────────────────────────────────────
 type Handler = (req: any, res: any, next?: any) => any;
@@ -453,6 +458,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // QuickBooks OAuth redirect callback (no bearer token on the redirect)
       "/api/qb/oauth/callback",
       "/api/qb/oauth/start",
+      // Gmail OAuth redirect callback (Google redirects the browser here with no
+      // bearer token; the employee is identified via a signed state param).
+      "/api/gmail/oauth/callback",
     ];
     const isPublic = (p: string) =>
       PUBLIC_API.some((allow) =>
@@ -473,7 +481,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!c) return res.status(404).json({ error: "Not found" });
     res.json(c);
   });
-  app.post("/api/contacts", (req, res) => { res.json(storage.createContact(req.body)); });
+  app.post("/api/contacts", (req, res) => {
+    // Require at least a name so blank/empty contacts can't be created.
+    if (!req.body?.name || !String(req.body.name).trim()) {
+      return res.status(400).json({ error: "Contact name is required." });
+    }
+    res.json(storage.createContact(req.body));
+  });
   app.patch("/api/contacts/:id", (req, res) => {
     const c = storage.updateContact(Number(req.params.id), req.body);
     if (!c) return res.status(404).json({ error: "Not found" });
@@ -587,6 +601,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ── Weekly Billing Report (OWNER ONLY) ────────────────────────────────────
   // Billed vs Settled vs Collected, bucketed by ISO week (Mon–Sun).
   const { requireRole, requireStaffAuth } = makeAuthMiddleware(sqlite);
+
+  // Recompute line-item totals + subtotal + total on the server so the client
+  // can never dictate a money amount that doesn't match the line items. Accepts
+  // the request body, mutates a copy, and returns it. Trusts qty/unitPrice and
+  // an explicit numeric `tax`, recomputing everything else. Leaves the body
+  // untouched if no lineItems are present (e.g. status-only PATCH).
+  function recomputeDocTotals(body: any): any {
+    const out: any = { ...(body || {}) };
+    if (out.lineItems == null) return out;
+    let items: any[];
+    try {
+      items = typeof out.lineItems === "string" ? JSON.parse(out.lineItems) : out.lineItems;
+    } catch { return out; }
+    if (!Array.isArray(items)) return out;
+    let subtotal = 0;
+    for (const it of items) {
+      const qty = Number(it.quantity ?? it.qty ?? 1) || 0;
+      const unit = Number(it.unitPrice ?? it.unit_price ?? 0) || 0;
+      const lineTotal = Math.round(qty * unit * 100) / 100;
+      it.total = lineTotal;
+      subtotal += lineTotal;
+    }
+    subtotal = Math.round(subtotal * 100) / 100;
+    const tax = Number(out.tax) || 0;
+    out.subtotal = subtotal;
+    out.tax = tax;
+    out.total = Math.round((subtotal + tax) * 100) / 100;
+    // Persist the recomputed, per-line-corrected items as a JSON string.
+    out.lineItems = JSON.stringify(items);
+    return out;
+  }
 
   // ── Notify all employees when a new job is entered ──────────────────────────
   // Posts an announcement to the team messaging channel AND drops a per-employee
@@ -849,6 +894,65 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ groupBy, from: fromStr, to: toStr, division: divisionFilter, periods, weeks: legacyWeeks, totals, divisions: divisionBreakdown });
   });
 
+  // Line-item detail for a single weekly-billing period (bucket). Returns the actual
+  // invoices / payments / costs / supplements that rolled up into one period so the
+  // user can review and open each record. Uses the same week/month keying as the report.
+  app.get("/api/reports/weekly-billing/detail", requireRole("owner"), (req, res) => {
+    const groupBy = (String(req.query.groupBy || "week").toLowerCase() === "month") ? "month" : "week";
+    const periodStart = String(req.query.periodStart || "");
+    if (!periodStart) return res.status(400).json({ error: "periodStart is required" });
+
+    function weekStartKey(dateStr: string): string | null {
+      if (!dateStr) return null;
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return null;
+      const day = d.getDay();
+      const diff = (day === 0 ? -6 : 1 - day);
+      const monday = new Date(d);
+      monday.setDate(d.getDate() + diff);
+      monday.setHours(0, 0, 0, 0);
+      return `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, "0")}-${String(monday.getDate()).padStart(2, "0")}`;
+    }
+    function monthStartKey(dateStr: string): string | null {
+      if (!dateStr) return null;
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return null;
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+    }
+    const keyOf = groupBy === "month" ? monthStartKey : weekStartKey;
+
+    const invoices = sqlite.prepare("SELECT id, invoice_number, total, created_at, job_id, contact_id, status FROM invoices").all() as any[];
+    const payments = sqlite.prepare("SELECT id, amount, type, credit_memo, paid_at, job_id, method FROM payments").all() as any[];
+    const supplements = sqlite.prepare("SELECT id, amount_approved, status, response_at, submitted_at, created_at, job_id FROM supplements").all() as any[];
+    const jobCosts = sqlite.prepare("SELECT id, total, cost_date, created_at, job_id, category, description FROM job_costs").all() as any[];
+    const jobs = storage.getJobs() as any[];
+    const contacts = storage.getContacts() as any[];
+    const jobNum = (id: any) => jobs.find(j => j.id === id)?.jobNumber || null;
+    const contactName = (id: any) => contacts.find(c => c.id === id)?.name || null;
+
+    const billed = invoices
+      .filter(inv => inv.created_at && keyOf(inv.created_at) === periodStart)
+      .map(inv => ({ id: inv.id, invoiceNumber: inv.invoice_number, total: inv.total || 0, jobId: inv.job_id, jobNumber: jobNum(inv.job_id), contactName: contactName(inv.contact_id), status: inv.status, date: inv.created_at }));
+
+    const collected = payments
+      .filter(p => p.paid_at && p.type === "received" && !p.credit_memo && keyOf(p.paid_at) === periodStart)
+      .map(p => ({ id: p.id, amount: p.amount || 0, jobId: p.job_id, jobNumber: jobNum(p.job_id), method: p.method, date: p.paid_at }));
+
+    const creditMemos = payments
+      .filter(p => p.paid_at && p.credit_memo && keyOf(p.paid_at) === periodStart)
+      .map(p => ({ id: p.id, amount: p.amount || 0, jobId: p.job_id, jobNumber: jobNum(p.job_id), date: p.paid_at }));
+
+    const costs = jobCosts
+      .filter(jc => { const d = jc.cost_date || jc.created_at; return d && keyOf(d) === periodStart; })
+      .map(jc => ({ id: jc.id, total: jc.total || 0, jobId: jc.job_id, jobNumber: jobNum(jc.job_id), category: jc.category, description: jc.description, date: jc.cost_date || jc.created_at }));
+
+    const settled = supplements
+      .filter(s => (s.status === "approved" || s.status === "partial") && keyOf(s.response_at || s.submitted_at || s.created_at) === periodStart)
+      .map(s => ({ id: s.id, amountApproved: s.amount_approved || 0, jobId: s.job_id, jobNumber: jobNum(s.job_id), status: s.status, date: s.response_at || s.submitted_at || s.created_at }));
+
+    res.json({ periodStart, groupBy, billed, collected, creditMemos, costs, settled });
+  });
+
   app.get("/api/jobs/:id", (req, res) => {
     const j = storage.getJob(Number(req.params.id));
     if (!j) return res.status(404).json({ error: "Not found" });
@@ -875,20 +979,45 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!j) return res.status(404).json({ error: "Not found" });
     res.json(j);
   });
-  app.delete("/api/jobs/:id", (req, res) => {
-    storage.deleteJob(Number(req.params.id));
-    res.json({ success: true });
+  app.delete("/api/jobs/:id", requireRole("owner", "admin"), (req, res) => {
+    const jobId = Number(req.params.id);
+    if (!Number.isFinite(jobId)) return res.status(400).json({ error: "Invalid job id" });
+    try {
+      // Block deletion when financial records exist — deleting a job that has
+      // invoices or payments would silently destroy accounting history and
+      // orphan money records. Force the user to resolve those first.
+      const invCount = (sqlite.prepare("SELECT COUNT(*) c FROM invoices WHERE job_id = ?").get(jobId) as any)?.c || 0;
+      const payCount = (sqlite.prepare("SELECT COUNT(*) c FROM payments WHERE job_id = ?").get(jobId) as any)?.c || 0;
+      if (!req.query.force && (invCount > 0 || payCount > 0)) {
+        return res.status(409).json({
+          error: `This job has ${invCount} invoice(s) and ${payCount} payment(s). Delete or reassign those financial records first, or re-send with ?force=1 to remove everything.`,
+          invoices: invCount,
+          payments: payCount,
+        });
+      }
+      // Cascade-delete children so nothing is orphaned (schema has no FKs).
+      const childTables = [
+        "estimates", "invoices", "payments", "photos", "drying_records",
+        "job_documents", "job_notes", "supplements", "supplement_trackers",
+        "time_clock", "claim_payments",
+      ];
+      const tx = sqlite.transaction(() => {
+        for (const t of childTables) {
+          try { sqlite.prepare(`DELETE FROM ${t} WHERE job_id = ?`).run(jobId); } catch { /* table may not exist */ }
+        }
+        storage.deleteJob(jobId);
+      });
+      tx();
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Unable to delete job" });
+    }
   });
 
-  // Add note to job
-  app.post("/api/jobs/:id/notes", (req, res) => {
-    const j = storage.getJob(Number(req.params.id));
-    if (!j) return res.status(404).json({ error: "Not found" });
-    const notes = JSON.parse(j.notes || "[]");
-    notes.push({ ...req.body, id: Date.now(), createdAt: new Date().toISOString() });
-    const updated = storage.updateJob(Number(req.params.id), { notes: JSON.stringify(notes) });
-    res.json(updated);
-  });
+  // NOTE: Job notes are handled by the dedicated job_notes table routes further
+  // below (GET/POST/PATCH/DELETE /api/jobs/:jobId/notes). The previous route here
+  // wrote notes into the jobs.notes JSON column, which the Notes tab never reads —
+  // so saved notes were invisible. Removed to let the correct route handle POST.
 
   // ── Estimates ─────────────────────────────────────────────────────────────
   app.get("/api/estimates", (_req, res) => { res.json(storage.getEstimates()); });
@@ -898,12 +1027,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(e);
   });
   app.get("/api/jobs/:id/estimates", (req, res) => { res.json(storage.getEstimatesByJob(Number(req.params.id))); });
-  app.post("/api/estimates", (req, res) => {
-    try { res.json(storage.createEstimate(req.body)); }
-    catch (err: any) { res.status(400).json({ error: err?.message || "Unable to create estimate" }); }
+  // Editable estimate fields — client can never set arbitrary columns.
+  const ESTIMATE_ALLOWED = [
+    "jobId", "title", "status", "lineItems", "subtotal", "tax", "total",
+    "notes", "rebuttalText", "carrierAdjustment", "phase",
+  ];
+  function whitelistEstimate(body: any) {
+    const clean: any = {};
+    for (const k of ESTIMATE_ALLOWED) if (body && k in body) clean[k] = body[k];
+    return clean;
+  }
+  app.post("/api/estimates", requireRole("owner", "admin", "sales", "general_manager"), (req, res) => {
+    try {
+      const body = recomputeDocTotals(whitelistEstimate(req.body));
+      res.json(storage.createEstimate(body));
+    } catch (err: any) { res.status(400).json({ error: err?.message || "Unable to create estimate" }); }
   });
-  app.patch("/api/estimates/:id", (req, res) => {
-    const e = storage.updateEstimate(Number(req.params.id), req.body);
+  app.patch("/api/estimates/:id", requireRole("owner", "admin", "sales", "general_manager"), (req, res) => {
+    const body = recomputeDocTotals(whitelistEstimate(req.body));
+    const e = storage.updateEstimate(Number(req.params.id), body);
     if (!e) return res.status(404).json({ error: "Not found" });
     res.json(e);
   });
@@ -948,11 +1090,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(inv);
   });
   app.get("/api/jobs/:id/invoices", (req, res) => { res.json(storage.getInvoicesByJob(Number(req.params.id))); });
-  app.post("/api/invoices", (req, res) => {
-    try { res.json(storage.createInvoice(req.body)); }
-    catch (err: any) { res.status(400).json({ error: err?.message || "Unable to create invoice" }); }
+  app.post("/api/invoices", requireRole("owner", "admin", "sales", "general_manager"), (req, res) => {
+    try {
+      const body = recomputeDocTotals(req.body);
+      res.json(storage.createInvoice(body));
+    } catch (err: any) { res.status(400).json({ error: err?.message || "Unable to create invoice" }); }
   });
-  app.patch("/api/invoices/:id", (req, res) => {
+  app.patch("/api/invoices/:id", requireRole("owner", "admin", "sales", "general_manager"), (req, res) => {
     const id = Number(req.params.id);
     const existing: any = storage.getInvoice(id);
     if (!existing) return res.status(404).json({ error: "Not found" });
@@ -963,7 +1107,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       "originalTotal", "adjustment", "adjustmentReason",
       "dueDate", "paidAt", "notes",
     ];
-    const body = req.body || {};
+    const rawBody = req.body || {};
+    // Server-side total recompute from line items — but ONLY when no settlement
+    // adjustment is being applied (the adjustment branch below owns total math).
+    const body = (rawBody.lineItems != null && !("adjustment" in rawBody))
+      ? recomputeDocTotals(rawBody)
+      : rawBody;
     const updates: any = {};
     for (const k of ALLOWED) if (k in body) updates[k] = body[k];
 
@@ -971,15 +1120,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // preserve the original invoiced amount and recompute the net total.
     if ("adjustment" in updates) {
       const adj = Number(updates.adjustment) || 0;
-      // Capture the pre-reduction amount the first time an adjustment is set.
-      const baseline = existing.originalTotal != null
-        ? Number(existing.originalTotal)
-        : Number(existing.total) || 0;
-      if (updates.originalTotal == null) updates.originalTotal = baseline;
       if (adj < 0) return res.status(400).json({ error: "Adjustment must be zero or a positive reduction amount." });
-      if (adj > baseline) return res.status(400).json({ error: "Adjustment cannot exceed the original invoice total." });
-      // Net total owed after the reduction.
-      updates.total = Math.max(0, baseline - adj);
+      if (adj === 0) {
+        // No reduction. Clear any prior settlement state and honor the total the
+        // client provided (e.g. from edited line items). Don't clobber it.
+        if (!("originalTotal" in updates)) updates.originalTotal = null;
+        // (updates.total, if present, is respected as-is.)
+      } else {
+        // A reduction is being applied. Prefer an explicit originalTotal from the
+        // client (edited gross); otherwise capture the pre-reduction baseline.
+        const baseline = updates.originalTotal != null
+          ? Number(updates.originalTotal)
+          : (existing.originalTotal != null ? Number(existing.originalTotal) : Number(existing.total) || 0);
+        updates.originalTotal = baseline;
+        if (adj > baseline) return res.status(400).json({ error: "Adjustment cannot exceed the original invoice total." });
+        // Net total owed after the reduction.
+        updates.total = Math.max(0, baseline - adj);
+      }
     }
 
     const inv = storage.updateInvoice(id, updates);
@@ -990,8 +1147,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ── Payments ──────────────────────────────────────────────────────────────
   app.get("/api/payments", (_req, res) => { res.json(storage.getPayments()); });
   app.post("/api/payments", (req, res, next) => {
-    // Recording a referral payout is restricted to owner/admin/sales.
-    if (req.body?.type !== "referral_payout") return next();
+    // Money-out payment types (payouts, refunds, credit memos) are restricted to
+    // owner/admin/sales. Recording an ordinary received payment stays open to staff.
+    const t = String(req.body?.type || "").toLowerCase();
+    const restricted = ["referral_payout", "refund", "credit_memo"];
+    if (!restricted.includes(t)) return next();
     requireRole("owner", "admin", "sales")(req, res, next);
   }, (req, res) => {
     res.json(storage.createPayment(req.body));
@@ -1158,6 +1318,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const e = storage.updateEmail(Number(req.params.id), req.body);
     res.json(e);
   });
+  // Delete an email (frontend Email.tsx delete button).
+  app.delete("/api/emails/:id", (req, res) => {
+    try {
+      sqlite.prepare("DELETE FROM emails WHERE id = ?").run(Number(req.params.id));
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
 
   // ── Drying Records (IICRC S500) ───────────────────────────────────────────
   app.get("/api/jobs/:id/drying-records", (req, res) => {
@@ -1269,9 +1436,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!emp) return res.status(404).json({ error: "Not found" });
     res.json(emp);
   });
-  app.post("/api/employees", (req, res) => { res.json(storage.createEmployee(req.body)); });
+  // Privileged fields (role/auth) can NEVER be set through this lightweight
+  // directory endpoint — staff account/role management goes through the
+  // owner/admin-gated /api/staff endpoints. This strips any attempt to escalate
+  // privilege or overwrite credentials via /api/employees.
+  const EMPLOYEE_FORBIDDEN_FIELDS = ["role", "passwordHash", "password_hash", "pin", "permissions", "isActive", "is_active"];
+  function stripEmployeePrivilegedFields(body: any) {
+    const clean: any = { ...(body || {}) };
+    for (const f of EMPLOYEE_FORBIDDEN_FIELDS) delete clean[f];
+    return clean;
+  }
+  app.post("/api/employees", requireRole("owner", "admin", "general_manager"), (req, res) => {
+    const body = stripEmployeePrivilegedFields(req.body);
+    if (!body.name || !String(body.name).trim()) return res.status(400).json({ error: "Name is required." });
+    res.json(storage.createEmployee(body));
+  });
   app.patch("/api/employees/:id", (req, res) => {
-    const emp = storage.updateEmployee(Number(req.params.id), req.body);
+    const body = stripEmployeePrivilegedFields(req.body);
+    const emp = storage.updateEmployee(Number(req.params.id), body);
     if (!emp) return res.status(404).json({ error: "Not found" });
     res.json(emp);
   });
@@ -1330,16 +1512,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(storage.getPayoutRequests(contactId));
   });
   app.post("/api/payout-requests", (req, res) => { res.json(storage.createPayoutRequest(req.body)); });
-  app.patch("/api/payout-requests/:id", (req, res) => {
-    const pr = storage.updatePayoutRequest(Number(req.params.id), req.body);
+  app.patch("/api/payout-requests/:id", (req, res, next) => {
+    // Approving or marking a payout paid is money-out — owner/admin only.
+    const newStatus = String(req.body?.status || "").toLowerCase();
+    if (newStatus === "paid" || newStatus === "approved") {
+      return requireRole("owner", "admin")(req, res, next);
+    }
+    next();
+  }, (req, res) => {
+    const id = Number(req.params.id);
+    const existing: any = storage.getPayoutRequest ? storage.getPayoutRequest(id) : null;
+    const alreadyPaid = existing && String(existing.status || "").toLowerCase() === "paid";
+    const pr = storage.updatePayoutRequest(id, req.body);
     if (!pr) return res.status(404).json({ error: "Not found" });
 
-    // Auto-apply payout to job on paid/withdrawn
-    if (req.body.status === "paid" && pr && pr.jobId) {
-      storage.updateJob(pr.jobId, {
-        partnerPayoutApplied: pr.amount,
-        partnerPayoutDate: new Date().toISOString(),
-      });
+    // Auto-apply payout to job on paid — only on the transition INTO paid, with a
+    // positive amount, and never twice (guards against double-applying to job finances).
+    if (req.body.status === "paid" && !alreadyPaid && pr && pr.jobId) {
+      const amt = Number(pr.amount);
+      if (Number.isFinite(amt) && amt > 0) {
+        storage.updateJob(pr.jobId, {
+          partnerPayoutApplied: amt,
+          partnerPayoutDate: new Date().toISOString(),
+        });
+      }
     }
     res.json(pr);
   });
@@ -1707,10 +1903,475 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(rows);
   });
 
+  // ── Consumables Inventory ──────────────────────────────────────────────────
+  const mapConsumable = (r: any) => r ? ({
+    id: r.id, name: r.name, sku: r.sku, category: r.category, unit: r.unit,
+    onHand: r.on_hand, reorderPoint: r.reorder_point, unitCost: r.unit_cost,
+    vendor: r.vendor, location: r.location, notes: r.notes,
+    isActive: r.is_active === 1 || r.is_active === true,
+    lowStock: (r.on_hand ?? 0) <= (r.reorder_point ?? 0),
+    createdAt: r.created_at,
+  }) : r;
+  const mapConsTxn = (r: any) => r ? ({
+    id: r.id, consumableId: r.consumable_id, type: r.type, quantity: r.quantity,
+    unitCost: r.unit_cost, jobId: r.job_id, jobCostId: r.job_cost_id,
+    source: r.source, reference: r.reference, enteredBy: r.entered_by,
+    balanceAfter: r.balance_after, createdAt: r.created_at,
+  }) : r;
+
+  // List all consumables
+  app.get("/api/consumables", (req, res) => {
+    const includeInactive = req.query.all === "1";
+    const rows = sqlite.prepare(
+      `SELECT * FROM consumables ${includeInactive ? "" : "WHERE is_active=1"} ORDER BY category, name`
+    ).all() as any[];
+    res.json(rows.map(mapConsumable));
+  });
+
+  // Low-stock / reorder list (grouped-friendly flat list). onHand <= reorderPoint.
+  app.get("/api/consumables/low-stock", (_req, res) => {
+    const rows = sqlite.prepare(
+      "SELECT * FROM consumables WHERE is_active=1 AND on_hand <= reorder_point ORDER BY vendor, category, name"
+    ).all() as any[];
+    const items = rows.map((r) => {
+      const c = mapConsumable(r);
+      // Suggested reorder qty: bring back up to 2x reorder point (min 1), rounded up.
+      const target = Math.max((r.reorder_point ?? 0) * 2, (r.reorder_point ?? 0) + 1, 1);
+      const suggestedQty = Math.max(Math.ceil(target - (r.on_hand ?? 0)), 1);
+      return { ...c, suggestedQty, estCost: +(suggestedQty * (r.unit_cost ?? 0)).toFixed(2) };
+    });
+    // group by vendor for the reorder email/list
+    const byVendor: Record<string, any[]> = {};
+    for (const it of items) {
+      const v = it.vendor || "Unassigned Vendor";
+      (byVendor[v] = byVendor[v] || []).push(it);
+    }
+    const groups = Object.entries(byVendor).map(([vendor, list]) => ({
+      vendor,
+      items: list,
+      estTotal: +list.reduce((s, i) => s + (i.estCost || 0), 0).toFixed(2),
+    }));
+    const estGrandTotal = +items.reduce((s, i) => s + (i.estCost || 0), 0).toFixed(2);
+    res.json({ count: items.length, items, groups, estGrandTotal });
+  });
+  // ── Notification settings + provider status + test send ────────────────────
+  app.get("/api/notify/settings", requireStaffAuth, (_req, res) => {
+    res.json({ settings: getNotifySettings(sqlite), providers: providerStatus() });
+  });
+  app.patch("/api/notify/settings", requireRole("owner", "admin"), (req, res) => {
+    const next = saveNotifySettings(sqlite, req.body || {});
+    res.json({ settings: next, providers: providerStatus() });
+  });
+  app.post("/api/notify/test", requireRole("owner", "admin"), wrapAsync(async (req, res) => {
+    const { channel, to } = req.body || {};
+    if (channel === "sms") {
+      const r = await sendSms({ to, body: "Titan Pro test SMS — notifications are working." });
+      return res.json({ results: r });
+    }
+    const r = await sendEmail({ to, subject: "Titan Pro test email", text: "This is a test email from Titan Pro. Notifications are working." });
+    res.json({ results: r });
+  }));
+
+  // ── Low-stock alert: build reorder list + send via email/SMS to ops ─────────
+  // Reusable generator (also used by the scheduled/dashboard check).
+  function buildReorderReport() {
+    const rows = sqlite.prepare(
+      "SELECT * FROM consumables WHERE is_active=1 AND on_hand <= reorder_point ORDER BY vendor, category, name"
+    ).all() as any[];
+    const items = rows.map((r) => {
+      const target = Math.max((r.reorder_point ?? 0) * 2, (r.reorder_point ?? 0) + 1, 1);
+      const suggestedQty = Math.max(Math.ceil(target - (r.on_hand ?? 0)), 1);
+      return {
+        id: r.id, name: r.name, sku: r.sku, unit: r.unit, vendor: r.vendor || "Unassigned Vendor",
+        onHand: r.on_hand, reorderPoint: r.reorder_point, unitCost: r.unit_cost,
+        suggestedQty, estCost: +(suggestedQty * (r.unit_cost ?? 0)).toFixed(2),
+      };
+    });
+    const byVendor: Record<string, any[]> = {};
+    for (const it of items) (byVendor[it.vendor] = byVendor[it.vendor] || []).push(it);
+    const groups = Object.entries(byVendor).map(([vendor, list]) => ({
+      vendor, items: list, estTotal: +list.reduce((s, i) => s + i.estCost, 0).toFixed(2),
+    }));
+    const estGrandTotal = +items.reduce((s, i) => s + i.estCost, 0).toFixed(2);
+    return { count: items.length, items, groups, estGrandTotal };
+  }
+
+  function reorderText(report: ReturnType<typeof buildReorderReport>) {
+    if (!report.count) return "All consumables are above their reorder points. Nothing to reorder.";
+    const lines: string[] = [];
+    lines.push(`TITAN RESTORATION — LOW STOCK / REORDER LIST`);
+    lines.push(`${report.count} item(s) at or below reorder point. Est. total: $${report.estGrandTotal.toFixed(2)}`);
+    lines.push("");
+    for (const g of report.groups) {
+      lines.push(`■ ${g.vendor}  (est $${g.estTotal.toFixed(2)})`);
+      for (const it of g.items) {
+        lines.push(`   - ${it.name}${it.sku ? ` [${it.sku}]` : ""}: on hand ${it.onHand} ${it.unit}, reorder ~${it.suggestedQty} ${it.unit} (@ $${(it.unitCost || 0).toFixed(2)})`);
+      }
+      lines.push("");
+    }
+    return lines.join("\n");
+  }
+
+  function reorderHtml(report: ReturnType<typeof buildReorderReport>) {
+    if (!report.count) return "<p>All consumables are above their reorder points. Nothing to reorder.</p>";
+    let h = `<h2 style="margin:0 0 4px">Low Stock / Reorder List</h2>`;
+    h += `<p style="margin:0 0 12px;color:#555">${report.count} item(s) at or below reorder point. Estimated total: <strong>$${report.estGrandTotal.toFixed(2)}</strong></p>`;
+    for (const g of report.groups) {
+      h += `<h3 style="margin:16px 0 4px">${escapeHtmlSafe(g.vendor)} <span style="font-weight:normal;color:#888">— est $${g.estTotal.toFixed(2)}</span></h3>`;
+      h += `<table style="border-collapse:collapse;width:100%;font-size:14px"><thead><tr style="background:#f3f4f6"><th style="text-align:left;padding:6px 8px">Item</th><th style="text-align:left;padding:6px 8px">SKU</th><th style="text-align:right;padding:6px 8px">On hand</th><th style="text-align:right;padding:6px 8px">Reorder qty</th><th style="text-align:right;padding:6px 8px">Est. cost</th></tr></thead><tbody>`;
+      for (const it of g.items) {
+        h += `<tr><td style="padding:6px 8px;border-top:1px solid #eee">${escapeHtmlSafe(it.name)}</td><td style="padding:6px 8px;border-top:1px solid #eee">${escapeHtmlSafe(it.sku || "")}</td><td style="padding:6px 8px;border-top:1px solid #eee;text-align:right">${it.onHand} ${escapeHtmlSafe(it.unit)}</td><td style="padding:6px 8px;border-top:1px solid #eee;text-align:right">${it.suggestedQty} ${escapeHtmlSafe(it.unit)}</td><td style="padding:6px 8px;border-top:1px solid #eee;text-align:right">$${it.estCost.toFixed(2)}</td></tr>`;
+      }
+      h += `</tbody></table>`;
+    }
+    return h;
+  }
+  function escapeHtmlSafe(s: string) {
+    return String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
+  }
+
+  // GET a text/plain reorder list (for copy/paste + download)
+  app.get("/api/consumables/reorder-list.txt", requireStaffAuth, (_req, res) => {
+    const report = buildReorderReport();
+    res.type("text/plain").send(reorderText(report));
+  });
+
+  // POST send the low-stock reorder list to configured ops recipients (or overrides)
+  app.post("/api/consumables/low-stock/notify", requireRole("owner", "admin"), wrapAsync(async (req, res) => {
+    const report = buildReorderReport();
+    if (!report.count) return res.json({ sent: false, reason: "no_low_stock", report });
+    const s = getNotifySettings(sqlite);
+    const body = req.body || {};
+    const emailTo: string[] = body.emailRecipients || s.emailRecipients || [];
+    const smsTo: string[] = body.smsRecipients || s.smsRecipients || [];
+    const wantEmail = body.email != null ? !!body.email : s.lowStockEmail;
+    const wantSms = body.sms != null ? !!body.sms : s.lowStockSms;
+    const results: any[] = [];
+    if (wantEmail && emailTo.length) {
+      const r = await sendEmail({
+        to: emailTo,
+        subject: `Titan Pro — ${report.count} item(s) low on stock (reorder ~$${report.estGrandTotal.toFixed(2)})`,
+        text: reorderText(report),
+        html: reorderHtml(report),
+      });
+      results.push(...r);
+    }
+    if (wantSms && smsTo.length) {
+      const sms = `Titan Pro: ${report.count} consumable(s) low on stock. Est reorder $${report.estGrandTotal.toFixed(2)}. Check Inventory > Reorder List.`;
+      const r = await sendSms({ to: smsTo, body: sms });
+      results.push(...r);
+    }
+    res.json({ sent: results.length > 0, count: report.count, results, report });
+  }));
+
+
+  // Single consumable + its transaction history
+  app.get("/api/consumables/:id", (req, res) => {
+    const row = sqlite.prepare("SELECT * FROM consumables WHERE id=?").get(req.params.id) as any;
+    if (!row) return res.status(404).json({ error: "Not found" });
+    const txns = sqlite.prepare("SELECT * FROM consumable_transactions WHERE consumable_id=? ORDER BY created_at DESC, id DESC").all(req.params.id) as any[];
+    res.json({ ...mapConsumable(row), transactions: txns.map(mapConsTxn) });
+  });
+
+  // Create consumable (manual entry). Any starting on_hand is logged as a restock txn.
+  app.post("/api/consumables", (req, res) => {
+    const d = req.body || {};
+    if (!d.name || !String(d.name).trim()) return res.status(400).json({ error: "Name is required" });
+    const now = new Date().toISOString();
+    const onHand = Number(d.onHand) || 0;
+    const row = sqlite.prepare(
+      `INSERT INTO consumables (name, sku, category, unit, on_hand, reorder_point, unit_cost, vendor, location, notes, is_active, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,1,?) RETURNING *`
+    ).get(
+      String(d.name).trim(), d.sku || null, d.category || "general", d.unit || "each",
+      onHand, Number(d.reorderPoint) || 0, Number(d.unitCost) || 0,
+      d.vendor || null, d.location || null, d.notes || null, now
+    ) as any;
+    if (onHand > 0) {
+      sqlite.prepare(
+        `INSERT INTO consumable_transactions (consumable_id, type, quantity, unit_cost, source, reference, entered_by, balance_after, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      ).run(row.id, "restock", onHand, Number(d.unitCost) || 0, "manual", "Initial stock", (req as any).employee?.name || d.enteredBy || null, onHand, now);
+    }
+    res.json(mapConsumable(row));
+  });
+
+  // Update consumable metadata (NOT on_hand — use restock/usage/adjust for stock moves)
+  app.patch("/api/consumables/:id", (req, res) => {
+    const d = req.body || {};
+    const allowed: Record<string, string> = {
+      name: "name", sku: "sku", category: "category", unit: "unit",
+      reorderPoint: "reorder_point", unitCost: "unit_cost", vendor: "vendor",
+      location: "location", notes: "notes", isActive: "is_active",
+    };
+    const sets: string[] = []; const vals: any[] = [];
+    for (const [k, col] of Object.entries(allowed)) {
+      if (k in d) {
+        sets.push(`${col} = ?`);
+        vals.push(k === "isActive" ? (d[k] ? 1 : 0) : d[k]);
+      }
+    }
+    if (!sets.length) return res.status(400).json({ error: "No updatable fields" });
+    vals.push(req.params.id);
+    const row = sqlite.prepare(`UPDATE consumables SET ${sets.join(", ")} WHERE id=? RETURNING *`).get(...vals) as any;
+    if (!row) return res.status(404).json({ error: "Not found" });
+    res.json(mapConsumable(row));
+  });
+
+  // Soft-delete (deactivate) a consumable
+  app.delete("/api/consumables/:id", (req, res) => {
+    sqlite.prepare("UPDATE consumables SET is_active=0 WHERE id=?").run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  // Restock (add to on_hand). Optionally update unit cost.
+  app.post("/api/consumables/:id/restock", (req, res) => {
+    const d = req.body || {};
+    const qty = Number(d.quantity);
+    if (!qty || qty <= 0) return res.status(400).json({ error: "Quantity must be greater than 0" });
+    const c = sqlite.prepare("SELECT * FROM consumables WHERE id=?").get(req.params.id) as any;
+    if (!c) return res.status(404).json({ error: "Not found" });
+    const now = new Date().toISOString();
+    const unitCost = d.unitCost != null ? Number(d.unitCost) : c.unit_cost;
+    const newOnHand = (c.on_hand || 0) + qty;
+    sqlite.prepare("UPDATE consumables SET on_hand=?, unit_cost=? WHERE id=?").run(newOnHand, unitCost, req.params.id);
+    sqlite.prepare(
+      `INSERT INTO consumable_transactions (consumable_id, type, quantity, unit_cost, source, reference, entered_by, balance_after, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`
+    ).run(req.params.id, "restock", qty, unitCost, d.source || "manual", d.reference || null, (req as any).employee?.name || d.enteredBy || null, newOnHand, now);
+    const row = sqlite.prepare("SELECT * FROM consumables WHERE id=?").get(req.params.id);
+    res.json(mapConsumable(row));
+  });
+
+  // Manual adjustment (signed: +/-). For corrections, damage, shrinkage.
+  app.post("/api/consumables/:id/adjust", (req, res) => {
+    const d = req.body || {};
+    const delta = Number(d.quantity);
+    if (!delta || Number.isNaN(delta)) return res.status(400).json({ error: "Adjustment quantity required" });
+    const c = sqlite.prepare("SELECT * FROM consumables WHERE id=?").get(req.params.id) as any;
+    if (!c) return res.status(404).json({ error: "Not found" });
+    const newOnHand = (c.on_hand || 0) + delta;
+    if (newOnHand < 0) return res.status(400).json({ error: `Adjustment would drop stock below zero (on hand ${c.on_hand}).` });
+    const now = new Date().toISOString();
+    sqlite.prepare("UPDATE consumables SET on_hand=? WHERE id=?").run(newOnHand, req.params.id);
+    sqlite.prepare(
+      `INSERT INTO consumable_transactions (consumable_id, type, quantity, unit_cost, source, reference, entered_by, balance_after, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`
+    ).run(req.params.id, "adjustment", delta, c.unit_cost || 0, "manual", d.reference || "Manual adjustment", (req as any).employee?.name || d.enteredBy || null, newOnHand, now);
+    const row = sqlite.prepare("SELECT * FROM consumables WHERE id=?").get(req.params.id);
+    res.json(mapConsumable(row));
+  });
+
+  // Bulk restock from a parsed PDF receipt. Body: { reference, vendor, lines:[{consumableId?, name, sku?, quantity, unitCost?, category?, unit?}] }
+  // If consumableId present -> restock that item. Else match by SKU or name (case-insensitive); if no match, create new consumable then restock.
+  app.post("/api/consumables/import-receipt", (req, res) => {
+    const d = req.body || {};
+    const lines: any[] = Array.isArray(d.lines) ? d.lines : [];
+    if (!lines.length) return res.status(400).json({ error: "No line items to import" });
+    const now = new Date().toISOString();
+    const enteredBy = (req as any).employee?.name || d.enteredBy || null;
+    const reference = d.reference || "PDF Receipt";
+    const results: any[] = [];
+    const tx = sqlite.transaction(() => {
+      for (const ln of lines) {
+        const qty = Number(ln.quantity);
+        if (!qty || qty <= 0) { results.push({ name: ln.name, status: "skipped", reason: "invalid qty" }); continue; }
+        const unitCost = ln.unitCost != null ? Number(ln.unitCost) : null;
+        let target: any = null;
+        if (ln.consumableId) {
+          target = sqlite.prepare("SELECT * FROM consumables WHERE id=?").get(ln.consumableId);
+        }
+        if (!target && ln.sku) {
+          target = sqlite.prepare("SELECT * FROM consumables WHERE sku IS NOT NULL AND lower(sku)=lower(?) AND is_active=1").get(ln.sku);
+        }
+        if (!target && ln.name) {
+          target = sqlite.prepare("SELECT * FROM consumables WHERE lower(name)=lower(?) AND is_active=1").get(String(ln.name).trim());
+        }
+        let created = false;
+        if (!target) {
+          target = sqlite.prepare(
+            `INSERT INTO consumables (name, sku, category, unit, on_hand, reorder_point, unit_cost, vendor, is_active, created_at)
+             VALUES (?,?,?,?,?,?,?,?,1,?) RETURNING *`
+          ).get(
+            String(ln.name || "Imported item").trim(), ln.sku || null, ln.category || "general",
+            ln.unit || "each", 0, 0, unitCost || 0, d.vendor || ln.vendor || null, now
+          ) as any;
+          created = true;
+        }
+        const finalUnitCost = unitCost != null ? unitCost : (target.unit_cost || 0);
+        const newOnHand = (target.on_hand || 0) + qty;
+        sqlite.prepare("UPDATE consumables SET on_hand=?, unit_cost=? WHERE id=?").run(newOnHand, finalUnitCost, target.id);
+        sqlite.prepare(
+          `INSERT INTO consumable_transactions (consumable_id, type, quantity, unit_cost, source, reference, entered_by, balance_after, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        ).run(target.id, "restock", qty, finalUnitCost, "pdf_receipt", reference, enteredBy, newOnHand, now);
+        results.push({ consumableId: target.id, name: target.name, quantity: qty, status: created ? "created" : "restocked", onHand: newOnHand });
+      }
+    });
+    tx();
+    res.json({ imported: results.filter(r => r.status !== "skipped").length, results });
+  });
+
+  // ── Parse a vendor invoice/receipt PDF into structured line items ───────────
+  // Sends the PDF to Claude (document block) and returns extracted vendor +
+  // line items for on-screen review. Does NOT touch stock — the reviewed lines
+  // are committed via POST /api/consumables/import-receipt. Degrades gracefully:
+  // if the LLM key is absent (e.g. preview sandbox), returns llmAvailable:false
+  // so the UI can fall back to manual entry.
+  app.post("/api/consumables/parse-invoice", requireStaffAuth, wrapAsync(async (req, res) => {
+    const d = req.body || {};
+    let b64: string = d.pdfBase64 || "";
+    if (!b64) return res.status(400).json({ error: "No PDF provided." });
+    // Strip a data-URL prefix if present
+    const comma = b64.indexOf("base64,");
+    if (comma !== -1) b64 = b64.slice(comma + 7);
+
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.json({
+        llmAvailable: false,
+        vendor: null,
+        reference: d.filename || null,
+        lines: [],
+        note: "AI reader is not enabled in this environment. Enter the line items manually, then import.",
+      });
+    }
+
+    // Match against existing active consumables so the model can reuse ids/SKUs.
+    const existing = sqlite.prepare(
+      "SELECT id, name, sku, unit FROM consumables WHERE is_active=1 ORDER BY name"
+    ).all() as any[];
+    const catalog = existing.map((c) => `id=${c.id} | ${c.name}${c.sku ? ` [${c.sku}]` : ""} (${c.unit})`).join("\n") || "(none yet)";
+
+    const system = [
+      "You extract purchasable line items from a supplier invoice or receipt for a restoration company's consumables inventory.",
+      "Return ONLY JSON, no prose. Shape:",
+      '{ "vendor": string|null, "reference": string|null, "lines": [ { "name": string, "sku": string|null, "quantity": number, "unitCost": number|null, "unit": string|null, "category": string|null, "consumableId": number|null } ] }',
+      "Rules:",
+      "- quantity is the number of units received (a positive number). unitCost is price per single unit in dollars (not the line total).",
+      "- If a line shows only a line total, divide by quantity to get unitCost.",
+      "- reference = invoice number / PO number if visible.",
+      "- Skip non-inventory lines (tax, shipping, subtotal, total, discounts, labor).",
+      "- If a line clearly matches one of the EXISTING items below, set consumableId to that id and reuse its name.",
+      "- category examples: cleaning, containment, drying, ppe, packaging, general.",
+      "EXISTING ITEMS:",
+      catalog,
+    ].join("\n");
+
+    try {
+      const client = new Anthropic();
+      const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
+      const msg = await client.messages.create({
+        model,
+        max_tokens: 3000,
+        system,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } },
+            { type: "text", text: "Extract the purchasable inventory line items from this invoice as JSON." },
+          ] as any,
+        }],
+      });
+      const raw = msg.content.map((c: any) => (c.type === "text" ? c.text : "")).join("").trim();
+      // Parse JSON out of a possibly fenced response
+      let parsed: any = null;
+      let t = raw;
+      const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      if (fence) t = fence[1].trim();
+      const first = t.search(/[[{]/);
+      const last = Math.max(t.lastIndexOf("}"), t.lastIndexOf("]"));
+      if (first !== -1 && last !== -1) {
+        try { parsed = JSON.parse(t.slice(first, last + 1)); } catch { parsed = null; }
+      }
+      if (!parsed) return res.status(422).json({ error: "Could not read the invoice. Try a clearer PDF or enter items manually.", llmAvailable: true });
+      const linesIn: any[] = Array.isArray(parsed) ? parsed : (parsed.lines || []);
+      const lines = linesIn
+        .map((l) => ({
+          name: String(l.name || "").trim(),
+          sku: l.sku ? String(l.sku).trim() : null,
+          quantity: Number(l.quantity) || 0,
+          unitCost: l.unitCost == null ? null : Number(l.unitCost),
+          unit: l.unit ? String(l.unit).trim() : "each",
+          category: l.category ? String(l.category).trim() : "general",
+          consumableId: l.consumableId ? Number(l.consumableId) : null,
+        }))
+        .filter((l) => l.name && l.quantity > 0);
+      res.json({
+        llmAvailable: true,
+        vendor: parsed.vendor || d.vendor || null,
+        reference: parsed.reference || d.filename || null,
+        lines,
+      });
+    } catch (e: any) {
+      res.status(502).json({ error: `Invoice reader failed: ${e?.message || "unknown error"}`, llmAvailable: true });
+    }
+  }));
+
+  // Use a consumable on a job. Deducts on_hand (blocks at zero) and creates a job_costs (material) row.
+  app.post("/api/consumables/:id/use", (req, res) => {
+    const d = req.body || {};
+    const qty = Number(d.quantity);
+    const jobId = Number(d.jobId);
+    if (!qty || qty <= 0) return res.status(400).json({ error: "Quantity must be greater than 0" });
+    if (!jobId) return res.status(400).json({ error: "A job is required" });
+    const c = sqlite.prepare("SELECT * FROM consumables WHERE id=?").get(req.params.id) as any;
+    if (!c) return res.status(404).json({ error: "Not found" });
+    if (qty > (c.on_hand || 0)) {
+      return res.status(409).json({ error: `Not enough stock. On hand: ${c.on_hand} ${c.unit}. Restock before using this many.`, onHand: c.on_hand });
+    }
+    const now = new Date().toISOString();
+    const unitCost = c.unit_cost || 0;
+    const total = +(qty * unitCost).toFixed(2);
+    const newOnHand = (c.on_hand || 0) - qty;
+    const jobCost = sqlite.prepare(
+      `INSERT INTO job_costs (job_id, category, description, quantity, unit_cost, total, vendor, receipt_ref, entered_by, cost_date, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING *`
+    ).get(jobId, "material", `Consumable: ${c.name}${c.sku ? ` (${c.sku})` : ""}`, qty, unitCost, total, c.vendor || null, "inventory", (req as any).employee?.name || d.enteredBy || null, now.slice(0, 10), now) as any;
+    sqlite.prepare("UPDATE consumables SET on_hand=? WHERE id=?").run(newOnHand, req.params.id);
+    sqlite.prepare(
+      `INSERT INTO consumable_transactions (consumable_id, type, quantity, unit_cost, job_id, job_cost_id, source, reference, entered_by, balance_after, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(req.params.id, "usage", -qty, unitCost, jobId, jobCost.id, "job_usage", d.reference || null, (req as any).employee?.name || d.enteredBy || null, newOnHand, now);
+    const row = sqlite.prepare("SELECT * FROM consumables WHERE id=?").get(req.params.id);
+    res.json({ consumable: mapConsumable(row), jobCostId: jobCost.id, lowStock: newOnHand <= (c.reorder_point || 0) });
+  });
+
+  // Consumables used on a specific job (from the transaction ledger)
+  app.get("/api/jobs/:jobId/consumables", (req, res) => {
+    const rows = sqlite.prepare(
+      `SELECT t.*, c.name as c_name, c.sku as c_sku, c.unit as c_unit
+       FROM consumable_transactions t JOIN consumables c ON c.id=t.consumable_id
+       WHERE t.job_id=? AND t.type='usage' ORDER BY t.created_at DESC`
+    ).all(req.params.jobId) as any[];
+    res.json(rows.map(r => ({
+      id: r.id, consumableId: r.consumable_id, name: r.c_name, sku: r.c_sku, unit: r.c_unit,
+      quantity: Math.abs(r.quantity), unitCost: r.unit_cost, total: +(Math.abs(r.quantity) * (r.unit_cost || 0)).toFixed(2),
+      jobCostId: r.job_cost_id, enteredBy: r.entered_by, createdAt: r.created_at,
+    })));
+  });
+
   // ── Job Costs ─────────────────────────────────────────────────────────────
+  // Map a raw job_costs DB row (snake_case columns) to the camelCase shape the
+  // frontend expects. Without this, fields like unitCost/costDate arrive as
+  // undefined and crash the Job Costing page (fmt(undefined).toLocaleString()).
+  const mapJobCost = (r: any) => r && ({
+    id: r.id,
+    jobId: r.job_id,
+    category: r.category,
+    description: r.description,
+    quantity: r.quantity,
+    unitCost: r.unit_cost,
+    total: r.total,
+    vendor: r.vendor,
+    receiptRef: r.receipt_ref,
+    enteredBy: r.entered_by,
+    costDate: r.cost_date,
+    phase: r.phase,
+    createdAt: r.created_at,
+  });
   app.get("/api/jobs/:jobId/costs", (req, res) => {
-    const rows = sqlite.prepare("SELECT * FROM job_costs WHERE job_id=? ORDER BY cost_date DESC, created_at DESC").all(req.params.jobId);
-    res.json(rows);
+    const rows = sqlite.prepare("SELECT * FROM job_costs WHERE job_id=? ORDER BY cost_date DESC, created_at DESC").all(req.params.jobId) as any[];
+    res.json(rows.map(mapJobCost));
   });
   app.post("/api/jobs/:jobId/costs", (req, res) => {
     const d = req.body;
@@ -1718,14 +2379,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const total = (d.quantity||1) * (d.unitCost||0);
     const row = sqlite.prepare(`INSERT INTO job_costs (job_id, category, description, quantity, unit_cost, total, vendor, receipt_ref, entered_by, cost_date, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING *`)
       .get(req.params.jobId, d.category, d.description, d.quantity||1, d.unitCost||0, total, d.vendor||null, d.receiptRef||null, d.enteredBy||null, d.costDate||now.slice(0,10), now);
-    res.json(row);
+    res.json(mapJobCost(row));
   });
   app.patch("/api/costs/:id", (req, res) => {
     const d = req.body;
     const total = (d.quantity||1) * (d.unitCost||0);
     const row = sqlite.prepare(`UPDATE job_costs SET category=?, description=?, quantity=?, unit_cost=?, total=?, vendor=?, cost_date=? WHERE id=? RETURNING *`)
       .get(d.category, d.description, d.quantity||1, d.unitCost||0, total, d.vendor||null, d.costDate||null, req.params.id);
-    res.json(row);
+    res.json(mapJobCost(row));
   });
   app.delete("/api/costs/:id", (req, res) => {
     sqlite.prepare("DELETE FROM job_costs WHERE id=?").run(req.params.id);
@@ -2051,6 +2712,234 @@ Titan Restoration LLC | Augusta, GA` },
   app.patch("/api/review-requests/:id", (req, res) => {
     res.json(storage.updateReviewRequest(Number(req.params.id), req.body));
   });
+  app.delete("/api/review-requests/:id", (req, res) => {
+    try { storage.deleteReviewRequest(Number(req.params.id)); res.json({ ok: true }); }
+    catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Review Feedback (rating capture / routing) ────────────────────────────
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS review_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id INTEGER,
+        job_id INTEGER,
+        contact_id INTEGER,
+        rating INTEGER NOT NULL DEFAULT 0,
+        comment TEXT,
+        routed TEXT NOT NULL DEFAULT 'public',
+        created_at TEXT NOT NULL DEFAULT ''
+      )
+    `);
+  } catch (_) {}
+  const mapReviewFeedback = (r: any) => r == null ? r : ({
+    id: r.id, requestId: r.request_id, jobId: r.job_id, contactId: r.contact_id,
+    rating: r.rating, comment: r.comment, routed: r.routed, createdAt: r.created_at,
+  });
+  app.get("/api/review-feedback", (_req, res) => {
+    try {
+      const rows = sqlite.prepare("SELECT * FROM review_feedback ORDER BY id DESC").all();
+      res.json((rows as any[]).map(mapReviewFeedback));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+  app.post("/api/review-feedback", (req, res) => {
+    try {
+      const { requestId, jobId, contactId, rating, comment } = req.body;
+      const routed = Number(rating) >= 4 ? "public" : "private";
+      const now = new Date().toISOString();
+      const result = sqlite.prepare(
+        "INSERT INTO review_feedback (request_id, job_id, contact_id, rating, comment, routed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run(requestId ?? null, jobId ?? null, contactId ?? null, Number(rating) || 0, comment || null, routed, now);
+      // Happy path (>=4 stars) marks the request as reviewed.
+      if (routed === "public" && requestId) {
+        try { storage.updateReviewRequest(Number(requestId), { status: "reviewed" }); } catch (_) {}
+      }
+      const row = sqlite.prepare("SELECT * FROM review_feedback WHERE id = ?").get(result.lastInsertRowid);
+      res.status(201).json(mapReviewFeedback(row));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Storm CAT Command Center ──────────────────────────────────────────────
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS storm_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        event_type TEXT NOT NULL DEFAULT 'hail',
+        severity TEXT,
+        zip TEXT,
+        area TEXT,
+        status TEXT NOT NULL DEFAULT 'monitoring',
+        jobs_created INTEGER NOT NULL DEFAULT 0,
+        dispatched INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT ''
+      )
+    `);
+  } catch (_) {}
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS storm_zips (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        zip TEXT UNIQUE,
+        label TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT ''
+      )
+    `);
+  } catch (_) {}
+  const mapStormEvent = (r: any) => r == null ? r : ({
+    id: r.id, name: r.name, eventType: r.event_type, severity: r.severity,
+    zip: r.zip, area: r.area, status: r.status, jobsCreated: r.jobs_created,
+    dispatched: !!r.dispatched, createdAt: r.created_at,
+  });
+  app.get("/api/storm-events", (_req, res) => {
+    try {
+      const rows = sqlite.prepare("SELECT * FROM storm_events ORDER BY id DESC").all();
+      res.json((rows as any[]).map(mapStormEvent));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+  app.post("/api/storm-events", (req, res) => {
+    try {
+      const { name, eventType, severity, zip, area, status } = req.body;
+      if (!name?.trim()) return res.status(400).json({ error: "name is required" });
+      const now = new Date().toISOString();
+      const result = sqlite.prepare(
+        "INSERT INTO storm_events (name, event_type, severity, zip, area, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run(name.trim(), eventType || "hail", severity || null, zip || null, area || null, status || "monitoring", now);
+      const row = sqlite.prepare("SELECT * FROM storm_events WHERE id = ?").get(result.lastInsertRowid);
+      res.status(201).json(mapStormEvent(row));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+  app.patch("/api/storm-events/:id", (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const existing: any = sqlite.prepare("SELECT * FROM storm_events WHERE id = ?").get(id);
+      if (!existing) return res.status(404).json({ error: "Not found" });
+      const b = req.body;
+      sqlite.prepare(
+        `UPDATE storm_events SET name=?, event_type=?, severity=?, zip=?, area=?, status=?, jobs_created=?, dispatched=? WHERE id=?`
+      ).run(
+        b.name !== undefined ? b.name : existing.name,
+        b.eventType !== undefined ? b.eventType : existing.event_type,
+        b.severity !== undefined ? b.severity : existing.severity,
+        b.zip !== undefined ? b.zip : existing.zip,
+        b.area !== undefined ? b.area : existing.area,
+        b.status !== undefined ? b.status : existing.status,
+        b.jobsCreated !== undefined ? b.jobsCreated : existing.jobs_created,
+        b.dispatched !== undefined ? (b.dispatched ? 1 : 0) : existing.dispatched,
+        id
+      );
+      const row = sqlite.prepare("SELECT * FROM storm_events WHERE id = ?").get(id);
+      res.json(mapStormEvent(row));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+  app.delete("/api/storm-events/:id", (req, res) => {
+    try { sqlite.prepare("DELETE FROM storm_events WHERE id = ?").run(Number(req.params.id)); res.json({ ok: true }); }
+    catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+  const mapStormZip = (r: any) => r == null ? r : ({ id: r.id, zip: r.zip, label: r.label, active: !!r.active, createdAt: r.created_at });
+  app.get("/api/storm-zips", (_req, res) => {
+    try {
+      const rows = sqlite.prepare("SELECT * FROM storm_zips ORDER BY id ASC").all();
+      res.json((rows as any[]).map(mapStormZip));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+  app.post("/api/storm-zips", (req, res) => {
+    try {
+      const { zip, label } = req.body;
+      if (!zip?.trim()) return res.status(400).json({ error: "zip is required" });
+      const now = new Date().toISOString();
+      sqlite.prepare(
+        "INSERT INTO storm_zips (zip, label, active, created_at) VALUES (?, ?, 1, ?) ON CONFLICT(zip) DO UPDATE SET label=excluded.label, active=1"
+      ).run(zip.trim(), label || null, now);
+      const row = sqlite.prepare("SELECT * FROM storm_zips WHERE zip = ?").get(zip.trim());
+      res.status(201).json(mapStormZip(row));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+  app.delete("/api/storm-zips/:id", (req, res) => {
+    try { sqlite.prepare("DELETE FROM storm_zips WHERE id = ?").run(Number(req.params.id)); res.json({ ok: true }); }
+    catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+  // Crew capacity stored in the integrations kv table.
+  app.get("/api/storm-capacity", (_req, res) => {
+    try {
+      const row: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'storm_crew_capacity'").get();
+      res.json({ value: row ? row.value : "available" });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+  app.post("/api/storm-capacity", (req, res) => {
+    try {
+      const value = ["available", "limited", "full"].includes(req.body?.value) ? req.body.value : "available";
+      sqlite.prepare("INSERT INTO integrations (key, value, updated_at) VALUES ('storm_crew_capacity', ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at")
+        .run(value, new Date().toISOString());
+      res.json({ value });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Referral Auto-Nurture ─────────────────────────────────────────────────
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS referral_nurture_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        contact_id INTEGER NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'monthly_recap',
+        period TEXT,
+        sent_at TEXT,
+        created_at TEXT NOT NULL DEFAULT ''
+      )
+    `);
+  } catch (_) {}
+  const mapNurtureLog = (r: any) => r == null ? r : ({
+    id: r.id, contactId: r.contact_id, kind: r.kind, period: r.period, sentAt: r.sent_at, createdAt: r.created_at,
+  });
+  app.get("/api/referral-nurture", (_req, res) => {
+    try {
+      const rows = sqlite.prepare("SELECT * FROM referral_nurture_log ORDER BY id DESC").all();
+      res.json((rows as any[]).map(mapNurtureLog));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+  app.post("/api/referral-nurture", (req, res) => {
+    try {
+      const { contactId, kind, period } = req.body;
+      if (!contactId) return res.status(400).json({ error: "contactId is required" });
+      const now = new Date().toISOString();
+      const result = sqlite.prepare(
+        "INSERT INTO referral_nurture_log (contact_id, kind, period, sent_at, created_at) VALUES (?, ?, ?, ?, ?)"
+      ).run(Number(contactId), kind || "monthly_recap", period || null, now, now);
+      const row = sqlite.prepare("SELECT * FROM referral_nurture_log WHERE id = ?").get(result.lastInsertRowid);
+      res.status(201).json(mapNurtureLog(row));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Lead Source Costs (Campaign ROI) ──────────────────────────────────────
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS lead_source_costs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT UNIQUE,
+        monthly_cost REAL NOT NULL DEFAULT 0,
+        updated_at TEXT
+      )
+    `);
+  } catch (_) {}
+  const mapLeadCost = (r: any) => r == null ? r : ({ id: r.id, source: r.source, monthlyCost: r.monthly_cost, updatedAt: r.updated_at });
+  app.get("/api/lead-source-costs", (_req, res) => {
+    try {
+      const rows = sqlite.prepare("SELECT * FROM lead_source_costs ORDER BY source ASC").all();
+      res.json((rows as any[]).map(mapLeadCost));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+  app.post("/api/lead-source-costs", (req, res) => {
+    try {
+      const { source, monthlyCost } = req.body;
+      if (!source?.trim()) return res.status(400).json({ error: "source is required" });
+      sqlite.prepare(
+        "INSERT INTO lead_source_costs (source, monthly_cost, updated_at) VALUES (?, ?, ?) ON CONFLICT(source) DO UPDATE SET monthly_cost=excluded.monthly_cost, updated_at=excluded.updated_at"
+      ).run(source.trim(), Number(monthlyCost) || 0, new Date().toISOString());
+      const row = sqlite.prepare("SELECT * FROM lead_source_costs WHERE source = ?").get(source.trim());
+      res.status(201).json(mapLeadCost(row));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
 
   // ── Certifications ────────────────────────────────────────────────────────
   app.get("/api/certifications", (req, res) => {
@@ -2204,17 +3093,28 @@ cody@titanrestorationllc.com`;
   const msgs = sqlite.prepare("SELECT * FROM sms_messages WHERE contact_id = ? ORDER BY created_at ASC").all(Number(req.params.contactId));
   res.json(msgs);
   });
-  app.post("/api/sms", (req, res) => {
+  app.post("/api/sms", wrapAsync(async (req, res) => {
   const { jobId, contactId, direction, from, to, body } = req.body;
   if (!body || !to) return res.status(400).json({ error: "body and to required" });
   const now = new Date().toISOString();
-  // In production this would call Twilio; for now we persist the message directly
-  const result = sqlite.prepare(`INSERT INTO sms_messages (job_id, contact_id, direction, "from", "to", body, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'sent', ?)`).run(jobId || null, contactId || null, direction || "outbound", from || "Titan Restoration (706-922-0154)", to, body, now);
+  // Send via Twilio when TWILIO_* env is configured; otherwise logged/simulated.
+  const sendResults = await sendSms({ to, body });
+  const r0 = sendResults[0];
+  const status = r0?.status === "error" ? "failed" : "sent";
+  const twilioSid = r0?.id || null;
+  const result = sqlite.prepare(`INSERT INTO sms_messages (job_id, contact_id, direction, "from", "to", body, status, twilio_sid, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(jobId || null, contactId || null, direction || "outbound", from || "Titan Restoration (706-922-0154)", to, body, status, twilioSid, now);
   // Also log activity
   if (jobId) {
     sqlite.prepare(`INSERT INTO activity_log (job_id, entity_type, action, actor, description, created_at) VALUES (?, 'sms', 'sms_sent', 'System', ?, ?)`).run(jobId, `SMS sent to ${to}: "${body.substring(0, 60)}${body.length > 60 ? '...' : ''}"`, now);
   }
-  res.json({ id: result.lastInsertRowid, status: "sent" });
+  res.json({ id: result.lastInsertRowid, status, simulated: r0?.simulated ?? true, error: r0?.error });
+  }));
+  // Delete an SMS message (frontend SMS.tsx delete button).
+  app.delete("/api/sms/:id", (req, res) => {
+    try {
+      sqlite.prepare("DELETE FROM sms_messages WHERE id = ?").run(Number(req.params.id));
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
 // ── Job Templates ─────────────────────────────────────────────────────────────
@@ -2680,6 +3580,18 @@ cody@titanrestorationllc.com`;
     )
   `);
 
+  // Map a raw job_notes DB row (snake_case) to the camelCase shape the client expects
+  const mapJobNote = (r: any) => r == null ? r : ({
+    id: r.id,
+    jobId: r.job_id,
+    author: r.author,
+    body: r.body,
+    isPublic: !!r.is_public,
+    tag: r.tag,
+    editedAt: r.edited_at,
+    createdAt: r.created_at,
+  });
+
   // GET all notes for a job (internal: all; public param: only public)
   app.get("/api/jobs/:jobId/notes", (req, res) => {
     const jobId = Number(req.params.jobId);
@@ -2688,7 +3600,7 @@ cody@titanrestorationllc.com`;
       const rows = publicOnly
         ? sqlite.prepare("SELECT * FROM job_notes WHERE job_id = ? AND is_public = 1 ORDER BY created_at ASC").all(jobId)
         : sqlite.prepare("SELECT * FROM job_notes WHERE job_id = ? ORDER BY created_at ASC").all(jobId);
-      res.json(rows);
+      res.json((rows as any[]).map(mapJobNote));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
@@ -2703,7 +3615,7 @@ cody@titanrestorationllc.com`;
         "INSERT INTO job_notes (job_id, author, body, is_public, tag, created_at) VALUES (?, ?, ?, ?, ?, ?)"
       ).run(jobId, author || "Titan Team", body.trim(), isPublic ? 1 : 0, tag || null, now);
       const note = sqlite.prepare("SELECT * FROM job_notes WHERE id = ?").get(result.lastInsertRowid);
-      res.status(201).json(note);
+      res.status(201).json(mapJobNote(note));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
@@ -2728,7 +3640,7 @@ cody@titanrestorationllc.com`;
         noteId
       );
       const updated = sqlite.prepare("SELECT * FROM job_notes WHERE id = ?").get(noteId);
-      res.json(updated);
+      res.json(mapJobNote(updated));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
@@ -2772,15 +3684,27 @@ cody@titanrestorationllc.com`;
     "/api/ramp-transactions",
     // route planner
     "/api/route-stops", "/api/routes", "/api/trips",
+    // consumables inventory
+    "/api/consumables",
+    // HR module
+    "/api/hr",
   ];
   for (const prefix of SUITE_AUTH_PREFIXES) {
     app.use(prefix, requireStaffAuth);
   }
 
   // ── Suite 5 Routes ──────────────────────────────────────────────────────────────
-  registerSuite5Routes(app, sqlite);
+  registerSuite5Routes(app, sqlite, { requireRole });
   registerSuite6Routes(app, sqlite);
   registerAIAgentRoutes(app, sqlite);
+
+  // ── HR Management Module + AI HR Assistant (additive, self-contained) ───────
+  registerHRRoutes(app, sqlite);
+
+  // ── Gmail Integration (OAuth, per-employee) — DORMANT until GOOGLE_CLIENT_ID
+  //    & GOOGLE_CLIENT_SECRET are set. Test-safe: reports configured:false and
+  //    makes no live Google calls when unconfigured. ───────────────────────────
+  registerGmailRoutes(app, sqlite, { requireStaffAuth, requireRole });
 
   // ── Marketing AI Routes (additive: custom + seasonal posts + learning) ──────
   registerMarketingAIRoutes(app, sqlite);
@@ -2789,10 +3713,10 @@ cody@titanrestorationllc.com`;
   registerPresenceRoutes(app, sqlite);
 
   // ── Suite 4 Routes ─────────────────────────────────────────────────────────
-  registerSuite4Routes(app, sqlite);
+  registerSuite4Routes(app, sqlite, { requireRole });
 
   // ── Ramp Routes ─────────────────────────────────────────────────────────────
-  registerRampRoutes(app, sqlite);
+  registerRampRoutes(app, sqlite, { requireRole });
 
   // ── Route Planner Routes ───────────────────────────────────────────────────
   registerRoutePlannerRoutes(app, sqlite);
@@ -3394,7 +4318,8 @@ Approve in Partner Portal → Admin View.
   }));
 
   // POST /api/ramp/pay — submit a payout request to Ramp Bill Pay
-  app.post("/api/ramp/pay", wrapAsync(async (req, res) => {
+  // Real money movement: owner/admin only, with status + idempotency guards.
+  app.post("/api/ramp/pay", requireRole("owner", "admin"), wrapAsync(async (req, res) => {
     const { payoutRequestId } = req.body;
     const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'ramp'").get();
     if (!cfg) return res.status(400).json({ error: "Ramp not configured. Add API key in Settings → Integrations." });
@@ -3403,6 +4328,24 @@ Approve in Partner Portal → Admin View.
 
     const pr: any = sqlite.prepare("SELECT * FROM payout_requests WHERE id = ?").get(payoutRequestId);
     if (!pr) return res.status(404).json({ error: "Payout request not found" });
+
+    // Status precondition: only pay requests that are pending/approved. Block
+    // anything already paid or submitted so a partner is never double-paid.
+    const payableStatuses = ["pending", "approved"];
+    if (!payableStatuses.includes(String(pr.status || "").toLowerCase())) {
+      return res.status(409).json({ error: `This payout is already "${pr.status}" and cannot be paid again.` });
+    }
+    // Guard against a prior successful/in-flight Ramp submission for this request.
+    const priorPaid: any = sqlite.prepare("SELECT id FROM ramp_payments WHERE payout_request_id = ? AND status IN ('submitted','paid')").get(payoutRequestId);
+    if (priorPaid) {
+      return res.status(409).json({ error: "This payout has already been submitted to Ramp." });
+    }
+    // Amount sanity check.
+    const payAmount = Number(pr.amount);
+    if (!Number.isFinite(payAmount) || payAmount <= 0) {
+      return res.status(400).json({ error: "Payout amount must be a positive number." });
+    }
+
     const contact: any = sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(pr.contact_id);
     const now = new Date().toISOString();
 
@@ -3417,11 +4360,13 @@ Approve in Partner Portal → Admin View.
         body: JSON.stringify({
           entity_id: entityId,
           source_bank_account_id: bankAccountId,
-          amount: { amount: Math.round((pr.amount || 0) * 100), currency_code: "USD" },
+          amount: { amount: Math.round(payAmount * 100), currency_code: "USD" },
           vendor_name: contact?.name || "Partner",
           memo: `Titan Pro payout — Job #${pr.job_id || "N/A"} — ${contact?.name || "Partner"}`,
-          idempotency_key: `titan-payout-${payoutRequestId}-${Date.now()}`,
-          line_items: [{ amount: { amount: Math.round((pr.amount || 0) * 100), currency_code: "USD" }, memo: `Referral/sub payout` }],
+          // Stable idempotency key (no timestamp) so a retry of the same payout
+          // request is de-duplicated by Ramp instead of creating a second bill.
+          idempotency_key: `titan-payout-${payoutRequestId}`,
+          line_items: [{ amount: { amount: Math.round(payAmount * 100), currency_code: "USD" }, memo: `Referral/sub payout` }],
         }),
       });
       const data = await resp.json() as any;
@@ -3429,7 +4374,7 @@ Approve in Partner Portal → Admin View.
 
       sqlite.prepare("INSERT INTO ramp_payments (payout_request_id, contact_name, amount, method, ramp_bill_id, status, submitted_at, created_at) VALUES (?, ?, ?, ?, ?, 'submitted', ?, ?)")
         .run(payoutRequestId, contact?.name, pr.amount, pr.method, data.id, now, now);
-      sqlite.prepare("UPDATE payout_requests SET status = 'approved', notes = ? WHERE id = ?")
+      sqlite.prepare("UPDATE payout_requests SET status = 'paid', notes = ? WHERE id = ?")
         .run(`Submitted to Ramp — Bill ID: ${data.id}`, payoutRequestId);
 
       res.json({ ok: true, rampBillId: data.id, status: "submitted" });
@@ -4893,6 +5838,19 @@ Approve in Partner Portal → Admin View.
   app.get("/api/payment-plans/:id/installments", (req, res) => {
     res.json(sqlite.prepare("SELECT * FROM payment_plan_installments WHERE plan_id=? ORDER BY due_date").all(Number(req.params.id)));
   });
+  // Mark an installment paid / update its status (frontend PaymentPlans.tsx).
+  app.patch("/api/payment-plan-installments/:id", (req, res) => {
+    try {
+      const existing = sqlite.prepare("SELECT * FROM payment_plan_installments WHERE id=?").get(Number(req.params.id)) as any;
+      if (!existing) return res.status(404).json({ error: "Not found" });
+      const status = req.body?.status ?? existing.status;
+      const paidAt = req.body?.paidAt ?? req.body?.paid_at ?? (status === "paid" ? new Date().toISOString() : existing.paid_at);
+      const spi = req.body?.stripePaymentIntentId ?? req.body?.stripe_payment_intent_id ?? existing.stripe_payment_intent_id;
+      sqlite.prepare("UPDATE payment_plan_installments SET status=?, paid_at=?, stripe_payment_intent_id=? WHERE id=?")
+        .run(status, paidAt || null, spi || null, Number(req.params.id));
+      res.json(sqlite.prepare("SELECT * FROM payment_plan_installments WHERE id=?").get(Number(req.params.id)));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
 
   // ── Safety Checklists (#10) ───────────────────────────────────────────────
   app.get("/api/safety-checklists", (_req, res) => {
@@ -4927,9 +5885,151 @@ Approve in Partner Portal → Admin View.
       .run(job_id||0, contact_id||null, score||0, feedback||'', tech_rating||null, cleanliness_rating||null, communication_rating||null, would_refer?1:0, review_requested?1:0, created_at||new Date().toISOString());
     res.json(sqlite.prepare("SELECT * FROM nps_surveys WHERE id=?").get(r.lastInsertRowid));
   });
+  // Record a customer's response to an NPS survey (frontend NPSSurveys.tsx).
+  app.patch("/api/nps-surveys/:id/respond", (req, res) => {
+    try {
+      const existing = sqlite.prepare("SELECT * FROM nps_surveys WHERE id=?").get(Number(req.params.id)) as any;
+      if (!existing) return res.status(404).json({ error: "Not found" });
+      const score = req.body?.score ?? existing.score;
+      const feedback = req.body?.feedback ?? existing.feedback;
+      sqlite.prepare("UPDATE nps_surveys SET score=?, feedback=? WHERE id=?")
+        .run(score ?? 0, feedback ?? "", Number(req.params.id));
+      res.json(sqlite.prepare("SELECT * FROM nps_surveys WHERE id=?").get(Number(req.params.id)));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Technician Scorecard ───────────────────────────────────────────────────
+  // Aggregates per-tech performance from jobs (assigned_tech), photos, drying
+  // records, and NPS surveys. Powers the previously-broken TechScorecard page.
+  app.get("/api/tech-scorecard", (_req, res) => {
+    try {
+      const jobs = sqlite.prepare("SELECT * FROM jobs").all() as any[];
+      const photos = sqlite.prepare("SELECT job_id FROM photos").all() as any[];
+      const drying = sqlite.prepare("SELECT job_id FROM drying_records").all() as any[];
+      const nps = sqlite.prepare("SELECT * FROM nps_surveys").all() as any[];
+
+      const photosByJob: Record<number, number> = {};
+      for (const p of photos) photosByJob[p.job_id] = (photosByJob[p.job_id] || 0) + 1;
+      const dryingJobs = new Set(drying.map((d: any) => d.job_id));
+      const npsByJob: Record<number, number[]> = {};
+      for (const n of nps) { if (n.job_id != null) (npsByJob[n.job_id] ||= []).push(Number(n.score) || 0); }
+
+      const byTech: Record<string, any> = {};
+      for (const j of jobs) {
+        const name = (j.assigned_tech || "").trim();
+        if (!name) continue;
+        const t = byTech[name] ||= {
+          name, jobsCompleted: 0, _photoJobs: 0, _photoTotal: 0,
+          _dryingEligible: 0, _dryingDone: 0, _npsScores: [] as number[],
+          _months: new Set<string>(),
+        };
+        t.jobsCompleted += 1;
+        const pc = photosByJob[j.id] || 0;
+        if (pc > 0) { t._photoJobs += 1; t._photoTotal += pc; }
+        // Water jobs are drying-eligible; count compliance as having drying logs.
+        const lt = String(j.loss_type || "").toLowerCase();
+        if (lt.includes("water") || lt.includes("flood") || lt.includes("storm")) {
+          t._dryingEligible += 1;
+          if (dryingJobs.has(j.id)) t._dryingDone += 1;
+        }
+        for (const s of (npsByJob[j.id] || [])) t._npsScores.push(s);
+        if (j.created_at) t._months.add(String(j.created_at).slice(0, 7));
+      }
+
+      const scorecard = Object.values(byTech).map((t: any) => {
+        const monthsActive = Math.max(1, t._months.size);
+        return {
+          name: t.name,
+          jobsCompleted: t.jobsCompleted,
+          avgPhotosPerJob: t._photoJobs ? Math.round((t._photoTotal / t._photoJobs) * 10) / 10 : 0,
+          dryingCompliance: t._dryingEligible ? Math.round((t._dryingDone / t._dryingEligible) * 100) : 100,
+          avgNps: t._npsScores.length ? Math.round((t._npsScores.reduce((a: number, b: number) => a + b, 0) / t._npsScores.length) * 10) / 10 : 0,
+          npsCount: t._npsScores.length,
+          jobsPerMonth: Math.round((t.jobsCompleted / monthsActive) * 10) / 10,
+        };
+      }).sort((a, b) => b.jobsCompleted - a.jobsCompleted);
+
+      res.json(scorecard);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
 
   // ── Cash Flow Calendar (#3) ───────────────────────────────────────────────
   // (data pulled from existing invoices/payments — no new table needed)
+  // 13-week rolling cash flow. Returns 13 consecutive weeks (starting this week's
+  // Monday). Each week carries expectedInflow (open invoices projected to their
+  // due date), scheduledCosts (pending/approved payout requests + active equipment
+  // deployments), openInvoiceCount, and a `detail` breakdown so the UI can let the
+  // user click a week and review exactly what drives the numbers.
+  app.get("/api/cash-flow/13-week", requireRole("owner", "admin"), (_req, res) => {
+    // Monday (local) of the week containing `d`.
+    function mondayOf(d: Date): Date {
+      const day = d.getDay();
+      const diff = (day === 0 ? -6 : 1 - day);
+      const m = new Date(d);
+      m.setDate(d.getDate() + diff);
+      m.setHours(0, 0, 0, 0);
+      return m;
+    }
+    const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+    const startMonday = mondayOf(new Date());
+    // Build 13 week windows [start, end] inclusive (end = Sunday).
+    const weeks = [] as Array<{ index: number; weekStart: string; weekEnd: string; start: Date; end: Date; expectedInflow: number; scheduledCosts: number; openInvoiceCount: number; detail: { inflow: any[]; costs: any[] } }>;
+    for (let i = 0; i < 13; i++) {
+      const s = new Date(startMonday); s.setDate(startMonday.getDate() + i * 7);
+      const e = new Date(s); e.setDate(s.getDate() + 6); e.setHours(23, 59, 59, 999);
+      weeks.push({ index: i, weekStart: ymd(s), weekEnd: ymd(e), start: s, end: e, expectedInflow: 0, scheduledCosts: 0, openInvoiceCount: 0, detail: { inflow: [], costs: [] } });
+    }
+    const findWeek = (dt: Date) => weeks.find(w => dt >= w.start && dt <= w.end) || null;
+
+    const jobs = storage.getJobs() as any[];
+    const contacts = storage.getContacts() as any[];
+    const jobNum = (id: any) => jobs.find(j => j.id === id)?.jobNumber || null;
+    const contactName = (id: any) => contacts.find(c => c.id === id)?.name || null;
+
+    // Expected inflow: open (unpaid, non-void) invoices projected to their due date
+    // (fallback: created_at + 30 days). Only invoices landing within the 13-week window count.
+    const openInvoices = sqlite.prepare("SELECT id, invoice_number, total, due_date, created_at, job_id, contact_id, status FROM invoices WHERE status NOT IN ('paid','void')").all() as any[];
+    for (const inv of openInvoices) {
+      let proj: Date | null = null;
+      if (inv.due_date) proj = new Date(inv.due_date);
+      else if (inv.created_at) { proj = new Date(inv.created_at); proj.setDate(proj.getDate() + 30); }
+      if (!proj || isNaN(proj.getTime())) continue;
+      const w = findWeek(proj);
+      if (!w) continue;
+      w.expectedInflow += inv.total || 0;
+      w.openInvoiceCount += 1;
+      w.detail.inflow.push({ id: inv.id, invoiceNumber: inv.invoice_number, amount: inv.total || 0, jobId: inv.job_id, jobNumber: jobNum(inv.job_id), contactName: contactName(inv.contact_id), status: inv.status, projectedDate: ymd(proj) });
+    }
+
+    // Scheduled costs: pending/approved payout requests (by paid_at if set, else created_at).
+    const payouts = sqlite.prepare("SELECT id, amount, status, description, job_id, contact_id, paid_at, created_at FROM payout_requests WHERE status NOT IN ('rejected','cancelled')").all() as any[];
+    for (const po of payouts) {
+      const dStr = po.paid_at || po.created_at;
+      if (!dStr) continue;
+      const dt = new Date(dStr);
+      const w = findWeek(dt);
+      if (!w) continue;
+      w.scheduledCosts += po.amount || 0;
+      w.detail.costs.push({ id: po.id, type: "payout", amount: po.amount || 0, label: po.description || "Payout request", status: po.status, jobId: po.job_id, jobNumber: jobNum(po.job_id), contactName: contactName(po.contact_id), date: ymd(dt) });
+    }
+
+    // Scheduled costs: active equipment deployments projected to expected return date
+    // (fallback deployed_at). Uses billed_amount as the cost estimate.
+    const deployments = sqlite.prepare("SELECT id, job_id, deployed_at, returned_at, expected_return_date, billed_amount FROM equipment_deployments WHERE returned_at IS NULL").all() as any[];
+    for (const dep of deployments) {
+      const dStr = dep.expected_return_date || dep.deployed_at;
+      if (!dStr || !dep.billed_amount) continue;
+      const dt = new Date(dStr);
+      const w = findWeek(dt);
+      if (!w) continue;
+      w.scheduledCosts += dep.billed_amount || 0;
+      w.detail.costs.push({ id: dep.id, type: "equipment", amount: dep.billed_amount || 0, label: "Equipment deployment", jobId: dep.job_id, jobNumber: jobNum(dep.job_id), date: ymd(dt) });
+    }
+
+    res.json(weeks.map(w => ({ index: w.index, weekStart: w.weekStart, weekEnd: w.weekEnd, expectedInflow: Math.round(w.expectedInflow), scheduledCosts: Math.round(w.scheduledCosts), openInvoiceCount: w.openInvoiceCount, detail: w.detail })));
+  });
+
   app.get("/api/cash-flow/forecast", (_req, res) => {
     const invoices = sqlite.prepare("SELECT * FROM invoices WHERE status != 'void'").all() as any[];
     const payments = sqlite.prepare("SELECT * FROM payments WHERE type='received'").all() as any[];
@@ -4949,6 +6049,12 @@ Approve in Partner Portal → Admin View.
     }
     res.json(Object.entries(forecast).map(([month, data]) => ({ month, ...data })).sort((a, b) => a.month.localeCompare(b.month)));
   });
+
+  // ── Generic edit/delete for create-only resources (additive) ────────────────
+  // Fills missing PATCH/DELETE so every module's records can be edited & deleted.
+  // Registered here (after all hand-written routes, before the 404 catch-all) so
+  // it detects and skips any endpoints already defined above.
+  registerCrudGapRoutes(app, sqlite, { requireRole, requireStaffAuth });
 
   // Unmatched /api/* routes should return a clean JSON 404 rather than falling
   // through to the SPA's index.html catch-all. Registered last so it only

@@ -85,7 +85,7 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
   setFont("bold", 16, WHITE);
   doc.text("TITAN RESTORATION LLC", M, 13);
   setFont("normal", 8, WHITE);
-  doc.text("Augusta, GA  ·  706-922-0154  ·  titanrestorationllc.com", M, 19);
+  doc.text("Augusta, GA  ·  706-922-0154  ·  titanaugusta.pro", M, 19);
 
   // Report title (right side of header)
   setFont("bold", 10, WHITE);
@@ -108,7 +108,10 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
     setFont("bold", 7, GRAY);
     doc.text(label.toUpperCase(), x, cy);
     setFont("normal", 8.5, DARK);
-    const lines = doc.splitTextToSize(value || "—", maxW);
+    // Blank (not "—") when there's no value, so header fields don't advertise
+    // missing data. Table cells pass their own "—" explicitly where a dash is
+    // the right convention.
+    const lines = doc.splitTextToSize(value != null && value !== "" ? value : "", maxW);
     doc.text(lines, x, cy + 4);
     return cy + 4 + (lines.length - 1) * 4;
   };
@@ -118,10 +121,12 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
   fieldCell("Loss Type", (job.lossType || "—").replace(/_/g, " ").toUpperCase(), col3, y);
   fieldCell("Assigned Tech", job.assignedTech || "—", col4, y);
 
+  // Insurance header row: leave blank (not "—") when a value isn't on file so
+  // the report doesn't advertise missing data.
   y += 10;
-  fieldCell("Insurance Carrier", job.insuranceCarrier || "—", col1, y);
-  fieldCell("Claim Number", job.claimNumber || "—", col2, y);
-  fieldCell("Policy Number", (job as any).policyNumber || "—", col3, y);
+  fieldCell("Insurance Carrier", job.insuranceCarrier || "", col1, y);
+  fieldCell("Claim Number", job.claimNumber || "", col2, y);
+  fieldCell("Policy Number", (job as any).policyNumber || "", col3, y);
   fieldCell("Report Date", new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }), col4, y);
 
   y += 12;

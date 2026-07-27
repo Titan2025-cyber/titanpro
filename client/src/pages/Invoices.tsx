@@ -36,7 +36,8 @@ export default function Invoices() {
   const [payOpen, setPayOpen] = useState<number | null>(null);
   const [viewId, setViewId] = useState<number | null>(null);
   const [editId, setEditId] = useState<number | null>(null);
-  const [editForm, setEditForm] = useState({ status: "", adjustment: "", adjustmentReason: "", notes: "", dueDate: "" });
+  const [editForm, setEditForm] = useState({ status: "", adjustment: "", adjustmentReason: "", notes: "", dueDate: "", taxRate: "0" });
+  const [editItems, setEditItems] = useState<LineItemRow[]>([]);
   const [form, setForm] = useState({ jobId: "", contactId: "", invoiceNumber: `INV-${new Date().getFullYear()}-`, dueDate: "", taxRate: String(DEFAULT_TAX_RATE) });
   const [items, setItems] = useState<LineItemRow[]>([blankRow()]);
   const [payAmount, setPayAmount] = useState("");
@@ -137,13 +138,27 @@ export default function Invoices() {
   });
 
   function openEdit(inv: Invoice) {
+    // Derive the effective tax rate from stored subtotal/tax so edits preserve it.
+    const sub = Number(inv.subtotal) || 0;
+    const tx = Number(inv.tax) || 0;
+    const rate = sub > 0 ? Math.round((tx / sub) * 10000) / 100 : 0;
     setEditForm({
       status: inv.status || "",
       adjustment: String((inv as any).adjustment || ""),
       adjustmentReason: (inv as any).adjustmentReason || "",
       notes: inv.notes || "",
       dueDate: inv.dueDate || "",
+      taxRate: String(rate),
     });
+    // Load existing line items into an editable set.
+    let li: any[] = [];
+    try { li = JSON.parse(inv.lineItems || "[]"); } catch { li = []; }
+    const rows: LineItemRow[] = li.map((it: any) => ({
+      description: String(it.description ?? it.name ?? it.desc ?? ""),
+      quantity: String(it.quantity ?? it.qty ?? 1),
+      unitPrice: String(it.unitPrice ?? it.price ?? it.rate ?? it.amount ?? 0),
+    }));
+    setEditItems(rows.length ? rows : [blankRow()]);
     setEditId(inv.id);
   }
 
@@ -523,12 +538,23 @@ export default function Invoices() {
 
       {/* Edit invoice / settlement dialog */}
       <Dialog open={editId !== null} onOpenChange={() => setEditId(null)}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-2xl max-h-[88vh] overflow-y-auto">
           {(() => {
             const inv = invoices.find(i => i.id === editId);
             if (!inv) return null;
-            const baseline = (inv as any).originalTotal != null ? Number((inv as any).originalTotal) : (inv.total || 0);
+            // Recompute totals live from the edited line items.
+            const editParsed = editItems.map(it => {
+              const qty = Number(it.quantity) || 0;
+              const price = Number(it.unitPrice) || 0;
+              return { description: it.description.trim(), quantity: qty, unitPrice: price, total: Math.round(qty * price * 100) / 100 };
+            });
+            const editSubtotal = Math.round(editParsed.reduce((s, it) => s + it.total, 0) * 100) / 100;
+            const editTaxRate = Number(editForm.taxRate) || 0;
+            const editTax = Math.round(editSubtotal * (editTaxRate / 100) * 100) / 100;
+            const editGross = Math.round((editSubtotal + editTax) * 100) / 100;
             const adjNum = Number(editForm.adjustment) || 0;
+            // Settlement reduction applies against the (edited) gross total.
+            const baseline = editGross;
             const net = Math.max(0, baseline - adjNum);
             const tooBig = adjNum > baseline;
             return (
@@ -546,6 +572,54 @@ export default function Invoices() {
                         <SelectItem value="overdue">Overdue</SelectItem>
                       </SelectContent>
                     </Select>
+                  </div>
+
+                  {/* Editable line items */}
+                  <div className="rounded-md border p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold">Line Items</p>
+                      <Button type="button" size="sm" variant="outline" data-testid="button-edit-add-line-item"
+                        onClick={() => setEditItems(rows => [...rows, blankRow()])}>
+                        <Plus className="w-3 h-3 mr-1" />Add item
+                      </Button>
+                    </div>
+                    <div className="grid grid-cols-[1fr_54px_84px_84px_28px] gap-2 text-[10px] font-semibold text-muted-foreground px-1">
+                      <span>DESCRIPTION</span><span className="text-right">QTY</span><span className="text-right">UNIT $</span><span className="text-right">AMOUNT</span><span></span>
+                    </div>
+                    {editItems.map((row, idx) => {
+                      const lineTotal = (Number(row.quantity) || 0) * (Number(row.unitPrice) || 0);
+                      return (
+                        <div key={idx} className="grid grid-cols-[1fr_54px_84px_84px_28px] gap-2 items-center" data-testid={`edit-line-item-row-${idx}`}>
+                          <Input className="h-8" placeholder="e.g. Water extraction & drying" value={row.description}
+                            data-testid={`edit-input-item-desc-${idx}`}
+                            onChange={e => setEditItems(rows => rows.map((r, i) => i === idx ? { ...r, description: e.target.value } : r))} />
+                          <Input className="h-8 text-right" type="number" min="0" value={row.quantity}
+                            data-testid={`edit-input-item-qty-${idx}`}
+                            onChange={e => setEditItems(rows => rows.map((r, i) => i === idx ? { ...r, quantity: e.target.value } : r))} />
+                          <Input className="h-8 text-right" type="number" min="0" step="0.01" placeholder="0" value={row.unitPrice}
+                            data-testid={`edit-input-item-price-${idx}`}
+                            onChange={e => setEditItems(rows => rows.map((r, i) => i === idx ? { ...r, unitPrice: e.target.value } : r))} />
+                          <span className="text-xs text-right tabular-nums">${lineTotal.toLocaleString()}</span>
+                          <Button type="button" size="icon" variant="ghost" className="h-7 w-7"
+                            data-testid={`edit-button-remove-item-${idx}`}
+                            disabled={editItems.length === 1}
+                            onClick={() => setEditItems(rows => rows.filter((_, i) => i !== idx))}>
+                            <Trash2 className="w-3.5 h-3.5 text-muted-foreground" />
+                          </Button>
+                        </div>
+                      );
+                    })}
+                    <div className="grid grid-cols-2 gap-3 pt-1">
+                      <div><Label className="text-xs">Tax rate (%)</Label>
+                        <Input type="number" min="0" step="0.01" className="h-8" value={editForm.taxRate}
+                          data-testid="edit-input-tax-rate"
+                          onChange={e => setEditForm(f => ({ ...f, taxRate: e.target.value }))} /></div>
+                    </div>
+                    <div className="text-xs space-y-0.5 pt-1 border-t">
+                      <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span>${editSubtotal.toLocaleString()}</span></div>
+                      <div className="flex justify-between text-muted-foreground"><span>Tax</span><span>${editTax.toLocaleString()}</span></div>
+                      <div className="flex justify-between font-semibold"><span>Invoice total</span><span>${editGross.toLocaleString()}</span></div>
+                    </div>
                   </div>
 
                   <div className="rounded-md border p-3 bg-muted/30 space-y-2">
@@ -585,13 +659,33 @@ export default function Invoices() {
                   <div className="flex gap-2 pt-1">
                     <Button className="flex-1" disabled={tooBig || updateInvoice.isPending}
                       data-testid="button-save-invoice"
-                      onClick={() => updateInvoice.mutate({ id: inv.id, data: {
-                        status: editForm.status,
-                        adjustment: adjNum,
-                        adjustmentReason: editForm.adjustmentReason || null,
-                        notes: editForm.notes || null,
-                        dueDate: editForm.dueDate || null,
-                      }})}>
+                      onClick={() => {
+                        // Base payload: edited line items + recomputed totals.
+                        const data: any = {
+                          status: editForm.status,
+                          lineItems: JSON.stringify(editParsed.filter(it => it.description || it.total > 0)),
+                          subtotal: editSubtotal,
+                          tax: editTax,
+                          total: editGross,
+                          notes: editForm.notes || null,
+                          dueDate: editForm.dueDate || null,
+                        };
+                        // Only apply settlement fields when there's an actual reduction.
+                        // (The server recomputes net total from `adjustment` when present,
+                        // so we must NOT send adjustment:0 or it would clobber the edited total.)
+                        if (adjNum > 0) {
+                          data.originalTotal = editGross;
+                          data.total = net;
+                          data.adjustment = adjNum;
+                          data.adjustmentReason = editForm.adjustmentReason || null;
+                        } else {
+                          // Clear any prior reduction so the edited gross stands.
+                          data.adjustment = 0;
+                          data.originalTotal = null;
+                          data.adjustmentReason = null;
+                        }
+                        updateInvoice.mutate({ id: inv.id, data });
+                      }}>
                       {updateInvoice.isPending ? "Saving..." : "Save Changes"}
                     </Button>
                     <Button variant="outline" className="flex-1" onClick={() => setEditId(null)}>Cancel</Button>

@@ -1,11 +1,17 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Bell, BellOff, Check, CheckCheck, Briefcase, Droplets, MessageSquare, AlertCircle } from "lucide-react";
+import { Bell, BellOff, Check, CheckCheck, Briefcase, Droplets, MessageSquare, AlertCircle, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 const TYPE_ICONS: Record<string, any> = {
   assignment: Briefcase,
@@ -26,6 +32,7 @@ const TYPE_COLORS: Record<string, string> = {
 const TECHS = ["Cody Brantley", "John", "Mason", "Clint", "Blake", "Blake Foster"];
 
 export default function TechNotifications() {
+  const { toast } = useToast();
   const [selectedTech, setSelectedTech] = useState("Cody Brantley");
 
   const { data: notifications = [], isLoading } = useQuery<any[]>({
@@ -52,6 +59,16 @@ export default function TechNotifications() {
       queryClient.invalidateQueries({ queryKey: ["/api/tech-notifications", selectedTech] });
       queryClient.invalidateQueries({ queryKey: ["/api/tech-notifications", selectedTech, "unread"] });
     },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => apiRequest("DELETE", `/api/tech-notifications/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/tech-notifications", selectedTech] });
+      queryClient.invalidateQueries({ queryKey: ["/api/tech-notifications", selectedTech, "unread"] });
+      toast({ title: "Notification deleted" });
+    },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
   });
 
   const unread = notifications.filter(n => !n.read).length;
@@ -133,6 +150,32 @@ export default function TechNotifications() {
                       <Check className="w-4 h-4" />
                     </Button>
                   )}
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="shrink-0 text-muted-foreground"
+                        data-testid={`button-delete-tech-notifications-${n.id}`}
+                      >
+                        <Trash2 className="w-4 h-4 text-destructive" />
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Delete this notification?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          {n.title ? `"${n.title}" ` : ""}This permanently removes the record and cannot be undone.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => deleteMutation.mutate(n.id)} data-testid={`button-confirm-delete-tech-notifications-${n.id}`}>
+                          Delete
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
                 </CardContent>
               </Card>
             );

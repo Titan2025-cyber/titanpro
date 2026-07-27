@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useState } from "react";
-import { Shield, Plus, AlertTriangle, CheckCircle, Clock, X } from "lucide-react";
+import { Shield, Plus, AlertTriangle, CheckCircle, Clock, X, Pencil } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
@@ -23,6 +23,8 @@ export default function COITracker() {
   const { toast } = useToast();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ document_type: "", document_number: "", issuer: "", expires_at: "", notes: "", contact_id: "" });
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState({ document_type: "", document_number: "", issuer: "", expires_at: "", notes: "", contact_id: "" });
 
   const { data: docs = [], isLoading } = useQuery({
     queryKey: ["/api/coi-records"],
@@ -44,6 +46,25 @@ export default function COITracker() {
     mutationFn: (id: number) => apiRequest(`/api/coi-records/${id}`, { method: "DELETE" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/coi-records"] }),
   });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: any }) => apiRequest(`/api/coi-records/${id}`, { method: "PATCH", body: JSON.stringify(data) }).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/coi-records"] });
+      setEditingId(null);
+      toast({ title: "Document updated" });
+    },
+    onError: (e: any) => toast({ title: "Update failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
+  const openEdit = (doc: any) => {
+    setEditForm({
+      document_type: doc.document_type || "", document_number: doc.document_number || "",
+      issuer: doc.issuer || "", expires_at: doc.expires_at ? String(doc.expires_at).slice(0, 10) : "",
+      notes: doc.notes || "", contact_id: doc.contact_id != null ? String(doc.contact_id) : "",
+    });
+    setEditingId(doc.id);
+  };
 
   const getStatus = (expiresAt: string) => {
     const now = new Date();
@@ -148,15 +169,26 @@ export default function COITracker() {
                           </div>
                         )}
                       </div>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="text-muted-foreground hover:text-red-500"
-                        onClick={() => deleteMutation.mutate(doc.id)}
-                        data-testid={`button-delete-${doc.id}`}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
+                      <div className="flex flex-col gap-1">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-muted-foreground hover:text-foreground"
+                          onClick={() => openEdit(doc)}
+                          data-testid={`button-edit-coi-records-${doc.id}`}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-muted-foreground hover:text-red-500"
+                          onClick={() => deleteMutation.mutate(doc.id)}
+                          data-testid={`button-delete-${doc.id}`}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                   </CardContent>
                 </Card>
@@ -208,6 +240,59 @@ export default function COITracker() {
                 {createMutation.isPending ? "Adding..." : "Add Document"}
               </Button>
               <Button variant="outline" onClick={() => setShowForm(false)} data-testid="button-cancel">Cancel</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Dialog */}
+      <Dialog open={editingId !== null} onOpenChange={v => { if (!v) setEditingId(null); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>Edit COI / License Document</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs text-muted-foreground font-medium mb-1 block">Document Type *</label>
+              <Select value={editForm.document_type} onValueChange={v => setEditForm(f => ({ ...f, document_type: v }))}>
+                <SelectTrigger data-testid={`input-document_type-${editingId}`}><SelectValue placeholder="Select type..." /></SelectTrigger>
+                <SelectContent>{DOC_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground font-medium mb-1 block">Document Number</label>
+              <Input value={editForm.document_number} onChange={e => setEditForm(f => ({ ...f, document_number: e.target.value }))} placeholder="Policy or license number" data-testid={`input-document_number-${editingId}`} />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground font-medium mb-1 block">Issuing Authority / Insurer</label>
+              <Input value={editForm.issuer} onChange={e => setEditForm(f => ({ ...f, issuer: e.target.value }))} placeholder="e.g. Hartford, State of Georgia" data-testid={`input-issuer-${editingId}`} />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground font-medium mb-1 block">Expiration Date *</label>
+              <Input type="date" value={editForm.expires_at} onChange={e => setEditForm(f => ({ ...f, expires_at: e.target.value }))} data-testid={`input-expires_at-${editingId}`} />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground font-medium mb-1 block">Sub / Partner (optional)</label>
+              <Select value={editForm.contact_id} onValueChange={v => setEditForm(f => ({ ...f, contact_id: v }))}>
+                <SelectTrigger data-testid={`input-contact_id-${editingId}`}><SelectValue placeholder="Link to contact..." /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">None</SelectItem>
+                  {contacts.map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground font-medium mb-1 block">Notes</label>
+              <Input value={editForm.notes} onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))} placeholder="Any notes..." data-testid={`input-notes-${editingId}`} />
+            </div>
+            <div className="flex gap-2 pt-2">
+              <Button
+                onClick={() => editingId !== null && updateMutation.mutate({ id: editingId, data: { ...editForm, contact_id: editForm.contact_id ? Number(editForm.contact_id) : null } })}
+                disabled={updateMutation.isPending}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white"
+                data-testid={`button-save-coi-records-${editingId}`}
+              >
+                {updateMutation.isPending ? "Saving..." : "Save Changes"}
+              </Button>
+              <Button variant="outline" onClick={() => setEditingId(null)}>Cancel</Button>
             </div>
           </div>
         </DialogContent>

@@ -3,14 +3,51 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { RefreshCw, CheckCircle, AlertTriangle, Clock, BookOpen, TrendingUp, FileText } from "lucide-react";
+import { RefreshCw, CheckCircle, AlertTriangle, Clock, BookOpen, TrendingUp, FileText, Trash2 } from "lucide-react";
 
 const STATUS_COLORS: Record<string, string> = {
   synced: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
   pending: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400",
   error: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
 };
+
+function DeleteQbSyncLogBtn({ id, label, onDone }: { id: number; label: string; onDone: () => void }) {
+  const { toast } = useToast();
+  const m = useMutation({
+    mutationFn: () => apiRequest("DELETE", `/api/qb-sync-log/${id}`),
+    onSuccess: () => { toast({ title: "Deleted" }); onDone(); },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="icon" data-testid={`button-delete-qb-sync-log-${id}`}>
+          <Trash2 className="w-4 h-4 text-destructive" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this record?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {label ? `"${label}" ` : ""}This permanently removes the record and cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => m.mutate()} data-testid={`button-confirm-delete-qb-sync-log-${id}`}>
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
 
 export default function QBSync() {
   const { toast } = useToast();
@@ -125,7 +162,10 @@ export default function QBSync() {
                       {entry.error_message && <p className="text-xs text-red-500">{entry.error_message}</p>}
                     </div>
                   </div>
-                  <p className="text-xs text-muted-foreground">{entry.synced_at ? new Date(entry.synced_at).toLocaleString() : "Pending"}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-xs text-muted-foreground">{entry.synced_at ? new Date(entry.synced_at).toLocaleString() : "Pending"}</p>
+                    <DeleteQbSyncLogBtn id={entry.id} label={`${entry.entity_type} #${entry.entity_id}`} onDone={() => queryClient.invalidateQueries({ queryKey: ["/api/qb-sync-log"] })} />
+                  </div>
                 </div>
               ))}
             </div>

@@ -126,7 +126,7 @@ function drawHeader(doc: jsPDF, title: string, subtitle: string, docId: string) 
   // Contact info right-aligned
   doc.setFontSize(7.5);
   doc.setTextColor(...WHITE);
-  doc.text("706-922-0154  |  cody@titanrestorationllc.com  |  titanrestorationllc.com", 196, 10, { align: "right" });
+  doc.text("706-922-0154  |  cody@titanaugusta.com  |  titanaugusta.pro", 196, 10, { align: "right" });
   doc.text("Augusta, GA  |  CSRA  |  Licensed & Insured", 196, 16, { align: "right" });
 
   // Blue accent bar
@@ -137,14 +137,14 @@ function drawHeader(doc: jsPDF, title: string, subtitle: string, docId: string) 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(13);
   doc.setTextColor(...WHITE);
-  doc.text(title, 14, 33);
+  doc.text(title, 14, 31);
 
   // Subtitle / doc ID right
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   doc.setTextColor(180, 210, 255);
-  doc.text(subtitle, 14, 38.5);
-  doc.text(docId, 196, 38.5, { align: "right" });
+  doc.text(subtitle, 14, 36.5);
+  doc.text(docId, 196, 36.5, { align: "right" });
 
   return 50; // return cursor y after header
 }
@@ -156,7 +156,7 @@ function drawFooter(doc: jsPDF, pageNum: number, totalPages: number) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7);
   doc.setTextColor(...WHITE);
-  doc.text("Titan Restoration LLC  ·  706-922-0154  ·  titanrestorationllc.com  ·  Augusta, GA", 14, 290);
+  doc.text("Titan Restoration LLC  ·  706-922-0154  ·  titanaugusta.pro  ·  Augusta, GA", 14, 290);
   doc.text(`Page ${pageNum} of ${totalPages}`, 196, 290, { align: "right" });
   doc.setFontSize(6.5);
   doc.setTextColor(255, 200, 200);
@@ -217,14 +217,24 @@ export function generateWorkAuthPDF(data: WorkAuthPDFData): string {
   doc.roundedRect(14, y - 2, 182, 22, 2, 2, "F");
   y += 2;
 
-  let i1 = y, i2 = y;
-  i1 = field(doc, "Insurance Carrier", data.insuranceCarrier || "Not provided", col1, i1) + 5;
-  i2 = field(doc, "Claim Number", data.claimNumber || "—", col2, i2) + 5;
-  y = Math.max(i1, i2);
-  if (data.policyNumber) {
-    field(doc, "Policy Number", data.policyNumber, col1, y);
+  // Only print insurance fields that actually have values; if none are on file,
+  // show a single clean line instead of a grid of "—" placeholders.
+  const hasIns = !!(data.insuranceCarrier || data.claimNumber || data.policyNumber);
+  if (!hasIns) {
+    setFont(doc, "normal", 9, GRAY);
+    doc.text("No insurance information on file.", col1, y + 3);
+    y += 12;
+  } else {
+    let i1 = y, i2 = y;
+    if (data.insuranceCarrier) i1 = field(doc, "Insurance Carrier", data.insuranceCarrier, col1, i1) + 5;
+    if (data.claimNumber) i2 = field(doc, "Claim Number", data.claimNumber, col2, i2) + 5;
+    y = Math.max(i1, i2);
+    if (data.policyNumber) {
+      field(doc, "Policy Number", data.policyNumber, col1, y);
+      y += 5;
+    }
+    y += 12;
   }
-  y += 12;
 
   // ── Section 3: Scope ────────────────────────────────────────────────────────
   setFont(doc, "bold", 9, BLUE);
@@ -357,7 +367,7 @@ export function generateWorkAuthPDF(data: WorkAuthPDFData): string {
   setFont(doc, "bold", 7.5, GRAY);
   doc.text("TITAN RESTORATION LLC", 150, y + 5);
   setFont(doc, "normal", 7.5, RED);
-  doc.text("706-922-0154  ·  titanrestorationllc.com", 150, y + 10);
+  doc.text("706-922-0154  ·  titanaugusta.pro", 150, y + 10);
 
   y += 22;
 
@@ -522,7 +532,7 @@ export function generateRightToRenovatePDF(data: RightToRenovatePDFData): string
   setFont(doc, "bold", 7.5, GRAY);
   doc.text("TITAN RESTORATION LLC", 150, y + 5);
   setFont(doc, "normal", 7.5, RED);
-  doc.text("706-922-0154  ·  titanrestorationllc.com", 150, y + 10);
+  doc.text("706-922-0154  ·  titanaugusta.pro", 150, y + 10);
 
   const totalPages = (doc as any).internal.getNumberOfPages();
   for (let i = 1; i <= totalPages; i++) {
@@ -863,7 +873,7 @@ export function generateInvoicePDF(data: InvoicePDFData): string {
   };
 
   rowLine("Subtotal", money(data.subtotal), GRAY);
-  rowLine("Tax", money(data.tax), GRAY);
+  if (Number(data.tax) > 0) rowLine("Tax", money(data.tax), GRAY);
   if (adj > 0) {
     rowLine("Original invoiced", money(orig), GRAY);
     rowLine("Insurance reduction", "-" + money(adj), RED);
@@ -903,7 +913,7 @@ export function generateInvoicePDF(data: InvoicePDFData): string {
   setFont(doc, "normal", 8, DARK);
   doc.text("Please remit payment by the due date. Make checks payable to Titan Restoration LLC.", 18, y + 10);
   setFont(doc, "normal", 7.5, RED);
-  doc.text("Questions? Call 706-922-0154 or email cody@titanrestorationllc.com", 18, y + 14);
+  doc.text("Questions? Call 706-922-0154 or email cody@titanaugusta.com", 18, y + 14);
 
   // Footer on all pages
   const totalPages = (doc as any).internal.getNumberOfPages();
@@ -918,21 +928,76 @@ export function generateInvoicePDF(data: InvoicePDFData): string {
 // ─────────────────────────────────────────────────────────────────────────────
 // Utility: open PDF in new tab
 // ─────────────────────────────────────────────────────────────────────────────
-export function previewPDF(dataUri: string) {
-  const win = window.open();
-  if (win) {
-    win.document.write(`<iframe src="${dataUri}" style="width:100%;height:100%;border:none;" />`);
+// Convert a base64 data URI (or raw base64) into a Blob. Blob URLs work inside
+// sandboxed iframes and avoid the browser restrictions that block large
+// data: URI navigations and downloads.
+function dataUriToBlob(dataUri: string): Blob {
+  let mime = "application/pdf";
+  let b64 = dataUri;
+  const match = /^data:([^;]+);base64,(.*)$/s.exec(dataUri);
+  if (match) {
+    mime = match[1] || mime;
+    b64 = match[2];
+  } else if (dataUri.startsWith("data:")) {
+    // data URI without base64 marker — fall back to comma split
+    b64 = dataUri.slice(dataUri.indexOf(",") + 1);
   }
+  const binary = atob(b64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+export function previewPDF(dataUri: string) {
+  // Build a Blob URL and open it directly. This works inside sandboxed iframes
+  // (e.g. the published pplx.app build) where window.open() + document.write is
+  // blocked, and is not subject to data: URI popup/navigation restrictions.
+  let url: string;
+  try {
+    url = URL.createObjectURL(dataUriToBlob(dataUri));
+  } catch (e) {
+    console.error("previewPDF: failed to build blob", e);
+    return;
+  }
+  const win = window.open(url, "_blank");
+  if (!win) {
+    // Popup blocked (or sandboxed): fall back to same-tab navigation via a
+    // temporary anchor so the PDF still opens for the user.
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+  // Revoke after a delay so the browser has time to load the document.
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utility: trigger browser download
 // ─────────────────────────────────────────────────────────────────────────────
 export function downloadPDF(dataUri: string, filename: string) {
+  const name = filename.endsWith(".pdf") ? filename : filename + ".pdf";
+  // Use a Blob URL rather than assigning the raw data: URI to href. Chrome and
+  // other browsers block/truncate large data: URI downloads, and data: URIs do
+  // not work reliably inside sandboxed iframes (the published pplx.app build).
+  let url: string;
+  let isBlob = false;
+  try {
+    url = URL.createObjectURL(dataUriToBlob(dataUri));
+    isBlob = true;
+  } catch (e) {
+    console.error("downloadPDF: blob build failed, falling back to data URI", e);
+    url = dataUri;
+  }
   const link = document.createElement("a");
-  link.href = dataUri;
-  link.download = filename.endsWith(".pdf") ? filename : filename + ".pdf";
+  link.href = url;
+  link.download = name;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+  if (isBlob) setTimeout(() => URL.revokeObjectURL(url), 60000);
 }

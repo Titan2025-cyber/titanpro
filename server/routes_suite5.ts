@@ -1,7 +1,12 @@
-import type { Express } from "express";
+import type { Express, RequestHandler } from "express";
 import type { Database } from "better-sqlite3";
 
-export function registerSuite5Routes(app: Express, sqlite: Database) {
+type SuiteAuth = { requireRole: (...roles: string[]) => RequestHandler };
+const suite5Passthrough: RequestHandler = (_req, _res, next) => next();
+
+export function registerSuite5Routes(app: Express, sqlite: Database, auth?: SuiteAuth) {
+  // Manager-level gate for lien waivers, QB sync, and other back-office mutations.
+  const requireManage: RequestHandler = auth ? auth.requireRole("owner", "admin", "office", "general_manager") : suite5Passthrough;
 
   // ── Create Suite 5 tables ──────────────────────────────────────────────────
   sqlite.exec(`CREATE TABLE IF NOT EXISTS qb_sync_log (
@@ -151,7 +156,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database) {
   });
 
   // QB Sync — simulate batch sync of invoices/payments
-  app.post("/api/qb-sync/run", (req, res) => {
+  app.post("/api/qb-sync/run", requireManage, (req, res) => {
     try {
       const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
       const payments = sqlite.prepare("SELECT * FROM payments WHERE type='received'").all() as any[];
@@ -251,7 +256,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database) {
             if (!alreadySent) {
               const body = (rule.message_template || "")
                 .replace("{invoice_id}", `INV-${String(inv.id).padStart(4, "0")}`)
-                .replace("{amount}", `$${(inv.totalAmount || 0).toLocaleString()}`)
+                .replace("{amount}", `$${(inv.total || 0).toLocaleString()}`)
                 .replace("{days}", String(ageDays));
               sqlite.prepare(
                 "INSERT INTO ar_followup_log (invoice_id, rule_id, sent_at, channel, message_body, status) VALUES (?,?,?,?,?,?)"
@@ -284,7 +289,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database) {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.patch("/api/lien-waivers/:id", (req, res) => {
+  app.patch("/api/lien-waivers/:id", requireManage, (req, res) => {
     try {
       const fields = req.body;
       const existing = sqlite.prepare("SELECT * FROM lien_waivers WHERE id=?").get(parseInt(req.params.id)) as any;
@@ -297,7 +302,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database) {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.delete("/api/lien-waivers/:id", (req, res) => {
+  app.delete("/api/lien-waivers/:id", requireManage, (req, res) => {
     try {
       sqlite.prepare("DELETE FROM lien_waivers WHERE id=?").run(parseInt(req.params.id));
       res.json({ success: true });
@@ -534,9 +539,9 @@ export function registerSuite5Routes(app: Express, sqlite: Database) {
       // Revenue by loss type
       const revByType: Record<string, number> = {};
       for (const job of jobs) {
-        const lt = job.lossType || "unknown";
-        const jobInvoices = invoices.filter((i: any) => i.jobId === job.id);
-        const jobRevenue = jobInvoices.reduce((s: number, i: any) => s + (i.totalAmount || 0), 0);
+        const lt = job.loss_type || "unknown";
+        const jobInvoices = invoices.filter((i: any) => i.job_id === job.id);
+        const jobRevenue = jobInvoices.reduce((s: number, i: any) => s + (i.total || 0), 0);
         revByType[lt] = (revByType[lt] || 0) + jobRevenue;
       }
 
@@ -551,10 +556,10 @@ export function registerSuite5Routes(app: Express, sqlite: Database) {
       const carrierAging: Record<string, { total: number; count: number }> = {};
       for (const inv of invoices) {
         if (inv.status !== "paid") {
-          const job = jobs.find((j: any) => j.id === inv.jobId);
-          const carrier = job?.insuranceCarrier || "Unknown";
+          const job = jobs.find((j: any) => j.id === inv.job_id);
+          const carrier = job?.insurance_carrier || "Unknown";
           if (!carrierAging[carrier]) carrierAging[carrier] = { total: 0, count: 0 };
-          carrierAging[carrier].total += (inv.totalAmount || 0);
+          carrierAging[carrier].total += (inv.total || 0);
           carrierAging[carrier].count += 1;
         }
       }
@@ -568,7 +573,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database) {
         const monthStart = new Date(d.getFullYear(), d.getMonth(), 1).toISOString();
         const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59).toISOString();
         const amount = payments
-          .filter((p: any) => p.paidAt >= monthStart && p.paidAt <= monthEnd)
+          .filter((p: any) => p.paid_at && p.paid_at >= monthStart && p.paid_at <= monthEnd)
           .reduce((s: number, p: any) => s + (p.amount || 0), 0);
         monthlyRevenue.push({ month: label, amount });
       }
@@ -576,16 +581,16 @@ export function registerSuite5Routes(app: Express, sqlite: Database) {
       // Estimator performance
       const estByJob: Record<number, any[]> = {};
       for (const e of estimates) {
-        if (!estByJob[e.jobId]) estByJob[e.jobId] = [];
-        estByJob[e.jobId].push(e);
+        if (!estByJob[e.job_id]) estByJob[e.job_id] = [];
+        estByJob[e.job_id].push(e);
       }
 
       res.json({
         totalJobs: jobs.length,
         openJobs: jobs.filter((j: any) => j.status !== "complete").length,
         totalRevenue: payments.reduce((s: number, p: any) => s + (p.amount || 0), 0),
-        outstandingAR: invoices.filter((i: any) => i.status !== "paid").reduce((s: number, i: any) => s + (i.totalAmount || 0), 0),
-        avgJobValue: invoices.length ? invoices.reduce((s: number, i: any) => s + (i.totalAmount || 0), 0) / invoices.length : 0,
+        outstandingAR: invoices.filter((i: any) => i.status !== "paid").reduce((s: number, i: any) => s + (i.total || 0), 0),
+        avgJobValue: invoices.length ? invoices.reduce((s: number, i: any) => s + (i.total || 0), 0) / invoices.length : 0,
         revenueByLossType: revByType,
         jobsByStatus: statusCount,
         carrierAging,
@@ -608,19 +613,19 @@ export function registerSuite5Routes(app: Express, sqlite: Database) {
         byJob[j.id] = { estimates: [], supplements: [], job: j };
       }
       for (const e of estimates) {
-        if (byJob[e.jobId]) byJob[e.jobId].estimates.push(e);
+        if (byJob[e.job_id]) byJob[e.job_id].estimates.push(e);
       }
       for (const s of supplements) {
-        if (byJob[s.jobId]) byJob[s.jobId].supplements.push(s);
+        if (byJob[s.job_id]) byJob[s.job_id].supplements.push(s);
       }
 
       const stats = {
         totalEstimates: estimates.length,
-        totalValue: estimates.reduce((s: number, e: any) => s + (e.totalAmount || 0), 0),
-        avgEstimateValue: estimates.length ? estimates.reduce((s: number, e: any) => s + (e.totalAmount || 0), 0) / estimates.length : 0,
+        totalValue: estimates.reduce((s: number, e: any) => s + (e.total || 0), 0),
+        avgEstimateValue: estimates.length ? estimates.reduce((s: number, e: any) => s + (e.total || 0), 0) / estimates.length : 0,
         supplementCount: supplements.length,
         supplementRate: estimates.length ? (supplements.length / estimates.length * 100).toFixed(1) : "0",
-        totalSupplementValue: supplements.reduce((s: number, sup: any) => s + (sup.requestedAmount || 0), 0),
+        totalSupplementValue: supplements.reduce((s: number, sup: any) => s + (sup.amount_requested || 0), 0),
         approvedSupplements: supplements.filter((s: any) => s.status === "approved").length,
         approvalRate: supplements.length ? (supplements.filter((s: any) => s.status === "approved").length / supplements.length * 100).toFixed(1) : "0",
         byLossType: {} as Record<string, { count: number; totalValue: number; supplementCount: number }>,
@@ -628,10 +633,10 @@ export function registerSuite5Routes(app: Express, sqlite: Database) {
 
       for (const jobId of Object.keys(byJob)) {
         const { estimates: jobEsts, supplements: jobSupps, job } = byJob[parseInt(jobId)];
-        const lt = job?.lossType || "unknown";
+        const lt = job?.loss_type || "unknown";
         if (!stats.byLossType[lt]) stats.byLossType[lt] = { count: 0, totalValue: 0, supplementCount: 0 };
         stats.byLossType[lt].count += jobEsts.length;
-        stats.byLossType[lt].totalValue += jobEsts.reduce((s: number, e: any) => s + (e.totalAmount || 0), 0);
+        stats.byLossType[lt].totalValue += jobEsts.reduce((s: number, e: any) => s + (e.total || 0), 0);
         stats.byLossType[lt].supplementCount += jobSupps.length;
       }
 

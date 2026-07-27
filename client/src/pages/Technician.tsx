@@ -1,4 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { UserSelect } from "@/components/UserSelect";
 import { useState } from "react";
 import { Phone, MapPin, FileText, ChevronDown, ChevronUp, CheckCircle2, Search } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -12,7 +13,6 @@ import DryingRecords from "@/components/DryingRecords";
 import JobPhotos from "@/components/JobPhotos";
 import type { Job, Contact } from "@shared/schema";
 
-const TEAM = ["John", "Mason", "Clint", "Blake", "Blake Foster", "Cody Brantley"];
 
 const LOSS_ICONS: Record<string, string> = {
   water: "💧", fire: "🔥", mold: "🍄", storm: "⛈️", biohazard: "☣️", reconstruction: "🏗️"
@@ -174,20 +174,25 @@ function JobCard({ job, contacts }: { job: Job; contacts: Contact[] }) {
               <div className="mt-1 grid grid-cols-2 gap-2">
                 <div>
                   <p className="text-xs text-muted-foreground">Your name</p>
-                  <Select value={noteAuthor} onValueChange={setNoteAuthor}>
-                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                    <SelectContent>{TEAM.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
-                  </Select>
+                  <UserSelect
+                    value={noteAuthor}
+                    onChange={setNoteAuthor}
+                    placeholder="Select"
+                    className="h-8 text-xs"
+                    testId="select-note-author"
+                  />
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Tag @member</p>
-                  <Select value={noteTag} onValueChange={setNoteTag}>
-                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="None" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="">None</SelectItem>
-                      {TEAM.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                  <UserSelect
+                    value={noteTag}
+                    onChange={setNoteTag}
+                    placeholder="None"
+                    allowUnassigned
+                    unassignedLabel="None"
+                    className="h-8 text-xs"
+                    testId="select-note-tag"
+                  />
                 </div>
               </div>
               <Textarea

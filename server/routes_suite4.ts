@@ -1,9 +1,14 @@
 // Suite 4 routes — injected into registerRoutes() by routes.ts
 
-import { Express } from "express";
+import { Express, RequestHandler } from "express";
 import Database from "better-sqlite3";
 
-export function registerSuite4Routes(app: Express, sqlite: InstanceType<typeof Database>) {
+type Suite4Auth = { requireRole: (...roles: string[]) => RequestHandler };
+const suite4Passthrough: RequestHandler = (_req, _res, next) => next();
+
+export function registerSuite4Routes(app: Express, sqlite: InstanceType<typeof Database>, auth?: Suite4Auth) {
+  // Manager-level gate for carrier-AR and subrogation back-office mutations.
+  const requireManage: RequestHandler = auth ? auth.requireRole("owner", "admin", "office", "general_manager") : suite4Passthrough;
 
   // ────────────────────────────────────────────────────────────────────────────
   // 1. CARRIER AR INTELLIGENCE
@@ -25,7 +30,7 @@ export function registerSuite4Routes(app: Express, sqlite: InstanceType<typeof D
     res.json(events);
   });
 
-  app.post("/api/carrier-ar", (req, res) => {
+  app.post("/api/carrier-ar", requireManage, (req, res) => {
     const { jobId, invoiceId, carrier, eventType, amount, daysOutstanding, notes } = req.body;
     if (!jobId || !carrier || !eventType) return res.status(400).json({ error: "jobId, carrier, eventType required" });
     const now = new Date().toISOString();
@@ -709,7 +714,7 @@ export function registerSuite4Routes(app: Express, sqlite: InstanceType<typeof D
     ).get(jobId, potentialScore || "low", causeOfLoss || null, responsibleParty || null, liabilityNotes || null, carrierContact || null, notes || null, now);
     res.json(row);
   });
-  app.patch("/api/subrogation/:id", (req, res) => {
+  app.patch("/api/subrogation/:id", requireManage, (req, res) => {
     const { status, recoveryAmount, recoveryDate, notes, liabilityNotes, responsibleParty, potentialScore } = req.body;
     const now = new Date().toISOString();
     const updates: string[] = [];
@@ -726,7 +731,7 @@ export function registerSuite4Routes(app: Express, sqlite: InstanceType<typeof D
     sqlite.prepare(`UPDATE subrogation_cases SET ${updates.join(", ")} WHERE id = ?`).run(...params);
     res.json(sqlite.prepare("SELECT * FROM subrogation_cases WHERE id = ?").get(Number(req.params.id)));
   });
-  app.delete("/api/subrogation/:id", (req, res) => {
+  app.delete("/api/subrogation/:id", requireManage, (req, res) => {
     sqlite.prepare("DELETE FROM subrogation_cases WHERE id = ?").run(Number(req.params.id));
     res.json({ ok: true });
   });

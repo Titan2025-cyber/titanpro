@@ -93,7 +93,7 @@ function drawHeader(doc: jsPDF, rangeLabel: string): number {
   doc.setTextColor(255, 200, 200);
   doc.text("Recover · Restore · Rebuild", ML, 16);
   setFont(doc, "normal", 7.5, WHITE);
-  doc.text("706-922-0154  |  cody@titanrestorationllc.com  |  titanrestorationllc.com", MR, 10, { align: "right" });
+  doc.text("706-922-0154  |  cody@titanaugusta.com  |  titanaugusta.pro", MR, 10, { align: "right" });
   doc.text("Augusta, GA  |  CSRA  |  Licensed & Insured", MR, 16, { align: "right" });
 
   // Blue title bar
@@ -115,7 +115,7 @@ function drawFooter(doc: jsPDF, pageNum: number, totalPages: number, generatedAt
   doc.setFillColor(RED[0], RED[1], RED[2]);
   doc.rect(0, H - 14, W, 14, "F");
   setFont(doc, "normal", 7, WHITE);
-  doc.text("Titan Restoration LLC  ·  706-922-0154  ·  titanrestorationllc.com  ·  Augusta, GA", ML, H - 7);
+  doc.text("Titan Restoration LLC  ·  706-922-0154  ·  titanaugusta.pro  ·  Augusta, GA", ML, H - 7);
   doc.text(`Page ${pageNum} of ${totalPages}`, MR, H - 7, { align: "right" });
   setFont(doc, "normal", 6.5);
   doc.setTextColor(255, 200, 200);

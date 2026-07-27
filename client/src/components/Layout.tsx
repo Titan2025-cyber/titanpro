@@ -1,4 +1,5 @@
 import { Link, useLocation } from "wouter";
+import { motion, useReducedMotion } from "framer-motion";
 import titanLogo from "@/assets/titan-logo.png";
 import { prefetchRoute } from "@/lib/prefetch";
 import {
@@ -16,10 +17,12 @@ import {
   ScanLine, Scale, Library, GraduationCap as GradCap, Truck, Route as RouteIcon, CalendarDays,
   Timer, User, Grid3X3, Building2, Banknote, HardDriveUpload,
   Droplets, Mic, FileSearch, UserRound, Trophy, UserCog, KeyRound,
-  FileSpreadsheet, ArrowRightLeft, QrCode, Handshake,
+  FileSpreadsheet, ArrowRightLeft, QrCode, Handshake, ArrowLeft, LayoutDashboard as DashIcon,
+  Package,
 } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import GlobalSearch from "@/components/GlobalSearch";
+import MyAccountDialog from "@/components/MyAccountDialog";
 import { useAuth } from "@/lib/auth";
 
 interface NavItem {
@@ -99,6 +102,7 @@ const navGroups: NavGroup[] = [
     description: "Gear, vehicles & ROI",
     items: [
       { href: "/equipment-hub", label: "Equipment", icon: Wrench, permission: "equipment" },
+      { href: "/inventory", label: "Consumables Inventory", icon: Package, permission: "equipment" },
       { href: "/fleet", label: "Fleet Manager", icon: Truck, permission: "equipment" },
     ],
   },
@@ -196,6 +200,16 @@ const navGroups: NavGroup[] = [
     ],
   },
 
+  // ─── 8b. PEOPLE & HR ──────────────────────────────────────────────────────
+  {
+    label: "People & HR",
+    icon: Users,
+    description: "Employees, handbook, trainings & AI HR assistant",
+    items: [
+      { href: "/hr-hub", label: "HR Management", icon: Users, permission: "hr" },
+    ],
+  },
+
   // ─── 9. ADMIN & TOOLS ─────────────────────────────────────────────────────
   {
     label: "Admin & Tools",
@@ -226,9 +240,25 @@ const navGroups: NavGroup[] = [
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const [location] = useLocation();
+  const [location, navigate] = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // On the dashboard itself there is nowhere "back" to go and no need for a
+  // Dashboard shortcut, so the quick-nav bar is hidden there.
+  const isDashboard = location === "/";
+
+  const goBack = () => {
+    // Prefer real browser history so "Back" returns to the exact previous task
+    // (e.g. the specific job or estimate the user came from). Fall back to the
+    // Dashboard if there is no in-app history (e.g. deep-linked / fresh tab).
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      window.history.back();
+    } else {
+      navigate("/");
+    }
+  };
   const { user, logout, can } = useAuth();
+  const [accountOpen, setAccountOpen] = useState(false);
   const [isOffline, setIsOffline] = useState(typeof navigator !== 'undefined' ? !navigator.onLine : false);
 
   // Initialize collapsed state: defaultOpen groups start open, others collapsed
@@ -270,13 +300,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const SidebarContent = () => (
     <div className="flex flex-col h-full">
       {/* Logo */}
-      <div className="flex items-center gap-2.5 px-4 py-4 border-b border-[hsl(var(--sidebar-border))]">
-        <div className="w-9 h-9 rounded-lg bg-white flex items-center justify-center shrink-0 p-1 shadow-sm">
-          <img src={titanLogo} alt="Titan Restoration" className="w-full h-full object-contain" />
+      <div className="flex items-center gap-2.5 px-4 py-4 border-b border-[hsl(var(--sidebar-border))] relative overflow-hidden">
+        {/* ambient glow behind the logo */}
+        <div className="pointer-events-none absolute -top-8 -left-6 w-32 h-32 rounded-full blur-2xl"
+             style={{ background: "radial-gradient(circle, hsl(var(--titan-red)/0.35), transparent 70%)" }} />
+        <div className="pointer-events-none absolute -bottom-10 right-0 w-32 h-32 rounded-full blur-2xl"
+             style={{ background: "radial-gradient(circle, hsl(var(--titan-blue)/0.28), transparent 70%)" }} />
+        <div className="tp-logo-ring tp-logo-ring--live relative shrink-0">
+          <div className="w-9 h-9 bg-white flex items-center justify-center p-1">
+            <img src={titanLogo} alt="Titan Restoration" className="w-full h-full object-contain" />
+          </div>
         </div>
-        <div>
-          <p className="font-bold text-sm text-[hsl(var(--sidebar-fg))] leading-tight">Titan Pro</p>
-          <p className="text-xs text-[hsl(var(--sidebar-fg))] opacity-60 leading-tight">Restoration CRM</p>
+        <div className="relative">
+          <p className="font-bold text-sm leading-tight tp-gradient-text">Titan Pro</p>
+          <p className="text-[0.68rem] font-semibold text-[hsl(var(--sidebar-fg))] opacity-60 leading-tight tracking-[0.14em] uppercase">Command Center</p>
         </div>
       </div>
 
@@ -339,8 +376,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                         onFocus={() => prefetchRoute(href)}
                         className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm transition-all ${
                           active
-                            ? "bg-[hsl(var(--titan-red))] text-white font-medium shadow-sm"
-                            : "text-[hsl(var(--sidebar-fg))] opacity-75 hover:opacity-100 hover:bg-[hsl(var(--sidebar-border))]"
+                            ? "bg-gradient-to-r from-[hsl(var(--titan-red))] to-[hsl(var(--titan-red-dark))] text-white font-medium shadow-[0_0_16px_-2px_hsl(var(--titan-red)/0.6)] ring-1 ring-white/10"
+                            : "text-[hsl(var(--sidebar-fg))] opacity-75 hover:opacity-100 hover:bg-[hsl(var(--sidebar-border))] hover:translate-x-0.5"
                         }`}
                         data-testid={`nav-${href.replace(/\//g, "-").replace(/^-/, "") || "dashboard"}`}
                       >
@@ -365,13 +402,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <div className="px-3 py-3 border-t border-[hsl(var(--sidebar-border))] space-y-1">
         {user && (
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full bg-[hsl(var(--titan-red))] flex items-center justify-center text-white text-xs font-bold shrink-0">
-              {user.avatarInitials}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-semibold leading-tight truncate text-[hsl(var(--sidebar-fg))]">{user.name}</p>
-              <p className="text-[10px] text-[hsl(var(--sidebar-fg))] opacity-50 capitalize leading-tight">{user.position || user.role}</p>
-            </div>
+            <button
+              onClick={() => setAccountOpen(true)}
+              className="flex items-center gap-2 flex-1 min-w-0 text-left rounded hover:bg-[hsl(var(--sidebar-border)/0.4)] px-1 py-0.5 -mx-1 transition-colors"
+              title="My Account — change email, password, PIN"
+              data-testid="button-open-my-account"
+            >
+              <div className="w-7 h-7 rounded-full bg-[hsl(var(--titan-red))] flex items-center justify-center text-white text-xs font-bold shrink-0">
+                {user.avatarInitials}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold leading-tight truncate text-[hsl(var(--sidebar-fg))]">{user.name}</p>
+                <p className="text-[10px] text-[hsl(var(--sidebar-fg))] opacity-50 capitalize leading-tight">{user.position || user.role}</p>
+              </div>
+            </button>
             <button
               onClick={() => logout()}
               className="text-[10px] text-[hsl(var(--sidebar-fg))] opacity-40 hover:opacity-80 hover:text-[hsl(var(--titan-red))] transition-colors shrink-0 font-medium"
@@ -389,7 +433,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       {/* Desktop sidebar */}
-      <aside className="print-hide hidden lg:flex flex-col w-52 shrink-0 bg-[hsl(var(--sidebar-bg))] border-r border-[hsl(var(--sidebar-border))]">
+      <aside
+        className="print-hide hidden lg:flex flex-col w-52 shrink-0 border-r border-[hsl(var(--sidebar-border))] relative z-10"
+        style={{
+          backgroundImage:
+            "linear-gradient(180deg, hsl(var(--sidebar-bg)), hsl(224 42% 5%))",
+          boxShadow: "1px 0 0 0 hsl(214 60% 60% / 0.06), 12px 0 40px -24px hsl(220 60% 2% / 0.9)",
+        }}
+      >
         <SidebarContent />
       </aside>
 
@@ -411,15 +462,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Top bar */}
-        <header className="print-hide flex items-center gap-3 px-4 py-2.5 border-b bg-background">
+        <header className="print-hide flex items-center gap-3 px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--background)/0.7)] backdrop-blur-md supports-[backdrop-filter]:bg-[hsl(var(--background)/0.55)] relative z-20">
           <button onClick={() => setMobileOpen(true)} className="p-1.5 rounded hover:bg-muted lg:hidden">
             <Menu className="w-5 h-5" />
           </button>
           <div className="flex items-center gap-2 lg:hidden">
-            <div className="w-6 h-6 rounded bg-[hsl(var(--titan-red))] flex items-center justify-center">
-              <span className="text-white font-black text-xs">T</span>
+            <div className="tp-logo-ring shrink-0">
+              <div className="w-6 h-6 bg-white flex items-center justify-center p-0.5">
+                <img src={titanLogo} alt="Titan Restoration" className="w-full h-full object-contain" />
+              </div>
             </div>
-            <span className="font-bold text-sm">Titan Pro</span>
+            <span className="font-bold text-sm tp-gradient-text">Titan Pro</span>
           </div>
           <div className="flex-1 flex justify-end lg:justify-start">
             <GlobalSearch />
@@ -431,9 +484,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <span className="text-xs font-semibold leading-tight">{user.name}</span>
                 <span className="text-[10px] text-muted-foreground capitalize leading-tight">{user.position || user.role}</span>
               </div>
-              <div className="w-8 h-8 rounded-full bg-[hsl(var(--titan-red))] flex items-center justify-center text-white text-xs font-bold shrink-0 cursor-pointer" title={user.name}>
+              <button
+                onClick={() => setAccountOpen(true)}
+                className="w-8 h-8 rounded-full bg-[hsl(var(--titan-red))] flex items-center justify-center text-white text-xs font-bold shrink-0 cursor-pointer hover:ring-2 hover:ring-[hsl(var(--titan-red)/0.4)] transition"
+                title="My Account — change email, password, PIN"
+                data-testid="button-open-my-account-topbar"
+              >
                 {user.avatarInitials}
-              </div>
+              </button>
               <button
                 onClick={() => logout()}
                 className="text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-muted transition-colors hidden sm:block"
@@ -445,17 +503,38 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           )}
         </header>
 
-        {/* Offline banner */}
-        {isOffline && (
-          <div className="bg-yellow-500 text-yellow-950 text-xs font-semibold px-4 py-1.5 flex items-center justify-center gap-2 shrink-0">
-            <span>⚠️</span>
-            <span>You are offline — some features may not work until your connection is restored.</span>
+        {/* Quick-nav bar — persistent "Back" + "Dashboard" available in every
+            module. Hidden on the Dashboard itself (nothing to go back to). */}
+        {!isDashboard && (
+          <div className="print-hide flex items-center gap-2 px-4 py-1.5 border-b bg-muted/40 shrink-0">
+            <button
+              onClick={goBack}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground px-2.5 py-1 rounded-md hover:bg-background border border-transparent hover:border-border transition-colors"
+              title="Go back to the previous task"
+              data-testid="button-nav-back"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              Back
+            </button>
+            <button
+              onClick={() => navigate("/")}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground px-2.5 py-1 rounded-md hover:bg-background border border-transparent hover:border-border transition-colors"
+              title="Return to the Dashboard"
+              data-testid="button-nav-dashboard"
+            >
+              <DashIcon className="w-3.5 h-3.5" />
+              Dashboard
+            </button>
           </div>
         )}
 
+        {/* Offline banner — superseded by the global <OfflineIndicator/> which
+            shows an accurate offline-first message plus live sync/queue status.
+            Kept intentionally empty here to avoid two stacked offline bars. */}
+
         {/* Page content */}
         <main className="flex-1 overflow-y-auto p-4 md:p-6">
-          {children}
+          <RouteReveal location={location}>{children}</RouteReveal>
 
           {/* Proprietary / copyright footer */}
           <footer className="print-hide mt-8 pt-4 border-t text-center text-[10px] leading-relaxed text-muted-foreground">
@@ -467,6 +546,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </footer>
         </main>
       </div>
+
+      <MyAccountDialog open={accountOpen} onOpenChange={setAccountOpen} />
     </div>
+  );
+}
+
+// Subtle per-route fade-up. Keyed on wouter location so it re-triggers on navigation.
+function RouteReveal({ location, children }: { location: string; children: ReactNode }) {
+  const reduced = useReducedMotion();
+  if (reduced) return <>{children}</>;
+  return (
+    <motion.div
+      key={location}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25, ease: [0.2, 0.7, 0.2, 1] }}
+    >
+      {children}
+    </motion.div>
   );
 }

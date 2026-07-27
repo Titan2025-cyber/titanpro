@@ -9,9 +9,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useState } from "react";
-import { GraduationCap, Plus, BookOpen, CheckCircle, Clock, Award, Video, FileText } from "lucide-react";
+import { GraduationCap, Plus, BookOpen, CheckCircle, Clock, Award, Video, FileText, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 const CATEGORIES = [
   { value: "iicrc", label: "IICRC Standards" },
@@ -63,6 +68,24 @@ export default function TechLMS() {
   const updateEnrollmentMutation = useMutation({
     mutationFn: ({ id, data }: { id: number; data: any }) => apiRequest(`/api/lms-enrollments/${id}`, { method: "PATCH", body: JSON.stringify(data) }).then(r => r.json()),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/lms-enrollments"] }),
+  });
+
+  const deleteCourseMutation = useMutation({
+    mutationFn: (id: number) => apiRequest(`/api/lms-courses/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/lms-courses"] });
+      toast({ title: "Course deleted" });
+    },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
+  const deleteEnrollmentMutation = useMutation({
+    mutationFn: (id: number) => apiRequest(`/api/lms-enrollments/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/lms-enrollments"] });
+      toast({ title: "Enrollment deleted" });
+    },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
   });
 
   const getEnrollmentForCourse = (courseId: number) =>
@@ -166,6 +189,27 @@ export default function TechLMS() {
                             <Button size="sm" variant="ghost" className="text-xs w-full">Open Content</Button>
                           </a>
                         )}
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button size="sm" variant="ghost" className="text-xs w-full text-destructive" data-testid={`button-delete-lms-courses-${course.id}`}>
+                              <Trash2 className="w-3.5 h-3.5 mr-1" />Delete
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Delete this course?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                {course.title ? `"${course.title}" ` : ""}This permanently removes the record and cannot be undone.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction onClick={() => deleteCourseMutation.mutate(course.id)} data-testid={`button-confirm-delete-lms-courses-${course.id}`}>
+                                Delete
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
                       </div>
                     </div>
                   </CardContent>
@@ -197,6 +241,27 @@ export default function TechLMS() {
                         {enr.status !== "completed" && (
                           <Button size="sm" variant="outline" className="text-xs" onClick={() => updateEnrollmentMutation.mutate({ id: enr.id, data: { status: "completed", completed_at: new Date().toISOString(), score: 100 } })} data-testid={`button-complete-${enr.id}`}>Mark Complete</Button>
                         )}
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button size="sm" variant="ghost" data-testid={`button-delete-lms-enrollments-${enr.id}`}>
+                              <Trash2 className="w-4 h-4 text-destructive" />
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Delete this enrollment?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                {enr.employee_name ? `"${enr.employee_name}" ` : ""}This permanently removes the record and cannot be undone.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction onClick={() => deleteEnrollmentMutation.mutate(enr.id)} data-testid={`button-confirm-delete-lms-enrollments-${enr.id}`}>
+                                Delete
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
                       </div>
                     </div>
                   </CardContent>

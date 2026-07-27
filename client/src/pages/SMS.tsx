@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { MessageSquare, Send, Phone, ChevronRight, Plus } from "lucide-react";
+import { MessageSquare, Send, Phone, ChevronRight, Plus, Trash2 } from "lucide-react";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -146,7 +151,8 @@ export default function SMS() {
                   </div>
                 ) : (
                   thread.map((msg: any) => (
-                    <div key={msg.id} className={`flex ${msg.direction === "outbound" ? "justify-end" : "justify-start"}`}>
+                    <div key={msg.id} className={`group flex items-center gap-1 ${msg.direction === "outbound" ? "justify-end" : "justify-start"}`}>
+                      {msg.direction === "outbound" && <DeleteMessageBtn id={msg.id} contactId={selectedContactId} />}
                       <div className={`max-w-xs rounded-2xl px-4 py-2 text-sm ${
                         msg.direction === "outbound"
                           ? "bg-[hsl(var(--titan-blue))] text-white rounded-br-sm"
@@ -157,6 +163,7 @@ export default function SMS() {
                           {new Date(msg.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                         </p>
                       </div>
+                      {msg.direction !== "outbound" && <DeleteMessageBtn id={msg.id} contactId={selectedContactId} />}
                     </div>
                   ))
                 )}
@@ -210,5 +217,40 @@ export default function SMS() {
         )}
       </div>
     </div>
+  );
+}
+
+function DeleteMessageBtn({ id, contactId }: { id: number; contactId: number | null }) {
+  const { toast } = useToast();
+  const m = useMutation({
+    mutationFn: () => apiRequest("DELETE", `/api/sms/${id}`),
+    onSuccess: () => {
+      toast({ title: "Message deleted" });
+      queryClient.invalidateQueries({ queryKey: ["/api/sms/contact", contactId] });
+    },
+    onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <button
+          className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive shrink-0"
+          data-testid={`button-delete-sms-${id}`}
+          aria-label="Delete message"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this message?</AlertDialogTitle>
+          <AlertDialogDescription>This permanently removes the message from the record and cannot be undone.</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => m.mutate()} data-testid={`button-confirm-delete-sms-${id}`}>Delete</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }

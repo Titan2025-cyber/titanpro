@@ -1,4 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { UserSelect } from "@/components/UserSelect";
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
 import {
@@ -29,7 +30,6 @@ const LOSS_ICONS: Record<string, string> = {
   water: "💧", fire: "🔥", mold: "🍄", storm: "⛈️", biohazard: "☣️", reconstruction: "🏗️"
 };
 
-const TEAM = ["John", "Mason", "Clint", "Blake", "Blake Foster", "Cody Brantley"];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Financial summary type
@@ -258,10 +258,11 @@ function JobCard({ job, contact, fin }: { job: Job; contact?: Contact; fin?: Job
 // ─────────────────────────────────────────────────────────────────────────────
 // Pipeline Board — Kanban-style columns by stage
 // ─────────────────────────────────────────────────────────────────────────────
-function PipelineBoard({ jobs, contacts, search, locationFilter, finMap, onStageClick }: {
+function PipelineBoard({ jobs, contacts, search, locationFilter, finMap, selectedStage, onStageSelect }: {
   jobs: Job[]; contacts: Contact[]; search: string; locationFilter: string;
   finMap: Record<number, JobFinancials>;
-  onStageClick: (stageKey: string) => void;
+  selectedStage: string | null;
+  onStageSelect: (stageKey: string | null) => void;
 }) {
   const [, setBoardLocation] = useLocation();
   const filtered = jobs.filter(j => {
@@ -275,9 +276,22 @@ function PipelineBoard({ jobs, contacts, search, locationFilter, finMap, onStage
     return true;
   });
 
+  const visibleStages = selectedStage
+    ? PROGRESS_STAGES.filter(s => s.key === selectedStage)
+    : PROGRESS_STAGES;
+
   return (
+    <div>
+    {/* Active bucket filter indicator */}
+    {selectedStage && (
+      <div className="flex items-center gap-2 text-sm mb-3">
+        <span className="text-muted-foreground">Showing</span>
+        <Badge variant="outline">{PROGRESS_STAGES.find(s => s.key === selectedStage)?.label}</Badge>
+        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => onStageSelect(null)} data-testid="button-clear-board-filter">Show all buckets</Button>
+      </div>
+    )}
     <div className="flex gap-3 overflow-x-auto pb-4 -mx-4 px-4">
-      {PROGRESS_STAGES.map(stage => {
+      {visibleStages.map(stage => {
         const stageJobs = filtered.filter(j => (j.progressStage || "pending_sale") === stage.key);
         const phaseTotals = stageJobs.reduce((acc, j) => {
           const v = jobPhaseValues(finMap[j.id]);
@@ -297,12 +311,12 @@ function PipelineBoard({ jobs, contacts, search, locationFilter, finMap, onStage
 
         return (
           <div key={stage.key} className="shrink-0 w-72">
-            {/* Column header — click to open this bucket in a filtered List view */}
+            {/* Column header — click to filter the board to just this bucket (click again to show all) */}
             <button
               type="button"
-              onClick={() => onStageClick(stage.key)}
-              title={`View all ${stage.label} jobs`}
-              className={`w-full text-left rounded-t-lg border border-b-0 px-3 py-2.5 ${stage.color} ${stage.borderColor} cursor-pointer transition-colors hover:brightness-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--titan-blue))]`}
+              onClick={() => onStageSelect(selectedStage === stage.key ? null : stage.key)}
+              title={selectedStage === stage.key ? "Show all buckets" : `Focus on ${stage.label} jobs`}
+              className={`w-full text-left rounded-t-lg border border-b-0 px-3 py-2.5 ${stage.color} ${stage.borderColor} cursor-pointer transition-colors hover:brightness-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--titan-blue))] ${selectedStage === stage.key ? "ring-2 ring-[hsl(var(--titan-blue))]" : ""}`}
               data-testid={`bucket-header-${stage.key}`}
             >
               <div className="flex items-center justify-between">
@@ -424,6 +438,7 @@ function PipelineBoard({ jobs, contacts, search, locationFilter, finMap, onStage
           </div>
         );
       })}
+    </div>
     </div>
   );
 }
@@ -556,6 +571,8 @@ export default function Jobs() {
   const [stageFilter, setStageFilter] = useState("all");
   const [locationFilter, setLocationFilter] = useState("all");
   const [viewMode, setViewMode] = useState<"board" | "list">("list");
+  // Which bucket the Board view is focused on. null = show all columns.
+  const [boardStage, setBoardStage] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkStatus, setBulkStatus] = useState<string>("mitigation");
   const [open, setOpen] = useState(false);
@@ -732,12 +749,14 @@ export default function Jobs() {
 
                 <div>
                   <Label>Assigned Tech</Label>
-                  <Select value={form.assignedTech} onValueChange={v => setForm(f => ({ ...f, assignedTech: v }))}>
-                    <SelectTrigger><SelectValue placeholder="Select tech" /></SelectTrigger>
-                    <SelectContent>
-                      {TEAM.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                  <UserSelect
+                    value={form.assignedTech}
+                    onChange={v => setForm(f => ({ ...f, assignedTech: v }))}
+                    roles={["tech"]}
+                    placeholder="Select tech"
+                    allowUnassigned
+                    testId="select-job-assigned-tech"
+                  />
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -791,11 +810,13 @@ export default function Jobs() {
 
       {/* Pipeline summary */}
       {!isLoading && (
-        <PipelineSummary
-          jobs={jobs}
-          finMap={finMap}
-          onStageClick={(stageKey) => { setStageFilter(stageKey); setViewMode("list"); }}
-        />
+        <div className="titan-card-lit rounded-xl p-3">
+          <PipelineSummary
+            jobs={jobs}
+            finMap={finMap}
+            onStageClick={(stageKey) => { setBoardStage(stageKey); setViewMode("board"); }}
+          />
+        </div>
       )}
 
       {/* Filters */}
@@ -837,7 +858,8 @@ export default function Jobs() {
           search={search}
           locationFilter={locationFilter}
           finMap={finMap}
-          onStageClick={(stageKey) => { setStageFilter(stageKey); setViewMode("list"); }}
+          selectedStage={boardStage}
+          onStageSelect={setBoardStage}
         />
       ) : (
         <>

@@ -251,14 +251,62 @@ export function DateManager({ job }: { job: Job }) {
     invoicePaidDate: ((job as any).invoicePaidDate as string) || "",
   });
 
+  // Map each milestone date field to the pipeline stage it represents.
+  // Entering a date means that milestone happened, so the job should move to
+  // (at least) that bucket. We pick the furthest-along stage that has a date.
+  const DATE_TO_STAGE: { field: string; stageKey: string }[] = [
+    { field: "salesDate", stageKey: "pre_production" },   // sold → pre-production
+    { field: "preProductionDate", stageKey: "pre_production" },
+    { field: "wipDate", stageKey: "wip" },
+    { field: "invoiceSentDate", stageKey: "invoice_pending" },
+    { field: "invoicePaidDate", stageKey: "complete" },
+  ];
+  const STATUS_MAP: Record<string, string> = {
+    pending_sale: "new",
+    pre_production: "new",
+    wip: "mitigation",
+    invoice_pending: "reconstruction",
+    accounts_receivable: "reconstruction",
+    complete: "complete",
+  };
+
+  // Given the dates the user just entered, compute the bucket the job belongs in.
+  const computeAutoStage = (d: typeof dates): string | null => {
+    let best: string | null = null;
+    let bestOrder = -1;
+    for (const { field, stageKey } of DATE_TO_STAGE) {
+      if ((d as any)[field]) {
+        const order = PROGRESS_STAGES.find(s => s.key === stageKey)?.order ?? -1;
+        if (order > bestOrder) { bestOrder = order; best = stageKey; }
+      }
+    }
+    return best;
+  };
+
   const saveMutation = useMutation({
-    mutationFn: () =>
-      apiRequest("PATCH", `/api/jobs/${job.id}`, dates).then(r => r.json()),
+    mutationFn: () => {
+      const payload: any = { ...dates };
+      const autoStage = computeAutoStage(dates);
+      const currentStage = (job as any).progressStage || "pending_sale";
+      const currentOrder = PROGRESS_STAGES.find(s => s.key === currentStage)?.order ?? 0;
+      const autoOrder = autoStage ? (PROGRESS_STAGES.find(s => s.key === autoStage)?.order ?? -1) : -1;
+      // Only move the job FORWARD — never pull it back a bucket, and preserve a
+      // manual A/R placement (which shares the invoice-sent date) unless a later
+      // milestone (payment received) warrants completing it.
+      if (autoStage && autoOrder > currentOrder && !(currentStage === "accounts_receivable" && autoStage === "invoice_pending")) {
+        payload.progressStage = autoStage;
+        if (STATUS_MAP[autoStage]) payload.status = STATUS_MAP[autoStage];
+      }
+      return apiRequest("PATCH", `/api/jobs/${job.id}`, payload).then(r => r.json());
+    },
     onSuccess: (updatedJob: Job) => {
       queryClient.setQueryData(["/api/jobs", job.id], updatedJob);
       queryClient.setQueryData(["/api/jobs", String(job.id)], updatedJob);
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      toast({ title: "Milestone dates saved" });
+      const moved = (updatedJob as any).progressStage && (updatedJob as any).progressStage !== ((job as any).progressStage || "pending_sale");
+      toast({ title: moved
+        ? `Dates saved — moved to ${PROGRESS_STAGES.find(s => s.key === (updatedJob as any).progressStage)?.label || "new stage"}`
+        : "Milestone dates saved" });
       setOpen(false);
     },
   });

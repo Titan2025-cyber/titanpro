@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { Tag, AlertCircle } from "lucide-react";
+import { Tag, AlertCircle, DollarSign } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Popover,
   PopoverContent,
@@ -220,6 +221,76 @@ function TagNowPopover({ job }: { job: Job }) {
   );
 }
 
+// ─── Campaign ROI helpers ─────────────────────────────────────────────────────
+
+interface LeadCost {
+  source: string;
+  monthlyCost: number;
+}
+
+function fmtRatio(n: number | null): string {
+  if (n == null || !isFinite(n)) return "—";
+  return `${n.toFixed(1)}×`;
+}
+
+// Marketing Spend editor — upsert monthly cost per source.
+function SpendEditor({ sources, costs }: { sources: string[]; costs: Record<string, number> }) {
+  const queryClient = useQueryClient();
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    setDrafts(Object.fromEntries(sources.map((s) => [s, String(costs[s] ?? "")])));
+  }, [sources.join(","), JSON.stringify(costs)]);
+
+  const saveMutation = useMutation({
+    mutationFn: ({ source, monthlyCost }: { source: string; monthlyCost: number }) =>
+      apiRequest("POST", "/api/lead-source-costs", { source, monthlyCost }).then((r) => r.json()),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/lead-source-costs"] }),
+  });
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-2">
+          <DollarSign className="h-4 w-4 text-[hsl(var(--titan-red))]" />
+          <CardTitle className="text-base">Marketing Spend</CardTitle>
+        </div>
+        <p className="text-xs text-muted-foreground mt-0.5">Set monthly cost per source to compute cost-per-lead and ROI.</p>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {sources.map((src) => (
+          <div key={src} className="flex items-center justify-between gap-3" data-testid={`spend-row-${src}`}>
+            <span className="text-sm font-medium">{LEAD_SOURCE_LABELS[src as LeadSource] ?? src}</span>
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">$</span>
+                <Input
+                  type="number"
+                  min={0}
+                  value={drafts[src] ?? ""}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [src]: e.target.value }))}
+                  className="h-8 w-32 pl-5 text-sm"
+                  placeholder="0"
+                  data-testid={`spend-input-${src}`}
+                />
+              </div>
+              <Button
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => saveMutation.mutate({ source: src, monthlyCost: Number(drafts[src]) || 0 })}
+                disabled={saveMutation.isPending}
+                data-testid={`spend-save-${src}`}
+              >
+                Save
+              </Button>
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function LeadAttribution() {
@@ -251,6 +322,30 @@ export default function LeadAttribution() {
   const { data: allJobs = [] } = useQuery<Job[]>({
     queryKey: ["/api/jobs"],
     queryFn: () => apiRequest("GET", "/api/jobs").then((r) => r.json()),
+  });
+
+  const { data: leadCosts = [] } = useQuery<LeadCost[]>({
+    queryKey: ["/api/lead-source-costs"],
+    queryFn: () => apiRequest("GET", "/api/lead-source-costs").then((r) => r.json()),
+  });
+
+  const costBySource: Record<string, number> = {};
+  for (const c of leadCosts) costBySource[c.source] = c.monthlyCost;
+
+  const roiRows = (report?.sources ?? []).map((row: any) => {
+    const cost = costBySource[row.source] ?? 0;
+    const leads = row.jobCount ?? 0;
+    const acquired = Array.isArray(row.jobs) ? row.jobs.filter((j: any) => (j.revenue ?? 0) > 0).length : leads;
+    return {
+      source: row.source,
+      leads,
+      acquired,
+      revenue: row.totalRevenue ?? 0,
+      cost,
+      costPerLead: cost > 0 && leads > 0 ? cost / leads : null,
+      costPerAcquired: cost > 0 && acquired > 0 ? cost / acquired : null,
+      roi: cost > 0 ? (row.totalRevenue ?? 0) / cost : null,
+    };
   });
 
   const untaggedJobs = allJobs.filter((j) => !j.leadSource);
@@ -343,6 +438,49 @@ export default function LeadAttribution() {
             )}
           </CardContent>
         </Card>
+      )}
+
+      {/* Campaign ROI attribution */}
+      {!reportLoading && report && report.sources.length > 0 && (
+        <div className="grid gap-6 lg:grid-cols-3">
+          <Card className="lg:col-span-2">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Campaign ROI by Source</CardTitle>
+              <p className="text-xs text-muted-foreground mt-0.5">Cost-per-lead, cost-per-acquired-job, and return on marketing spend.</p>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-xs text-muted-foreground">
+                      <th className="text-left py-2 font-medium">Source</th>
+                      <th className="text-right py-2 font-medium">Leads</th>
+                      <th className="text-right py-2 font-medium">Revenue</th>
+                      <th className="text-right py-2 font-medium">Monthly Cost</th>
+                      <th className="text-right py-2 font-medium">Cost / Lead</th>
+                      <th className="text-right py-2 font-medium">Cost / Job</th>
+                      <th className="text-right py-2 font-medium">ROI</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {roiRows.map((r) => (
+                      <tr key={r.source} className="border-b last:border-b-0" data-testid={`roi-row-${r.source}`}>
+                        <td className="py-2 font-medium">{LEAD_SOURCE_LABELS[r.source as LeadSource] ?? r.source}</td>
+                        <td className="py-2 text-right text-muted-foreground">{r.leads}</td>
+                        <td className="py-2 text-right">{formatCurrency(r.revenue)}</td>
+                        <td className="py-2 text-right text-muted-foreground">{r.cost > 0 ? formatCurrency(r.cost) : "—"}</td>
+                        <td className="py-2 text-right text-muted-foreground">{r.costPerLead == null ? "—" : formatCurrency(r.costPerLead)}</td>
+                        <td className="py-2 text-right text-muted-foreground">{r.costPerAcquired == null ? "—" : formatCurrency(r.costPerAcquired)}</td>
+                        <td className={`py-2 text-right font-semibold ${r.roi != null && r.roi >= 1 ? "text-green-600" : r.roi != null ? "text-red-500" : ""}`} data-testid={`roi-value-${r.source}`}>{fmtRatio(r.roi)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+          <SpendEditor sources={report.sources.map((s: any) => s.source)} costs={costBySource} />
+        </div>
       )}
 
       {/* Untagged jobs */}

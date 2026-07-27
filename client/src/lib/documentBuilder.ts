@@ -61,8 +61,8 @@ function drawHeader(doc: jsPDF, cfg: DocConfig): number {
   doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(255, 200, 200);
   doc.text("Recover - Restore - Rebuild", 14, 16);
   doc.setFontSize(7.5); doc.setTextColor(...WHITE);
-  doc.text("706-922-0154  |  cody@titanrestorationllc.com  |  titanrestorationllc.com", W - 14, 10, { align: "right" });
-  doc.text("Chapin, SC  |  Augusta, GA  |  Licensed & Insured", W - 14, 16, { align: "right" });
+  doc.text("706-922-0154  |  cody@titanaugusta.com  |  titanaugusta.pro", W - 14, 10, { align: "right" });
+  doc.text("Augusta, GA  |  Licensed & Insured", W - 14, 16, { align: "right" });
 
   doc.setFillColor(...BLUE);
   doc.rect(0, 22, W, 16, "F");
@@ -79,7 +79,7 @@ function drawFooter(doc: jsPDF, cfg: DocConfig, pageNum: number, totalPages: num
   doc.setFillColor(...RED);
   doc.rect(0, 283, W, 14, "F");
   doc.setFont("helvetica", "normal"); doc.setFontSize(7); doc.setTextColor(...WHITE);
-  doc.text("Titan Restoration LLC  ·  706-922-0154  ·  titanrestorationllc.com", 14, 290);
+  doc.text("Titan Restoration LLC  ·  706-922-0154  ·  titanaugusta.pro", 14, 290);
   doc.text(`Page ${pageNum} of ${totalPages}`, W - 14, 290, { align: "right" });
   if (cfg.confidential) {
     doc.setFontSize(6.5); doc.setTextColor(255, 200, 200);

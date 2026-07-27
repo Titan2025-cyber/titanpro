@@ -1514,3 +1514,42 @@ export type LmsEnrollment = typeof lmsEnrollments.$inferSelect;
 
 // ── Global Search Index (#37) — uses SQLite FTS5 via raw SQL ─────────────────
 // No Drizzle table needed — created via raw exec on startup
+
+// ── Consumables Inventory (#inv) ─────────────────────────────────────────────
+export const consumables = sqliteTable("consumables", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),              // e.g. "Nitrile Gloves (L)"
+  sku: text("sku"),                          // optional stock keeping unit / part #
+  category: text("category").default("general"), // ppe | containment | cleaning | drying | packaging | general | other
+  unit: text("unit").default("each"),        // each | box | case | roll | gallon | pair | bag
+  onHand: real("on_hand").default(0),        // current quantity in stock
+  reorderPoint: real("reorder_point").default(0), // low-stock threshold
+  unitCost: real("unit_cost").default(0),    // cost per unit (for job cost + valuation)
+  vendor: text("vendor"),
+  location: text("location"),                // shelf/warehouse location
+  notes: text("notes"),
+  isActive: integer("is_active").default(1),
+  createdAt: text("created_at").notNull().default(""),
+});
+export const insertConsumableSchema = createInsertSchema(consumables).omit({ id: true });
+export type InsertConsumable = z.infer<typeof insertConsumableSchema>;
+export type Consumable = typeof consumables.$inferSelect;
+
+// ── Consumable Transactions (movement ledger) ────────────────────────────────
+export const consumableTransactions = sqliteTable("consumable_transactions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  consumableId: integer("consumable_id").notNull(),
+  type: text("type").notNull(),              // restock | usage | adjustment
+  quantity: real("quantity").notNull(),      // +restock, -usage, +/- adjustment (signed)
+  unitCost: real("unit_cost").default(0),
+  jobId: integer("job_id"),                  // set when type = usage
+  jobCostId: integer("job_cost_id"),         // link to created job_costs row (usage)
+  source: text("source"),                    // manual | pdf_receipt | job_usage
+  reference: text("reference"),              // receipt #, PO, or note
+  enteredBy: text("entered_by"),
+  balanceAfter: real("balance_after"),       // on_hand after this transaction
+  createdAt: text("created_at").notNull().default(""),
+});
+export const insertConsumableTransactionSchema = createInsertSchema(consumableTransactions).omit({ id: true });
+export type InsertConsumableTransaction = z.infer<typeof insertConsumableTransactionSchema>;
+export type ConsumableTransaction = typeof consumableTransactions.$inferSelect;

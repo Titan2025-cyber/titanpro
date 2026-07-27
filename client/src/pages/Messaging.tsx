@@ -1,4 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { UserSelect } from "@/components/UserSelect";
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { Plus, Send, Hash, Briefcase, MapPin, FileText, Check, Sparkles, ArrowRight } from "lucide-react";
@@ -12,7 +13,6 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Channel, Message, Job } from "@shared/schema";
 
-const TEAM = ["John", "Mason", "Clint", "Blake", "Blake Foster", "Cody Brantley"];
 
 // Channels that create job files from posted intake messages.
 const isJobChannel = (name?: string) => {
@@ -246,10 +246,13 @@ export default function Messaging() {
           ))}
         </div>
         <div className="px-3 py-2 border-t border-white/10">
-          <Select value={author} onValueChange={setAuthor}>
-            <SelectTrigger className="h-7 text-xs bg-white/10 border-0 text-white"><SelectValue /></SelectTrigger>
-            <SelectContent>{TEAM.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
-          </Select>
+          <UserSelect
+            value={author}
+            onChange={setAuthor}
+            placeholder="Select author"
+            className="h-7 text-xs bg-white/10 border-0 text-white"
+            testId="select-message-author"
+          />
         </div>
       </div>
 

@@ -16,6 +16,19 @@ const PROPRIETARY_NOTICE =
   "Unauthorized copying, reverse-engineering, or redistribution is prohibited " +
   "and may violate copyright and other laws. Questions: 706-922-0154.";
 
+// Returns true if the element (or an ancestor) is a text-entry field where the
+// native context menu (Copy/Paste/Cut) must stay available.
+function isEditable(el: HTMLElement): boolean {
+  let node: HTMLElement | null = el;
+  while (node) {
+    const tag = node.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (node.isContentEditable) return true;
+    node = node.parentElement;
+  }
+  return false;
+}
+
 export function installCopyDeterrent() {
   // Only run in the production bundle. import.meta.env.PROD is inlined by Vite.
   if (!import.meta.env.PROD) return;
@@ -35,8 +48,13 @@ export function installCopyDeterrent() {
   }
 
   // 2) Suppress the context (right-click) menu. Casual "Save As" / "View Source"
-  //    speed-bump only.
-  window.addEventListener("contextmenu", (e) => e.preventDefault());
+  //    speed-bump only. IMPORTANT: never block it inside editable fields, or
+  //    users lose right-click Copy/Paste/Cut when entering data.
+  window.addEventListener("contextmenu", (e) => {
+    const t = e.target as HTMLElement | null;
+    if (t && isEditable(t)) return; // allow native copy/paste menu in fields
+    e.preventDefault();
+  });
 
   // 3) Block the most common view-source / devtools keyboard shortcuts. This is
   //    a deterrent, not a lock — power users can still open devtools via menus.

@@ -2,7 +2,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useState, useMemo } from "react";
 import {
   DollarSign, TrendingUp, TrendingDown, Plus, Trash2, Download,
-  BarChart3,
+  BarChart3, Pencil, Check, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -79,7 +79,10 @@ const CATEGORY_COLORS: Record<string, string> = {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 function fmt(n: number) {
-  return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
+  // Guard against undefined/null/NaN so a single bad value never crashes the
+  // whole page render.
+  const v = typeof n === "number" && isFinite(n) ? n : 0;
+  return v.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
 
 function marginColor(pct: number) {
@@ -101,11 +104,11 @@ function exportCsv(costs: JobCost[], jobNumber: string) {
   const rows = costs.map((c) => [
     c.costDate ? new Date(c.costDate).toLocaleDateString() : "",
     c.category,
-    `"${c.description.replace(/"/g, '""')}"`,
+    `"${(c.description ?? "").replace(/"/g, '""')}"`,
     c.vendor ?? "",
-    c.quantity,
-    c.unitCost.toFixed(2),
-    c.total.toFixed(2),
+    c.quantity ?? "",
+    (c.unitCost ?? 0).toFixed(2),
+    (c.total ?? 0).toFixed(2),
     c.enteredBy ?? "",
   ]);
   const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
@@ -334,6 +337,54 @@ export function JobCostingPanel({ jobId, phase }: JobCostingPanelProps) {
 
   const job = jobs.find((j) => j.id === jobId);
 
+  // Inline edit state — which cost row is being edited + the working draft.
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState<Partial<JobCost>>({});
+
+  const startEdit = (c: JobCost) => {
+    setEditingId(c.id);
+    setEditDraft({
+      category: c.category,
+      description: c.description,
+      vendor: c.vendor ?? "",
+      quantity: c.quantity,
+      unitCost: c.unitCost,
+      costDate: c.costDate ? String(c.costDate).slice(0, 10) : "",
+    });
+  };
+  const cancelEdit = () => { setEditingId(null); setEditDraft({}); };
+
+  const updateCost = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: any }) =>
+      apiRequest("PATCH", `/api/costs/${id}`, data).then((r) => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "costs"] });
+      cancelEdit();
+      toast({ title: "Cost updated" });
+    },
+    onError: (e: any) => toast({ title: "Update failed", description: e?.message, variant: "destructive" }),
+  });
+
+  const saveEdit = () => {
+    if (editingId == null) return;
+    const q = Number(editDraft.quantity) || 0;
+    const u = Number(editDraft.unitCost) || 0;
+    if (!editDraft.description || !String(editDraft.description).trim()) {
+      toast({ title: "Description is required", variant: "destructive" }); return;
+    }
+    updateCost.mutate({
+      id: editingId,
+      data: {
+        category: editDraft.category || "other",
+        description: String(editDraft.description).trim(),
+        vendor: editDraft.vendor || null,
+        quantity: q,
+        unitCost: u,
+        costDate: editDraft.costDate || null,
+      },
+    });
+  };
+
   const deleteCost = useMutation({
     mutationFn: (costId: number) => apiRequest("DELETE", `/api/costs/${costId}`),
     onSuccess: () => {
@@ -445,7 +496,70 @@ export function JobCostingPanel({ jobId, phase }: JobCostingPanelProps) {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {costs.map((c) => (
+                    {costs.map((c) => {
+                      const isEditing = editingId === c.id;
+                      if (isEditing) {
+                        const liveTotal = (Number(editDraft.quantity) || 0) * (Number(editDraft.unitCost) || 0);
+                        return (
+                          <TableRow key={c.id} data-testid={`cost-row-${c.id}`} className="bg-muted/40">
+                            <TableCell className="py-1.5">
+                              <Input type="date" className="h-7 text-xs w-32"
+                                value={editDraft.costDate as string || ""}
+                                data-testid={`edit-cost-date-${c.id}`}
+                                onChange={(e) => setEditDraft({ ...editDraft, costDate: e.target.value })} />
+                            </TableCell>
+                            <TableCell className="py-1.5">
+                              <Select value={editDraft.category as string} onValueChange={(v) => setEditDraft({ ...editDraft, category: v })}>
+                                <SelectTrigger className="h-7 text-xs w-32" data-testid={`edit-cost-category-${c.id}`}><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                  {COST_CATEGORIES.map((cat) => (
+                                    <SelectItem key={cat.value} value={cat.value}>{cat.label}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </TableCell>
+                            <TableCell className="py-1.5">
+                              <Input className="h-7 text-xs min-w-[160px]"
+                                value={editDraft.description as string || ""}
+                                data-testid={`edit-cost-description-${c.id}`}
+                                onChange={(e) => setEditDraft({ ...editDraft, description: e.target.value })} />
+                            </TableCell>
+                            <TableCell className="py-1.5 hidden sm:table-cell">
+                              <Input className="h-7 text-xs w-28"
+                                value={editDraft.vendor as string || ""}
+                                data-testid={`edit-cost-vendor-${c.id}`}
+                                onChange={(e) => setEditDraft({ ...editDraft, vendor: e.target.value })} />
+                            </TableCell>
+                            <TableCell className="py-1.5 text-right">
+                              <Input type="number" step="any" className="h-7 text-xs text-right w-16"
+                                value={String(editDraft.quantity ?? "")}
+                                data-testid={`edit-cost-qty-${c.id}`}
+                                onChange={(e) => setEditDraft({ ...editDraft, quantity: e.target.value as any })} />
+                            </TableCell>
+                            <TableCell className="py-1.5 text-right">
+                              <Input type="number" step="0.01" className="h-7 text-xs text-right w-20"
+                                value={String(editDraft.unitCost ?? "")}
+                                data-testid={`edit-cost-unit-${c.id}`}
+                                onChange={(e) => setEditDraft({ ...editDraft, unitCost: e.target.value as any })} />
+                            </TableCell>
+                            <TableCell className="text-xs py-1.5 text-right font-medium">{fmt(liveTotal)}</TableCell>
+                            <TableCell className="py-1.5">
+                              <div className="flex items-center justify-end gap-1">
+                                <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-green-600 hover:text-green-700"
+                                  onClick={saveEdit} disabled={updateCost.isPending}
+                                  data-testid={`save-cost-btn-${c.id}`}>
+                                  <Check className="w-4 h-4" />
+                                </Button>
+                                <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-muted-foreground"
+                                  onClick={cancelEdit} data-testid={`cancel-cost-btn-${c.id}`}>
+                                  <X className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      }
+                      return (
                       <TableRow key={c.id} data-testid={`cost-row-${c.id}`}>
                         <TableCell className="text-xs py-2">
                           {c.costDate ? new Date(c.costDate).toLocaleDateString() : "—"}
@@ -462,7 +576,17 @@ export function JobCostingPanel({ jobId, phase }: JobCostingPanelProps) {
                         <TableCell className="text-xs py-2 text-right">{c.quantity}</TableCell>
                         <TableCell className="text-xs py-2 text-right">{fmt(c.unitCost)}</TableCell>
                         <TableCell className="text-xs py-2 text-right font-medium">{fmt(c.total)}</TableCell>
-                        <TableCell className="py-2 text-right">
+                        <TableCell className="py-2">
+                          <div className="flex items-center justify-end gap-0.5">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 p-0 text-muted-foreground hover:text-[hsl(var(--titan-blue))]"
+                            onClick={() => startEdit(c)}
+                            data-testid={`edit-cost-btn-${c.id}`}
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </Button>
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
                               <Button
@@ -493,9 +617,11 @@ export function JobCostingPanel({ jobId, phase }: JobCostingPanelProps) {
                               </AlertDialogFooter>
                             </AlertDialogContent>
                           </AlertDialog>
+                          </div>
                         </TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>
