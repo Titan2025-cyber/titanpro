@@ -1293,6 +1293,45 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(storage.createPayment(req.body));
   });
 
+  // ── Object-storage diagnostic ─────────────────────────────────────────────────
+  // Public JSON check: hit /api/storage/status to see whether the running
+  // container can see the Railway bucket env vars. Never leaks the secret; only
+  // returns booleans + the endpoint / bucket for confirmation.
+  app.get("/api/storage/status", wrapAsync(async (_req, res) => {
+    const hasEndpoint = !!(process.env.S3_ENDPOINT || process.env.STORAGE_ENDPOINT);
+    const hasBucket = !!(process.env.S3_BUCKET || process.env.STORAGE_BUCKET);
+    const hasKey = !!(process.env.S3_ACCESS_KEY_ID || process.env.STORAGE_ACCESS_KEY_ID);
+    const hasSecret = !!(process.env.S3_SECRET_ACCESS_KEY || process.env.STORAGE_SECRET_ACCESS_KEY);
+    let bucketProbe: any = null;
+    if (objectStorage.isConfigured()) {
+      try {
+        // Try a real write → read → delete round-trip so we surface auth/CORS/
+        // endpoint issues right here instead of silently in a POST handler.
+        const testKey = objectStorage.makeKey("diagnostic", "txt");
+        const body = Buffer.from(`ping ${new Date().toISOString()}`);
+        await objectStorage.putObject(testKey, body, "text/plain");
+        const url = await objectStorage.getReadUrl(testKey, 60);
+        await objectStorage.deleteObject(testKey);
+        bucketProbe = { ok: true, testKey, signedUrlLength: url.length };
+      } catch (e: any) {
+        bucketProbe = { ok: false, error: e?.message || String(e), stack: (e?.stack || "").split("\n").slice(0, 3) };
+      }
+    }
+    res.json({
+      isConfigured: objectStorage.isConfigured(),
+      env: { hasEndpoint, hasBucket, hasKey, hasSecret,
+        endpoint: process.env.S3_ENDPOINT || process.env.STORAGE_ENDPOINT || "",
+        region: process.env.S3_REGION || process.env.STORAGE_REGION || "us-east-1",
+        bucket: process.env.S3_BUCKET || process.env.STORAGE_BUCKET || "",
+      },
+      bucketProbe,
+      photoCountsBySource: {
+        inline: (sqlite.prepare("SELECT COUNT(*) as n FROM photos WHERE data_url LIKE 'data:%'").get() as any)?.n ?? 0,
+        bucket: (sqlite.prepare("SELECT COUNT(*) as n FROM photos WHERE storage_key IS NOT NULL AND storage_key != ''").get() as any)?.n ?? 0,
+      },
+    });
+  }));
+
   // ── Photos ────────────────────────────────────────────────────────────────
   // Reads hydrate `data_url` from the S3 signed URL when the row has a
   // storage_key set. Legacy rows without a key keep serving inline base64

@@ -744,7 +744,11 @@ if (!docCols.includes("signature_storage_key")) {
 // looks at un-migrated rows.
 async function migrateLegacyBlobsToBucket() {
   const s3 = await import("./storage_s3");
-  if (!s3.isConfigured()) return;
+  s3.logStatus();
+  if (!s3.isConfigured()) {
+    console.log("[storage] SKIPPING blob migration — object storage NOT configured. Set S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY on the Railway service.");
+    return;
+  }
   console.log("[storage] starting legacy blob → bucket migration");
   let photoCount = 0;
   let docCount = 0;
