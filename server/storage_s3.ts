@@ -15,11 +15,41 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import crypto from "node:crypto";
 
-const S3_ENDPOINT = process.env.S3_ENDPOINT || process.env.STORAGE_ENDPOINT || "";
-const S3_REGION = process.env.S3_REGION || process.env.STORAGE_REGION || "us-east-1";
-const S3_BUCKET = process.env.S3_BUCKET || process.env.STORAGE_BUCKET || "";
-const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY_ID || process.env.STORAGE_ACCESS_KEY_ID || "";
-const S3_SECRET_KEY = process.env.S3_SECRET_ACCESS_KEY || process.env.STORAGE_SECRET_ACCESS_KEY || "";
+// Recognize three env-var naming conventions so we don't force the operator to
+// rename bucket variables on their hosting provider:
+//   1. S3_* — our preferred, provider-agnostic names
+//   2. STORAGE_* — alternate prefix some deploys use
+//   3. AWS_* — Railway/AWS-CLI defaults, so `AWS_ENDPOINT_URL`,
+//      `AWS_S3_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+//      and `AWS_DEFAULT_REGION` work with no code change.
+const S3_ENDPOINT =
+  process.env.S3_ENDPOINT ||
+  process.env.STORAGE_ENDPOINT ||
+  process.env.AWS_ENDPOINT_URL ||
+  "";
+const S3_REGION =
+  process.env.S3_REGION ||
+  process.env.STORAGE_REGION ||
+  process.env.AWS_REGION ||
+  process.env.AWS_DEFAULT_REGION ||
+  "us-east-1";
+const S3_BUCKET =
+  process.env.S3_BUCKET ||
+  process.env.STORAGE_BUCKET ||
+  process.env.AWS_S3_BUCKET_NAME ||
+  process.env.AWS_S3_BUCKET ||
+  process.env.AWS_BUCKET ||
+  "";
+const S3_ACCESS_KEY =
+  process.env.S3_ACCESS_KEY_ID ||
+  process.env.STORAGE_ACCESS_KEY_ID ||
+  process.env.AWS_ACCESS_KEY_ID ||
+  "";
+const S3_SECRET_KEY =
+  process.env.S3_SECRET_ACCESS_KEY ||
+  process.env.STORAGE_SECRET_ACCESS_KEY ||
+  process.env.AWS_SECRET_ACCESS_KEY ||
+  "";
 
 // Signed URL lifetime. 1 hour is plenty for a page render and short enough
 // that a leaked URL becomes useless quickly.
