@@ -116,7 +116,7 @@ function JobCard({ job, contacts }: { job: Job; contacts: Contact[] }) {
               <Select value={statusVal} onValueChange={v => { setStatusVal(v); updateStatus.mutate(v); }}>
                 <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {["new","mitigation","drying","reconstruction","complete","closed"].map(s => (
+                  {["new","mitigation","drying","reconstruction","complete"].map(s => (
                     <SelectItem key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</SelectItem>
                   ))}
                 </SelectContent>

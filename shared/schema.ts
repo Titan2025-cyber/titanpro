@@ -67,6 +67,21 @@ export const jobs = sqliteTable("jobs", {
   docusketchCompletedAt: text("docusketch_completed_at"), // When scan was marked complete
   // Notes stored as JSON array
   notes: text("notes").default("[]"),
+  // Close / reopen tracking. When status='closed' the job is hidden from all
+  // views, dashboards, KPIs, and AI scans; still viewable and reopenable from
+  // the dedicated Closed Jobs page.
+  previousStatus: text("previous_status"),   // Phase to restore on reopen
+  closedAt: text("closed_at"),
+  closedBy: text("closed_by"),
+  closedReason: text("closed_reason"),
+  reopenedAt: text("reopened_at"),           // Last reopen timestamp (full history in job_events)
+  reopenedBy: text("reopened_by"),
+  // Geocoded coordinates for the Service Area map on the dashboard. Filled
+  // asynchronously by the Nominatim geocoder when a job is created/updated
+  // with an address. Null while pending; the map skips markers with no coords.
+  latitude: real("latitude"),
+  longitude: real("longitude"),
+  geocodedAt: text("geocoded_at"),
   createdAt: text("created_at").notNull().default(""),
 });
 export const insertJobSchema = createInsertSchema(jobs).omit({ id: true });
@@ -265,12 +280,15 @@ export const dryingRecords = sqliteTable("drying_records", {
   waterClass: text("water_class").notNull().default("class2"),           // class1|class2|class3|class4
   // Structural moisture readings (JSON array of { location, material, reading, gpp, target })
   moistureReadings: text("moisture_readings").notNull().default("[]"),
-  // Psychrometric data
-  tempF: real("temp_f"),          // Ambient temperature °F
-  rhPct: real("rh_pct"),           // Relative humidity %
-  gpp: real("gpp"),                // Grains per pound (calculated)
-  dewPointF: real("dew_point_f"),  // Dew point °F
+  // Psychrometric data (legacy single-reading columns mirror the Inside slot)
+  tempF: real("temp_f"),          // Ambient / Inside temperature °F (legacy)
+  rhPct: real("rh_pct"),           // Relative humidity % (legacy)
+  gpp: real("gpp"),                // Grains per pound (calculated, legacy)
+  dewPointF: real("dew_point_f"),  // Dew point °F (legacy)
   specificHumidity: real("specific_humidity"),
+  // Multi-location readings: JSON array of
+  //   { location: 'inside'|'outside'|'affected', tempF, rhPct, gpp, dewPointF }
+  psychrometricReadings: text("psychrometric_readings").notNull().default("[]"),
   // Equipment log (JSON array of { type, qty, placement, serialNumber })
   equipment: text("equipment").notNull().default("[]"),
   // Affected areas (JSON array of { room, material, sqft, wetPct })
@@ -981,6 +999,22 @@ export const timeClock = sqliteTable("time_clock", {
 export const insertTimeClockSchema = createInsertSchema(timeClock).omit({ id: true });
 export type InsertTimeClock = z.infer<typeof insertTimeClockSchema>;
 export type TimeClock = typeof timeClock.$inferSelect;
+
+// ── Live Tech Locations (owner/admin-only map overlay) ────────────────────────
+// One row per employee, upserted every time a clocked-in tech pings their
+// position. We keep only the latest fix per person; historical breadcrumbs
+// would blow up storage and aren't needed for a live "where are they now?" map.
+// The record is auto-purged when the employee clocks out.
+export const techLocations = sqliteTable("tech_locations", {
+  employeeId: integer("employee_id").primaryKey(),
+  employeeName: text("employee_name").notNull(),
+  latitude: real("latitude").notNull(),
+  longitude: real("longitude").notNull(),
+  accuracyMeters: real("accuracy_meters"),
+  jobId: integer("job_id"),               // Job they're clocked into, if any
+  capturedAt: text("captured_at").notNull(),
+});
+export type TechLocation = typeof techLocations.$inferSelect;
 
 // ── Suite 5: Pre-Departure Checklists ─────────────────────────────────────────
 export const departureChecklists = sqliteTable("departure_checklists", {

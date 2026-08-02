@@ -28,12 +28,14 @@ import ForcePinChange from "@/components/ForcePinChange";
 import EnvBanner from "@/components/EnvBanner";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { PresenceTracker } from "@/lib/presence";
+import { LocationTracker } from "@/lib/locationTracker";
 
 
 // Lazy-loaded pages (code-split — each page downloads only when visited)
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const Jobs = lazy(() => import("@/pages/Jobs"));
 const JobDetail = lazy(() => import("@/pages/JobDetail"));
+const ClosedJobs = lazy(() => import("@/pages/ClosedJobs"));
 const Estimates = lazy(() => import("@/pages/Estimates"));
 const EstimateDetail = lazy(() => import("@/pages/EstimateDetail"));
 const Invoices = lazy(() => import("@/pages/Invoices"));
@@ -148,6 +150,7 @@ const TechCoach = lazy(() => import("@/pages/TechCoach"));
 const SupplementAuditAI = lazy(() => import("@/pages/SupplementAuditAI"));
 const CarrierCounterIntel = lazy(() => import("@/pages/CarrierCounterIntel"));
 const PredictiveDrying = lazy(() => import("@/pages/PredictiveDrying"));
+const EscalationOutbox = lazy(() => import("@/pages/EscalationOutbox"));
 const StormCAT = lazy(() => import("@/pages/StormCAT"));
 const MidJobMarginAlert = lazy(() => import("@/pages/MidJobMarginAlert"));
 const AdjusterProfiler = lazy(() => import("@/pages/AdjusterProfiler"));
@@ -218,7 +221,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   // PIN gate (lower priority than 2FA): defensive fallback for a session whose
   // PIN is flagged for reset but that skipped the forced-change login step.
   if (user.mustChangePin === true) return <ForcePinChange />;
-  return <><PresenceTracker />{children}</>;
+  return <><PresenceTracker /><LocationTracker />{children}</>;
 }
 
 function AppRoutes() {
@@ -258,11 +261,13 @@ function AuthenticatedRoutes() {
         {/* Core */}
         <Route path="/" component={() => <Page component={Dashboard} name="Dashboard" />} />
         <Route path="/jobs" component={() => <Page component={Jobs} name="Jobs" />} />
+        <Route path="/jobs/closed" component={() => <Page component={ClosedJobs} name="ClosedJobs" />} />
         <Route path="/jobs/:id" component={() => <Page component={JobDetail} name="JobDetail" />} />
         <Route path="/estimates" component={() => <Page component={Estimates} name="Estimates" />} />
         <Route path="/estimates/:id" component={() => <Page component={EstimateDetail} name="EstimateDetail" />} />
         <Route path="/invoices" component={() => <Page component={Invoices} name="Invoices" />} />
         <Route path="/payments" component={() => <Page component={Payments} name="Payments" />} />
+        <Route path="/escalation-outbox" component={() => <Page component={EscalationOutbox} name="EscalationOutbox" />} />
         <Route path="/contacts" component={() => <Page component={Contacts} name="Contacts" />} />
 
         {/* Field Ops */}

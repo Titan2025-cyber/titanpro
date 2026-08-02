@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import CountUp from "@/components/CountUp";
 import { Reveal, Stagger, StaggerChild } from "@/components/motion";
 import Sparkline from "@/components/Sparkline";
+import { ServiceAreaMap } from "@/components/ServiceAreaMap";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { motion, useReducedMotion } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
@@ -533,6 +534,12 @@ export default function Dashboard() {
         </Card>
         </StaggerChild>
       </Stagger>
+
+      {/* Service Area map — live pins for every active job, updates on
+          create/close/reopen because it reads from the shared jobs query. */}
+      <Reveal>
+        <ServiceAreaMap />
+      </Reveal>
 
       {/* Job Age Alert Banner */}
       {criticalStuck > 0 && (

@@ -349,6 +349,17 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
       const row = sqlite.prepare(
         "UPDATE time_clock SET clock_out_at=?, clock_out_lat=?, clock_out_lng=?, duration_minutes=? WHERE id=? RETURNING *"
       ).get(now.toISOString(), lat || null, lng || null, durationMinutes, open.id);
+
+      // Drop the live-map pin the moment the tech clocks out so the owner's
+      // map doesn't show stale positions. The tech_locations table is a
+      // "currently on shift" cache, not a history log.
+      try {
+        if (open.employee_id) {
+          sqlite.prepare("DELETE FROM tech_locations WHERE employee_id = ?").run(open.employee_id);
+        }
+        sqlite.prepare("DELETE FROM tech_locations WHERE employee_name = ?").run(open.employee_name);
+      } catch(_) {}
+
       res.json(row);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });

@@ -23,6 +23,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { RotateCcw } from "lucide-react";
 import type { Job, Contact, Estimate, Invoice } from "@shared/schema";
 import DryingRecords from "@/components/DryingRecords";
 import MitigationSketch from "@/components/MitigationSketch";
@@ -723,6 +726,7 @@ function CustomerPortalCard({ contact }: { contact: Contact }) {
 // ── Main JobDetail Page ──────────────────────────────────────────────────────
 export default function JobDetail() {
   const { id } = useParams();
+  const { toast } = useToast();
   const { data: job, isLoading } = useQuery<Job>({ queryKey: ["/api/jobs", id], staleTime: 0 });
   const { data: contacts = [] } = useQuery<Contact[]>({ queryKey: ["/api/contacts"] });
   const { data: estimates = [] } = useQuery<Estimate[]>({ queryKey: ["/api/jobs", id, "estimates"] });
@@ -761,6 +765,37 @@ export default function JobDetail() {
   const updateLocation = useMutation({
     mutationFn: (location: string) => apiRequest("PATCH", `/api/jobs/${id}`, { location }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/jobs"] }),
+  });
+
+  // Close / reopen state. Owner+admin only — the server also enforces this.
+  const { employee: currentEmployee } = useAuth();
+  const canManageClose = currentEmployee?.role === "owner" || currentEmployee?.role === "admin";
+  const [closeOpen, setCloseOpen] = useState(false);
+  const [closeReason, setCloseReason] = useState("");
+  const [reopenOpen, setReopenOpen] = useState(false);
+
+  const closeJobMut = useMutation({
+    mutationFn: () =>
+      apiRequest("POST", `/api/jobs/${id}/close`, { reason: closeReason || undefined }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      toast({ title: "Job closed", description: "Removed from dashboards, KPIs, and reports." });
+      setCloseOpen(false);
+      setCloseReason("");
+    },
+    onError: (e: any) =>
+      toast({ title: "Could not close job", description: e?.message || "Server rejected the request.", variant: "destructive" }),
+  });
+
+  const reopenJobMut = useMutation({
+    mutationFn: () => apiRequest("POST", `/api/jobs/${id}/reopen`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      toast({ title: "Job reopened", description: "Back in dashboards and reports." });
+      setReopenOpen(false);
+    },
+    onError: (e: any) =>
+      toast({ title: "Could not reopen job", description: e?.message || "Server rejected the request.", variant: "destructive" }),
   });
 
   if (isLoading) return <div className="p-6 text-muted-foreground">Loading…</div>;
@@ -815,19 +850,104 @@ export default function JobDetail() {
           </div>
           <div className="flex flex-col gap-1">
             <span className="text-[10px] uppercase tracking-wide text-muted-foreground leading-none px-1">Status</span>
-            <Select value={job.status} onValueChange={v => updateStatus.mutate(v)}>
+            <Select value={job.status} onValueChange={v => updateStatus.mutate(v)}
+              disabled={job.status === "closed"}>
               <SelectTrigger className="w-40">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {["new","mitigation","drying","reconstruction","complete","closed"].map(s => (
+                {["new","mitigation","drying","reconstruction","complete"].map(s => (
                   <SelectItem key={s} value={s}>{s}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
+          {canManageClose && (
+            <div className="flex flex-col gap-1 justify-end">
+              <span className="text-[10px] uppercase tracking-wide text-transparent leading-none px-1 select-none">.</span>
+              {job.status === "closed" ? (
+                <Button size="sm" variant="outline" onClick={() => setReopenOpen(true)}
+                  data-testid="btn-reopen-job" className="gap-1.5">
+                  <RotateCcw className="w-3.5 h-3.5" /> Reopen
+                </Button>
+              ) : (
+                <Button size="sm" variant="outline" onClick={() => setCloseOpen(true)}
+                  data-testid="btn-close-job" className="gap-1.5">
+                  <Lock className="w-3.5 h-3.5" /> Close job
+                </Button>
+              )}
+            </div>
+          )}
         </div>
       </div>
+
+      {job.status === "closed" && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 px-4 py-2.5 text-xs">
+          <div className="flex items-center gap-2 text-amber-800 dark:text-amber-200">
+            <Lock className="w-3.5 h-3.5" />
+            <span className="font-semibold uppercase tracking-wide">Closed</span>
+            {(job as any).closedAt && (
+              <span>on {new Date((job as any).closedAt).toLocaleDateString()}</span>
+            )}
+            {(job as any).closedBy && <span>by {(job as any).closedBy}</span>}
+          </div>
+          {(job as any).closedReason && (
+            <div className="mt-1 text-amber-900 dark:text-amber-100">Reason: {(job as any).closedReason}</div>
+          )}
+          <div className="mt-1 text-amber-900/80 dark:text-amber-100/80">
+            This job is hidden from dashboards, KPIs, reports, and technicians. Reopen to restore.
+          </div>
+        </div>
+      )}
+
+      {/* Close-job confirmation */}
+      <Dialog open={closeOpen} onOpenChange={setCloseOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Close this job?</DialogTitle>
+            <DialogDescription>
+              Closing removes this job from dashboards, KPIs, reports, and technician views.
+              All data stays intact and comes back if you reopen. You can find and reopen closed jobs from the Closed Jobs page.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label className="text-xs">Reason (optional)</Label>
+            <Textarea
+              rows={3}
+              placeholder="e.g., duplicate of TP-2026-002, cancelled by homeowner, warranty resolved…"
+              value={closeReason}
+              onChange={e => setCloseReason(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCloseOpen(false)} disabled={closeJobMut.isPending}>Cancel</Button>
+            <Button variant="destructive" onClick={() => closeJobMut.mutate()} disabled={closeJobMut.isPending} className="gap-1.5">
+              <Lock className="w-3.5 h-3.5" />
+              {closeJobMut.isPending ? "Closing…" : "Close job"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reopen confirmation */}
+      <Dialog open={reopenOpen} onOpenChange={setReopenOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reopen this job?</DialogTitle>
+            <DialogDescription>
+              Restores to <span className="font-semibold">{(job as any).previousStatus || "mitigation"}</span>{" "}
+              and brings the job back into dashboards, KPIs, reports, and technician views.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReopenOpen(false)} disabled={reopenJobMut.isPending}>Cancel</Button>
+            <Button onClick={() => reopenJobMut.mutate()} disabled={reopenJobMut.isPending} className="gap-1.5">
+              <RotateCcw className="w-3.5 h-3.5" />
+              {reopenJobMut.isPending ? "Reopening…" : "Reopen job"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Phase filter switch ── controls which phase's data is shown across the workspace */}
       <div className="flex items-center gap-3 flex-wrap" data-testid="phase-filter-bar">

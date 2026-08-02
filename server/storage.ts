@@ -35,6 +35,27 @@ try {
 } catch (e) {
   console.warn("[storage] First-boot seed skipped (non-fatal):", e);
 }
+
+// Recovery seed: if the target DB exists but has no active employees, the
+// sandbox is running against a stale/empty preserved copy. Reseed from
+// seed-data.db so the login screen isn't empty. Runs at most once per boot.
+try {
+  if (fs.existsSync(DB_PATH) && fs.existsSync("seed-data.db")) {
+    const probe = new BetterSqlite3(DB_PATH, { readonly: true });
+    let hasUsers = false;
+    try {
+      const row: any = probe.prepare("SELECT COUNT(*) AS n FROM employees WHERE is_active = 1").get();
+      hasUsers = Number(row?.n || 0) > 0;
+    } catch { /* table missing = empty DB */ }
+    probe.close();
+    if (!hasUsers) {
+      fs.copyFileSync("seed-data.db", DB_PATH);
+      console.log("[storage] Recovery seed applied (target had no active employees) -> " + DB_PATH);
+    }
+  }
+} catch (e) {
+  console.warn("[storage] Recovery seed skipped (non-fatal):", e);
+}
 export const sqlite: Database = new BetterSqlite3(DB_PATH);
 const db = drizzle(sqlite, { schema });
 
@@ -146,6 +167,13 @@ sqlite.exec(`
     partner_payout_applied REAL,
     partner_payout_date TEXT,
     notes TEXT DEFAULT '[]',
+    -- Close / reopen tracking (see shared/schema.ts for details)
+    previous_status TEXT,
+    closed_at TEXT,
+    closed_by TEXT,
+    closed_reason TEXT,
+    reopened_at TEXT,
+    reopened_by TEXT,
     created_at TEXT NOT NULL DEFAULT ''
   );
 
@@ -299,6 +327,7 @@ sqlite.exec(`
     gpp REAL,
     dew_point_f REAL,
     specific_humidity REAL,
+    psychrometric_readings TEXT NOT NULL DEFAULT '[]',
     equipment TEXT NOT NULL DEFAULT '[]',
     affected_areas TEXT NOT NULL DEFAULT '[]',
     drying_goal_met INTEGER DEFAULT 0,
@@ -334,6 +363,16 @@ sqlite.exec(`
     created_by TEXT,
     created_at TEXT NOT NULL DEFAULT ''
   );
+
+  CREATE TABLE IF NOT EXISTS job_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    action TEXT NOT NULL,        -- e.g. 'closed', 'reopened'
+    actor_name TEXT,             -- employee name from the auth session
+    details TEXT,                -- JSON blob for action-specific context
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_job_events_job ON job_events(job_id, created_at DESC);
 `);
 
 // ── New tables ────────────────────────────────────────────────────────────
@@ -571,6 +610,29 @@ if (!jobCols.includes("location")) {
   } catch (_) {}
 }
 
+// Close / reopen tracking. previous_status captures the phase at close so
+// reopen restores the job to exactly where it was. closed_at/closed_by/
+// closed_reason are set on close and nulled on reopen; reopened_at/reopened_by
+// track the most recent reopen (full history is in the job_events audit log).
+if (!jobCols.includes("previous_status")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN previous_status TEXT`);
+}
+if (!jobCols.includes("closed_at")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN closed_at TEXT`);
+}
+if (!jobCols.includes("closed_by")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN closed_by TEXT`);
+}
+if (!jobCols.includes("closed_reason")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN closed_reason TEXT`);
+}
+if (!jobCols.includes("reopened_at")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN reopened_at TEXT`);
+}
+if (!jobCols.includes("reopened_by")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN reopened_by TEXT`);
+}
+
 // Invoice settlement / insurance-reduction tracking (idempotent migration).
 // original_total  = amount originally invoiced before any carrier reduction
 // adjustment      = dollar reduction agreed at settlement (positive number)
@@ -636,6 +698,16 @@ if (!jobDocPhaseCols.includes("phase")) {
 const jobCostPhaseCols = (sqlite.prepare("PRAGMA table_info(job_costs)").all() as any[]).map((c: any) => c.name);
 if (!jobCostPhaseCols.includes("phase")) {
   sqlite.exec(`ALTER TABLE job_costs ADD COLUMN phase TEXT DEFAULT 'mitigation'`);
+}
+
+// Drying-record multi-location psychrometrics (Inside / Outside / Affected Area).
+// Stored as JSON array of { location, tempF, rhPct, gpp, dewPointF } so the tech
+// can log all three locations per visit. Legacy tempF/rhPct columns remain and
+// mirror the Inside slot for back-compat with existing reports, PDFs, and the
+// moisture-alert check that still keys off ambient temp/RH.
+const dryingCols = (sqlite.prepare("PRAGMA table_info(drying_records)").all() as any[]).map((c: any) => c.name);
+if (!dryingCols.includes("psychrometric_readings")) {
+  sqlite.exec(`ALTER TABLE drying_records ADD COLUMN psychrometric_readings TEXT NOT NULL DEFAULT '[]'`);
 }
 
 // One-time phase demo backfill for job 2 (fire loss — runs through BOTH mitigation
@@ -755,12 +827,16 @@ export interface IStorage {
   updateContact(id: number, data: Partial<schema.InsertContact>): schema.Contact | undefined;
   deleteContact(id: number): void;
 
-  // Jobs
-  getJobs(): schema.Job[];
+  // Jobs — getJobs() excludes closed jobs by default. Use getClosedJobs() or
+  // pass includeClosed=true when you need everything (e.g. financial history).
+  getJobs(includeClosed?: boolean): schema.Job[];
+  getClosedJobs(): schema.Job[];
   getJob(id: number): schema.Job | undefined;
   createJob(data: schema.InsertJob): schema.Job;
   updateJob(id: number, data: Partial<schema.InsertJob>): schema.Job | undefined;
   deleteJob(id: number): void;
+  closeJob(id: number, closedBy: string, reason?: string): schema.Job | undefined;
+  reopenJob(id: number, reopenedBy: string): schema.Job | undefined;
 
   // Estimates
   getEstimates(): schema.Estimate[];
@@ -881,8 +957,50 @@ class SqliteStorage implements IStorage {
   deleteContact(id: number) { db.delete(schema.contacts).where(eq(schema.contacts.id, id)).run(); }
 
   // Jobs
-  getJobs() { return db.select().from(schema.jobs).orderBy(desc(schema.jobs.id)).all(); }
+  getJobs(includeClosed = false) {
+    const rows = db.select().from(schema.jobs).orderBy(desc(schema.jobs.id)).all();
+    if (includeClosed) return rows;
+    return rows.filter((j: any) => j.status !== "closed");
+  }
+  getClosedJobs() {
+    const rows = db.select().from(schema.jobs).orderBy(desc(schema.jobs.id)).all();
+    return rows.filter((j: any) => j.status === "closed");
+  }
   getJob(id: number) { return db.select().from(schema.jobs).where(eq(schema.jobs.id, id)).get(); }
+  closeJob(id: number, closedBy: string, reason?: string) {
+    const job = this.getJob(id);
+    if (!job) return undefined;
+    // Snapshot the current status so reopen can restore it exactly.
+    const previousStatus = (job as any).status ?? null;
+    const now = new Date().toISOString();
+    return db.update(schema.jobs).set({
+      status: "closed",
+      previousStatus,
+      closedAt: now,
+      closedBy,
+      closedReason: reason || null,
+      // Clear any prior reopen stamps so the record reflects the current close.
+      reopenedAt: null,
+      reopenedBy: null,
+    } as any).where(eq(schema.jobs.id, id)).returning().get();
+  }
+  reopenJob(id: number, reopenedBy: string) {
+    const job = this.getJob(id);
+    if (!job) return undefined;
+    // Restore the pre-close phase; fall back to 'mitigation' if we don't have
+    // a snapshot (legacy closed jobs from before this feature landed).
+    const restore = (job as any).previousStatus || "mitigation";
+    const now = new Date().toISOString();
+    return db.update(schema.jobs).set({
+      status: restore,
+      previousStatus: null,
+      closedAt: null,
+      closedBy: null,
+      closedReason: null,
+      reopenedAt: now,
+      reopenedBy,
+    } as any).where(eq(schema.jobs.id, id)).returning().get();
+  }
   createJob(data: schema.InsertJob) {
     const d: any = { ...data, createdAt: new Date().toISOString() };
     // Auto-generate a job number when one isn't supplied (e.g. blank/partial input),
@@ -956,7 +1074,16 @@ class SqliteStorage implements IStorage {
   getPhotos() { return db.select().from(schema.photos).orderBy(desc(schema.photos.id)).all(); }
   getPhotosByJob(jobId: number) { return db.select().from(schema.photos).where(eq(schema.photos.jobId, jobId)).all(); }
   createPhoto(data: schema.InsertPhoto) {
-    const d = { ...data, takenAt: new Date().toISOString() };
+    // Preserve the client-supplied shutter timestamp when it is a valid ISO
+    // date. This matters for offline-queued photos: a photo taken at 8:15 AM
+    // that syncs at 2:30 PM must still show 8:15 AM. Only fall back to "now"
+    // when the client didn't send takenAt or it's unparseable.
+    let takenAt = new Date().toISOString();
+    if (typeof data.takenAt === "string" && data.takenAt.trim()) {
+      const parsed = new Date(data.takenAt);
+      if (!isNaN(parsed.getTime())) takenAt = parsed.toISOString();
+    }
+    const d = { ...data, takenAt };
     return db.insert(schema.photos).values(d).returning().get();
   }
   deletePhoto(id: number) { db.delete(schema.photos).where(eq(schema.photos.id, id)).run(); }

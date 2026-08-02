@@ -18,7 +18,7 @@ import {
   Timer, User, Grid3X3, Building2, Banknote, HardDriveUpload,
   Droplets, Mic, FileSearch, UserRound, Trophy, UserCog, KeyRound,
   FileSpreadsheet, ArrowRightLeft, QrCode, Handshake, ArrowLeft, LayoutDashboard as DashIcon,
-  Package,
+  Package, Lock, Inbox,
 } from "lucide-react";
 import { useState, useEffect, type ReactNode } from "react";
 import GlobalSearch from "@/components/GlobalSearch";
@@ -63,10 +63,12 @@ const navGroups: NavGroup[] = [
     items: [
       { href: "/", label: "Dashboard", icon: LayoutDashboard, permission: "dashboard" },
       { href: "/jobs", label: "Jobs", icon: Briefcase, permission: "jobs" },
+      { href: "/jobs/closed", label: "Closed Jobs", icon: Lock, permission: "jobs", adminOnly: true },
       { href: "/contacts", label: "Contacts", icon: Users, permission: "contacts" },
       { href: "/estimates", label: "Estimates", icon: FileText, permission: "estimates" },
       { href: "/invoices", label: "Invoices", icon: Receipt, permission: "invoices" },
       { href: "/payments", label: "Payments", icon: DollarSign, permission: "payments" },
+      { href: "/escalation-outbox", label: "Escalation Outbox", icon: Inbox, permission: "admin", adminOnly: true },
       // Global Search is a universal utility — available to any signed-in user.
       { href: "/global-search", label: "Global Search", icon: Search },
     ],
@@ -331,6 +333,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           const isCollapsed = collapsedGroups[group.label];
           const visibleItems = group.items.filter(item => {
             if (item.ownerOnly && user?.role !== "owner") return false;
+            if ((item as any).adminOnly && user?.role !== "owner" && user?.role !== "admin") return false;
             return !item.permission || can(item.permission);
           });
           if (visibleItems.length === 0) return null;

@@ -59,34 +59,127 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
     },
   });
 
+  // Format a Date as "Jul 29, 2026 · 11:24 AM" in the tech's locale.
+  const formatStamp = (d: Date) => {
+    try {
+      return d.toLocaleString(undefined, {
+        year: "numeric", month: "short", day: "numeric",
+        hour: "numeric", minute: "2-digit",
+      });
+    } catch {
+      return d.toISOString();
+    }
+  };
+
+  // Load a data URL into an HTMLImageElement so we can draw it to a canvas.
+  const loadImage = (dataUrl: string) => new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+
+  // Burn a bottom-right date/time watermark onto the photo. Uses a dark pill
+  // behind white text so it stays legible on any background. Downscales the
+  // longest edge to 2048px to keep base64 payloads reasonable for SQLite.
+  const stampPhoto = async (dataUrl: string, takenAt: Date): Promise<string> => {
+    const img = await loadImage(dataUrl);
+    const maxEdge = 2048;
+    const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+    const w = Math.round(img.width * scale);
+    const h = Math.round(img.height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return dataUrl;
+    ctx.drawImage(img, 0, 0, w, h);
+
+    const label = formatStamp(takenAt);
+    // Scale font to the image so it looks the same on any resolution.
+    const fontSize = Math.max(16, Math.round(Math.min(w, h) * 0.035));
+    ctx.font = `600 ${fontSize}px -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`;
+    const padX = Math.round(fontSize * 0.7);
+    const padY = Math.round(fontSize * 0.4);
+    const textWidth = ctx.measureText(label).width;
+    const pillWidth = textWidth + padX * 2;
+    const pillHeight = fontSize + padY * 2;
+    const margin = Math.round(fontSize * 0.6);
+    const x = w - pillWidth - margin;
+    const y = h - pillHeight - margin;
+
+    // Dark pill with rounded corners (rounded rect polyfill for older Safari)
+    ctx.fillStyle = "rgba(0, 0, 0, 0.62)";
+    const r = Math.round(pillHeight / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + pillWidth - r, y);
+    ctx.quadraticCurveTo(x + pillWidth, y, x + pillWidth, y + r);
+    ctx.lineTo(x + pillWidth, y + pillHeight - r);
+    ctx.quadraticCurveTo(x + pillWidth, y + pillHeight, x + pillWidth - r, y + pillHeight);
+    ctx.lineTo(x + r, y + pillHeight);
+    ctx.quadraticCurveTo(x, y + pillHeight, x, y + pillHeight - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = "#ffffff";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, x + padX, y + pillHeight / 2 + 1);
+
+    // JPEG @ 0.9 keeps quality high while shrinking base64 by ~4x vs PNG.
+    return canvas.toDataURL("image/jpeg", 0.9);
+  };
+
   const handleFiles = async (files: FileList | null) => {
     if (!files) return;
     setUploading(true);
+    let successCount = 0;
     for (const file of Array.from(files)) {
-      const reader = new FileReader();
-      await new Promise<void>(resolve => {
-        reader.onload = async () => {
-          try {
-            await apiRequest("POST", "/api/photos", {
-              jobId,
-              filename: file.name,
-              dataUrl: reader.result as string,
-              caption: caption || file.name,
-              category,
-              phase: phase && phase !== "both" ? phase : "mitigation",
-            });
-            queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "photos"] });
-          } catch (e) {
-            toast({ title: "Upload failed", variant: "destructive" });
-          }
-          resolve();
-        };
+      // Capture time = camera app's file timestamp when available (works on iOS
+      // Safari & Android Chrome for camera captures), else fall back to "now".
+      // This ensures a photo taken offline at 8:15 AM keeps that timestamp
+      // even when the upload actually happens hours later.
+      const shutterMs = file.lastModified && file.lastModified > 0 ? file.lastModified : Date.now();
+      const takenAt = new Date(shutterMs);
+
+      const dataUrl: string = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
         reader.readAsDataURL(file);
       });
+
+      let stamped = dataUrl;
+      try {
+        stamped = await stampPhoto(dataUrl, takenAt);
+      } catch {
+        // If canvas stamping fails (very old browser, huge file), fall back
+        // to the original bytes — takenAt is still recorded on the record.
+      }
+
+      try {
+        await apiRequest("POST", "/api/photos", {
+          jobId,
+          filename: file.name,
+          dataUrl: stamped,
+          caption: caption || file.name,
+          category,
+          phase: phase && phase !== "both" ? phase : "mitigation",
+          takenAt: takenAt.toISOString(),
+        });
+        queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "photos"] });
+        successCount++;
+      } catch (e) {
+        toast({ title: "Upload failed", variant: "destructive" });
+      }
     }
     setUploading(false);
     setCaption("");
-    toast({ title: `${files.length} photo(s) uploaded` });
+    if (successCount > 0) {
+      toast({ title: `${successCount} photo${successCount === 1 ? "" : "s"} saved to job` });
+    }
   };
 
   // Phase scope: 'both'/undefined shows everything; otherwise only photos
@@ -331,28 +424,41 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
               </div>
             </div>
           ))}
-          {filtered.map(photo => (
-            <div
-              key={photo.id}
-              className="relative group rounded-lg overflow-hidden border bg-muted aspect-square cursor-pointer"
-              data-testid={`photo-${photo.id}`}
-              onClick={() => setLightbox(photo)}
-            >
-              <img
-                src={photo.dataUrl}
-                alt={photo.caption || photo.filename}
-                className="w-full h-full object-cover transition-transform group-hover:scale-105"
-              />
-              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                <ZoomIn className="w-6 h-6 text-white" />
+          {filtered.map(photo => {
+            const takenDate = photo.takenAt ? new Date(photo.takenAt) : null;
+            const tileStamp = takenDate && !isNaN(takenDate.getTime())
+              ? takenDate.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+              : null;
+            return (
+              <div
+                key={photo.id}
+                className="relative group rounded-lg overflow-hidden border bg-muted aspect-square cursor-pointer"
+                data-testid={`photo-${photo.id}`}
+                onClick={() => setLightbox(photo)}
+              >
+                <img
+                  src={photo.dataUrl}
+                  alt={photo.caption || photo.filename}
+                  className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                />
+                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                  <ZoomIn className="w-6 h-6 text-white" />
+                </div>
+                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5">
+                  <div className="flex items-center justify-between gap-1.5">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${CATEGORY_COLORS[photo.category ?? ""] || "bg-gray-100 text-gray-700"}`}>
+                      {photo.category}
+                    </span>
+                    {tileStamp && (
+                      <span className="text-[10px] font-medium text-white/95 tabular-nums drop-shadow" title={takenDate!.toLocaleString()}>
+                        {tileStamp}
+                      </span>
+                    )}
+                  </div>
+                </div>
               </div>
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5">
-                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${CATEGORY_COLORS[photo.category ?? ""] || "bg-gray-100 text-gray-700"}`}>
-                  {photo.category}
-                </span>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -377,10 +483,15 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
             <div className="mt-3 flex items-center justify-between">
               <div>
                 <p className="text-white font-medium text-sm">{lightbox.caption || lightbox.filename}</p>
-                <div className="flex gap-2 mt-1">
+                <div className="flex flex-wrap gap-2 mt-1 items-center">
                   <Badge className={CATEGORY_COLORS[lightbox.category ?? ""]}>{lightbox.category}</Badge>
-                  {lightbox.takenAt && (
-                    <span className="text-gray-400 text-xs">{new Date(lightbox.takenAt).toLocaleDateString()}</span>
+                  {lightbox.takenAt && !isNaN(new Date(lightbox.takenAt).getTime()) && (
+                    <span className="text-gray-300 text-xs tabular-nums">
+                      Taken {new Date(lightbox.takenAt).toLocaleString(undefined, {
+                        year: "numeric", month: "short", day: "numeric",
+                        hour: "numeric", minute: "2-digit",
+                      })}
+                    </span>
                   )}
                 </div>
               </div>

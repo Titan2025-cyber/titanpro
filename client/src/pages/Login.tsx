@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import titanLogo from "@/assets/titan-logo.png";
 import { useAuth, AuthUser, TRUSTED_DEVICE_KEY } from "@/lib/auth";
 import { apiRequest } from "@/lib/queryClient";
@@ -10,8 +10,11 @@ import { Mail, Lock, Smartphone, Eye, EyeOff, ShieldCheck } from "lucide-react";
 import { SiGmail, SiQuickbooks, SiStripe } from "react-icons/si";
 import TwoFactorSetup from "@/components/TwoFactorSetup";
 
-// Field crews who use the quick 4-digit PIN kiosk flow instead of typing an email
-const FIELD_TEAM = ["Cody Brantley", "John Eisenhower", "Justin Maddox", "Kalobe Hedden", "Blake Foster"];
+// The Quick PIN kiosk fetches its name list live from /api/auth/pin-users so
+// it mirrors User Management: adding, deactivating, or deleting a user there
+// updates this picker instantly. Only names + initials are returned — no roles,
+// emails, or 2FA state — so the endpoint is safe to expose unauthenticated.
+type PinUser = { name: string; avatarInitials: string };
 
 function readTrustedDeviceToken(): string {
   try { return localStorage.getItem(TRUSTED_DEVICE_KEY) || ""; } catch { return ""; }
@@ -74,6 +77,24 @@ export default function Login() {
   // Quick PIN state (field crews)
   const [pinName, setPinName] = useState("");
   const [pin, setPin] = useState("");
+
+  // Live PIN name list from /api/auth/pin-users. Refetched every 30s and each
+  // time the user opens the PIN tab, so admin actions in User Management show
+  // up here without a full-page reload.
+  const [pinUsers, setPinUsers] = useState<PinUser[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await apiRequest("GET", "/api/auth/pin-users");
+        const data = await res.json();
+        if (!cancelled && Array.isArray(data)) setPinUsers(data);
+      } catch { /* silent — keeps last-known list visible */ }
+    };
+    load();
+    const iv = window.setInterval(load, 30_000);
+    return () => { cancelled = true; window.clearInterval(iv); };
+  }, [mode]);
 
   // 2FA flow state
   const [setupToken, setSetupToken] = useState("");
@@ -447,21 +468,27 @@ export default function Login() {
                     <div>
                       <Label className="text-xs font-medium mb-2 block">Select your name</Label>
                       <div className="grid grid-cols-2 gap-1.5">
-                        {FIELD_TEAM.map(n => (
-                          <button
-                            key={n}
-                            type="button"
-                            onClick={() => setPinName(n)}
-                            className={`text-xs px-2.5 py-2 rounded-lg border text-left font-medium transition-colors ${
-                              pinName === n
-                                ? "bg-[hsl(var(--titan-blue))] text-white border-[hsl(var(--titan-blue))]"
-                                : "border-border hover:border-[hsl(var(--titan-blue)/0.5)] hover:bg-[hsl(var(--titan-blue)/0.05)]"
-                            }`}
-                            data-testid={`select-name-${n.replace(/\s/g, "-")}`}
-                          >
-                            {n}
-                          </button>
-                        ))}
+                        {pinUsers.length === 0 ? (
+                          <div className="col-span-2 text-xs text-muted-foreground py-2">
+                            No active team members. Ask an owner to add you in User Management.
+                          </div>
+                        ) : (
+                          pinUsers.map(u => (
+                            <button
+                              key={u.name}
+                              type="button"
+                              onClick={() => setPinName(u.name)}
+                              className={`text-xs px-2.5 py-2 rounded-lg border text-left font-medium transition-colors ${
+                                pinName === u.name
+                                  ? "bg-[hsl(var(--titan-blue))] text-white border-[hsl(var(--titan-blue))]"
+                                  : "border-border hover:border-[hsl(var(--titan-blue)/0.5)] hover:bg-[hsl(var(--titan-blue)/0.05)]"
+                              }`}
+                              data-testid={`select-name-${u.name.replace(/\s/g, "-")}`}
+                            >
+                              {u.name}
+                            </button>
+                          ))
+                        )}
                       </div>
                       <Input
                         className="mt-2 h-8 text-xs"

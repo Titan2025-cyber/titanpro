@@ -22,7 +22,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { DryingRecord } from "@shared/schema";
 import { SyncChip, useJobQueue } from "@/components/SyncChip";
-import { CloudUpload, AlertTriangle, RefreshCw } from "lucide-react";
+import { CloudUpload, RefreshCw } from "lucide-react";
 import { formatAge } from "@/lib/offlineQueue";
 
 // ── IICRC S500 Reference Data ────────────────────────────────────────────────
@@ -73,6 +73,40 @@ const MATERIAL_TYPES = [
 
 
 // ── Helper: Calculate GPP from temp + RH ─────────────────────────────────────
+// Multi-location psychrometric readings (Inside / Outside / Affected Area).
+// Stored as JSON on drying_records.psychrometric_readings. Legacy tempF/rhPct
+// columns mirror the Inside slot so existing reports/PDFs keep working.
+type PsychroLocation = "inside" | "outside" | "affected";
+export interface PsychroReading {
+  location: PsychroLocation;
+  tempF: number | "";
+  rhPct: number | "";
+}
+const PSYCHRO_LOCATIONS: { key: PsychroLocation; label: string; hint: string }[] = [
+  { key: "inside",   label: "Inside",         hint: "Ambient inside the structure (unaffected room)" },
+  { key: "outside",  label: "Outside",        hint: "Exterior conditions at time of visit" },
+  { key: "affected", label: "Affected Area",  hint: "Inside the drying chamber \u2014 S500 primary reading" },
+];
+function hydratePsychroReadings(
+  raw: string | null | undefined,
+  legacyTempF: number | null | undefined,
+  legacyRhPct: number | null | undefined
+): PsychroReading[] {
+  let parsed: PsychroReading[] = [];
+  try { parsed = JSON.parse(raw || "[]"); } catch { parsed = []; }
+  const byLoc = new Map(parsed.map(p => [p.location, p]));
+  if (parsed.length === 0 && (legacyTempF != null || legacyRhPct != null)) {
+    byLoc.set("inside", { location: "inside", tempF: legacyTempF ?? "", rhPct: legacyRhPct ?? "" });
+  }
+  return PSYCHRO_LOCATIONS.map(l => byLoc.get(l.key) ?? { location: l.key, tempF: "", rhPct: "" });
+}
+function serializePsychroReadings(readings: PsychroReading[]): string {
+  return JSON.stringify(readings.filter(r => r.tempF !== "" || r.rhPct !== ""));
+}
+function insideOf(readings: PsychroReading[]): PsychroReading {
+  return readings.find(r => r.location === "inside") ?? { location: "inside", tempF: "", rhPct: "" };
+}
+
 function calcGPP(tempF: number, rh: number): number {
   // Simplified psychrometric: GPP = 0.62198 * Pws * (RH/100) / (P - Pws*(RH/100)) * 7000
   const tempC = (tempF - 32) * 5 / 9;
@@ -110,6 +144,92 @@ interface EquipRow {
   dailyReadings?: DehuReading[]; // per-day intake/output readings (dehumidifiers)
 }
 interface AreaRow { id: number; room: string; material: string; sqft: number; wetPct: number; }
+
+// Multi-location psychrometric grid. Renders Inside / Outside / Affected Area
+// rows with Temp + RH inputs and auto-computed GPP + Dew Point per row. Also
+// shows the Outside→Affected grain-depression Δ — the number techs actually
+// watch to confirm the drying chamber is removing moisture.
+function PsychrometricGrid({
+  readings, onChange, readOnly = false,
+}: {
+  readings: PsychroReading[];
+  onChange: (r: PsychroReading[]) => void;
+  readOnly?: boolean;
+}) {
+  const setField = (loc: PsychroLocation, field: "tempF" | "rhPct", val: string) => {
+    onChange(readings.map(r => r.location === loc ? { ...r, [field]: val === "" ? "" : Number(val) } : r));
+  };
+  const rowFor = (loc: PsychroLocation) => readings.find(r => r.location === loc) ?? { location: loc, tempF: "" as const, rhPct: "" as const };
+  const gppFor = (r: PsychroReading) => (r.tempF !== "" && r.rhPct !== "") ? calcGPP(Number(r.tempF), Number(r.rhPct)) : null;
+  const dpFor  = (r: PsychroReading) => (r.tempF !== "" && r.rhPct !== "") ? calcDewPoint(Number(r.tempF), Number(r.rhPct)) : null;
+  const outsideGpp  = gppFor(rowFor("outside"));
+  const affectedGpp = gppFor(rowFor("affected"));
+  const delta = (outsideGpp !== null && affectedGpp !== null) ? Math.round((outsideGpp - affectedGpp) * 10) / 10 : null;
+  return (
+    <div>
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 flex items-center gap-1.5">
+        <Thermometer className="w-3.5 h-3.5" />Psychrometric Data (S500 §11)
+      </p>
+      <div className="space-y-1.5">
+        {/* Header row for wide screens */}
+        <div className="hidden md:grid grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+          <div>Location</div><div>Temp (°F)</div><div>RH (%)</div><div>GPP (calc)</div><div>Dew Point</div>
+        </div>
+        {PSYCHRO_LOCATIONS.map(loc => {
+          const r = rowFor(loc.key);
+          const gpp = gppFor(r);
+          const dp = dpFor(r);
+          return (
+            <div key={loc.key} className="grid grid-cols-2 md:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 items-center">
+              <div className="col-span-2 md:col-span-1">
+                <Label className="text-xs font-medium" title={loc.hint}>{loc.label}</Label>
+              </div>
+              <Input
+                type="number"
+                inputMode="decimal"
+                className="h-8 text-xs"
+                placeholder={loc.key === "outside" ? "85" : loc.key === "affected" ? "78" : "72"}
+                value={r.tempF}
+                disabled={readOnly}
+                onChange={e => setField(loc.key, "tempF", e.target.value)}
+                data-testid={`input-psychro-${loc.key}-temp`}
+              />
+              <Input
+                type="number"
+                inputMode="decimal"
+                className="h-8 text-xs"
+                placeholder={loc.key === "outside" ? "65" : loc.key === "affected" ? "45" : "55"}
+                value={r.rhPct}
+                disabled={readOnly}
+                onChange={e => setField(loc.key, "rhPct", e.target.value)}
+                data-testid={`input-psychro-${loc.key}-rh`}
+              />
+              <div className={`h-8 px-3 flex items-center rounded border text-xs font-mono ${gpp && gpp > 900 ? "bg-red-50 border-red-300 text-red-700 dark:bg-red-950" : gpp && gpp > 500 ? "bg-yellow-50 border-yellow-300 dark:bg-yellow-950" : "bg-muted"}`}>
+                {gpp !== null ? `${gpp} GPP` : "\u2014"}
+              </div>
+              <div className="h-8 px-3 flex items-center rounded border text-xs font-mono bg-muted">
+                {dp !== null ? `${dp}\u00b0F` : "\u2014"}
+              </div>
+            </div>
+          );
+        })}
+        {/* Grain-depression delta: Outside GPP → Affected GPP */}
+        {delta !== null && (
+          <div className="mt-2 flex items-center gap-2 text-xs">
+            <Badge className={delta > 0 ? "bg-green-500 text-white" : "bg-yellow-400 text-yellow-900"}>
+              Δ {delta > 0 ? "\u2013" : "+"}{Math.abs(delta)} GPP vs Outside
+            </Badge>
+            <span className="text-muted-foreground">
+              {delta > 0
+                ? "Chamber is drier than outside \u2014 dehus are working."
+                : "Affected area is wetter than outside \u2014 add capacity or check containment."}
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function MoistureTable({ rows, onChange, readOnly }: { rows: MoistureRow[]; onChange: (r: MoistureRow[]) => void; readOnly?: boolean }) {
   const add = () => onChange([...rows, { id: Date.now(), location: "", material: "Drywall", reading: 0, target: 17 }]);
@@ -355,18 +475,28 @@ function RecordCard({ record, jobId, readOnly }: { record: DryingRecord; jobId: 
   const [areaRows, setAreaRows] = useState<AreaRow[]>(
     JSON.parse(record.affectedAreas || "[]")
   );
+  // Multi-location psychrometrics: seed from stored JSON, falling back to the
+  // legacy tempF/rhPct columns for records saved before this feature landed.
+  const [psychroReadings, setPsychroReadings] = useState<PsychroReading[]>(
+    hydratePsychroReadings((record as any).psychrometricReadings, record.tempF ?? null, record.rhPct ?? null)
+  );
 
-  const gpp = form.tempF && form.rhPct ? calcGPP(Number(form.tempF), Number(form.rhPct)) : null;
-  const dp = form.tempF && form.rhPct ? calcDewPoint(Number(form.tempF), Number(form.rhPct)) : null;
+  // Inside slot doubles as the legacy tempF/rhPct + drives GPP badges on the
+  // collapsed row and the moisture-alert check.
+  const inside = insideOf(psychroReadings);
+  const gpp = inside.tempF !== "" && inside.rhPct !== "" ? calcGPP(Number(inside.tempF), Number(inside.rhPct)) : null;
+  const dp  = inside.tempF !== "" && inside.rhPct !== "" ? calcDewPoint(Number(inside.tempF), Number(inside.rhPct)) : null;
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("PATCH", `/api/drying-records/${record.id}`, {
         ...form,
-        tempF: form.tempF !== "" ? Number(form.tempF) : null,
-        rhPct: form.rhPct !== "" ? Number(form.rhPct) : null,
+        // Legacy columns mirror the Inside reading for back-compat.
+        tempF: inside.tempF !== "" ? Number(inside.tempF) : null,
+        rhPct: inside.rhPct !== "" ? Number(inside.rhPct) : null,
         gpp,
         dewPointF: dp,
+        psychrometricReadings: serializePsychroReadings(psychroReadings),
         dryingGoalMet: form.dryingGoalMet ? 1 : 0,
         structuralDryingComplete: form.structuralDryingComplete ? 1 : 0,
         moistureReadings: JSON.stringify(moistureRows),
@@ -516,49 +646,19 @@ function RecordCard({ record, jobId, readOnly }: { record: DryingRecord; jobId: 
               </div>
             </div>
 
-            {/* Psychrometrics */}
-            <div>
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 flex items-center gap-1.5">
-                <Thermometer className="w-3.5 h-3.5" />Psychrometric Data (S500 §11)
+            {/* Psychrometrics — Inside / Outside / Affected Area */}
+            <PsychrometricGrid
+              readings={psychroReadings}
+              onChange={setPsychroReadings}
+              readOnly={!editing}
+            />
+            {gpp !== null && (
+              <p className={`mt-1 text-xs ${gpp > 900 ? "text-red-600" : gpp > 500 ? "text-yellow-600" : "text-green-600"}`}>
+                Inside GPP: {gpp > 900 ? "⚠ Class 3 drying conditions — maximum equipment required" :
+                 gpp > 500 ? "Class 2 drying conditions — standard equipment protocol" :
+                 "✓ Class 1 conditions — low evaporation rate"}
               </p>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                <div>
-                  <Label className="text-xs">Temp (°F)</Label>
-                  <Input type="number" className="h-8 text-xs mt-1" placeholder="72" value={form.tempF} disabled={!editing}
-                    onChange={e => setForm(f => ({ ...f, tempF: e.target.value }))} />
-                </div>
-                <div>
-                  <Label className="text-xs">RH (%)</Label>
-                  <Input type="number" className="h-8 text-xs mt-1" placeholder="55" value={form.rhPct} disabled={!editing}
-                    onChange={e => setForm(f => ({ ...f, rhPct: e.target.value }))} />
-                </div>
-                <div>
-                  <Label className="text-xs">GPP (calc)</Label>
-                  <div className={`h-8 mt-1 px-3 flex items-center rounded border text-xs font-mono ${gpp && gpp > 900 ? "bg-red-50 border-red-300 text-red-700 dark:bg-red-950" : gpp && gpp > 500 ? "bg-yellow-50 border-yellow-300 dark:bg-yellow-950" : "bg-muted"}`}>
-                    {gpp !== null ? `${gpp} GPP` : "—"}
-                  </div>
-                </div>
-                <div>
-                  <Label className="text-xs">Dew Point (°F)</Label>
-                  <div className="h-8 mt-1 px-3 flex items-center rounded border text-xs font-mono bg-muted">
-                    {dp !== null ? `${dp}°F` : "—"}
-                  </div>
-                </div>
-                <div>
-                  <Label className="text-xs">Stored GPP</Label>
-                  <div className="h-8 mt-1 px-3 flex items-center rounded border text-xs font-mono bg-muted">
-                    {record.gpp ? `${record.gpp} GPP` : "—"}
-                  </div>
-                </div>
-              </div>
-              {gpp !== null && (
-                <p className={`mt-1 text-xs ${gpp > 900 ? "text-red-600" : gpp > 500 ? "text-yellow-600" : "text-green-600"}`}>
-                  {gpp > 900 ? "⚠ Class 3 drying conditions — maximum equipment required" :
-                   gpp > 500 ? "Class 2 drying conditions — standard equipment protocol" :
-                   "✓ Class 1 conditions — low evaporation rate"}
-                </p>
-              )}
-            </div>
+            )}
 
             {/* Moisture readings */}
             <MoistureTable rows={moistureRows} onChange={setMoistureRows} readOnly={!editing} />
@@ -641,25 +741,30 @@ function NewRecordForm({ jobId, onClose }: { jobId: number; onClose: () => void 
     dayNumber: 1,
     waterCategory: "category2",
     waterClass: "class2",
-    tempF: "",
-    rhPct: "",
     observations: "",
   });
   const [moistureRows, setMoistureRows] = useState<MoistureRow[]>([]);
   const [equipRows, setEquipRows] = useState<EquipRow[]>([]);
   const [areaRows, setAreaRows] = useState<AreaRow[]>([]);
+  const [psychroReadings, setPsychroReadings] = useState<PsychroReading[]>(
+    hydratePsychroReadings(null, null, null)
+  );
 
-  const gpp = form.tempF && form.rhPct ? calcGPP(Number(form.tempF), Number(form.rhPct)) : null;
-  const dp = form.tempF && form.rhPct ? calcDewPoint(Number(form.tempF), Number(form.rhPct)) : null;
+  // Inside slot doubles as the legacy tempF/rhPct so existing reports keep working.
+  const inside = insideOf(psychroReadings);
+  const gpp = inside.tempF !== "" && inside.rhPct !== "" ? calcGPP(Number(inside.tempF), Number(inside.rhPct)) : null;
+  const dp  = inside.tempF !== "" && inside.rhPct !== "" ? calcDewPoint(Number(inside.tempF), Number(inside.rhPct)) : null;
 
   const createMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("POST", `/api/jobs/${jobId}/drying-records`, {
         ...form,
-        tempF: form.tempF !== "" ? Number(form.tempF) : null,
-        rhPct: form.rhPct !== "" ? Number(form.rhPct) : null,
+        // Legacy columns mirror the Inside reading for back-compat.
+        tempF: inside.tempF !== "" ? Number(inside.tempF) : null,
+        rhPct: inside.rhPct !== "" ? Number(inside.rhPct) : null,
         gpp,
         dewPointF: dp,
+        psychrometricReadings: serializePsychroReadings(psychroReadings),
         moistureReadings: JSON.stringify(moistureRows),
         equipment: JSON.stringify(equipRows),
         affectedAreas: JSON.stringify(areaRows),
@@ -737,24 +842,7 @@ function NewRecordForm({ jobId, onClose }: { jobId: number; onClose: () => void 
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-3">
-          <div>
-            <Label className="text-xs">Temp (°F)</Label>
-            <Input type="number" className="h-8 text-xs mt-1" placeholder="72" value={form.tempF}
-              onChange={e => setForm(f => ({ ...f, tempF: e.target.value }))} />
-          </div>
-          <div>
-            <Label className="text-xs">RH (%)</Label>
-            <Input type="number" className="h-8 text-xs mt-1" placeholder="55" value={form.rhPct}
-              onChange={e => setForm(f => ({ ...f, rhPct: e.target.value }))} />
-          </div>
-          <div>
-            <Label className="text-xs">GPP (calc)</Label>
-            <div className="h-8 mt-1 px-3 flex items-center rounded border text-xs font-mono bg-muted">
-              {gpp !== null ? `${gpp} GPP` : "—"}
-            </div>
-          </div>
-        </div>
+        <PsychrometricGrid readings={psychroReadings} onChange={setPsychroReadings} />
 
         <MoistureTable rows={moistureRows} onChange={setMoistureRows} />
         <EquipmentTable rows={equipRows} onChange={setEquipRows} />

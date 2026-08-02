@@ -800,6 +800,22 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
 
   // ── User Management (owner/admin only) ──────────────────────────────────
 
+  // GET /api/auth/pin-users — UNAUTHENTICATED. Powers the Quick PIN login
+  // kiosk on the sign-in page. Returns ONLY {name, avatarInitials} for active
+  // employees so the picker mirrors User Management in real time; role, email,
+  // phone, and 2FA state are intentionally omitted. Deactivating or deleting a
+  // user in User Management removes them from this list instantly (both pages
+  // share the invalidation).
+  app.get("/api/auth/pin-users", (_req, res) => {
+    const rows: any[] = sqlite.prepare(
+      "SELECT name, avatar_initials FROM employees WHERE is_active = 1 ORDER BY name"
+    ).all();
+    res.json(rows.map(r => ({
+      name: r.name,
+      avatarInitials: r.avatar_initials || r.name.split(" ").map((w: string) => w[0]).join("").toUpperCase().slice(0, 2),
+    })));
+  });
+
   // GET /api/staff/assignable — lightweight list of ACTIVE users for assignment
   // dropdowns throughout the app. Any authenticated staff member may read it
   // (techs need it to see who's assignable too). Returns only non-sensitive
@@ -927,6 +943,18 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
       pin ? 1 : emp.must_change_pin,
       id
     );
+
+    // If the update flipped is_active from true → false, revoke every live
+    // session token for that employee. requireStaffAuth already rejects them
+    // on the next request (it re-checks is_active), but wiping the row makes
+    // the intent explicit and forces an immediate re-login attempt to fail.
+    if (isActive === false && !!emp.is_active) {
+      sqlite.prepare("DELETE FROM staff_sessions WHERE employee_id = ?").run(id);
+      const ip = (req.headers["x-forwarded-for"] as string || req.socket.remoteAddress || "").toString();
+      const requester = (req as any).employee;
+      writeAudit(sqlite, requester?.id ?? null, requester?.name ?? null, "staff_deactivated", "employee", id, `Deactivated ${emp.name} via PATCH — sessions revoked`, ip);
+    }
+
     const updated: any = sqlite.prepare("SELECT * FROM employees WHERE id = ?").get(id);
     res.json({ id: updated.id, name: updated.name, role: updated.role, position: updated.position, isActive: !!updated.is_active });
   });

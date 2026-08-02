@@ -16,6 +16,9 @@ import { registerHRRoutes } from "./routes_hr";
 import { registerGmailRoutes } from "./routes_gmail";
 import { registerPresenceRoutes } from "./routes_presence";
 import { sendEmail, sendSms, getNotifySettings, saveNotifySettings, providerStatus } from "./notify";
+import { geocodeJobInBackground } from "./geocoder";
+import { startScheduler, runSchedulerNow } from "./scheduler";
+import { registerMegaBuildRoutes } from "./routes_megabuild";
 
 // ── Error handler wrapper ────────────────────────────────────────────────────
 type Handler = (req: any, res: any, next?: any) => any;
@@ -445,6 +448,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       "/api/auth/logout",
       "/api/auth/me",
       "/api/auth/change-password",
+      // Quick PIN kiosk name list — returns ONLY {name, avatarInitials} for
+      // active employees so the sign-in page can render the picker before the
+      // user is authenticated. Mirrors add/deactivate/delete in User Management.
+      "/api/auth/pin-users",
       // Forced-PIN-change flow (uses short-lived pinChangeToken from login response)
       "/api/auth/pin/change-forced",
       // 2FA enrollment + challenge flow — token-authenticated via body, not session
@@ -508,7 +515,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try { sqlite.exec(`ALTER TABLE payments ADD COLUMN credit_memo INTEGER DEFAULT 0`); } catch(_) {}
     try { sqlite.exec(`ALTER TABLE payments ADD COLUMN memo_reason TEXT`); } catch(_) {}
 
-    const jobs = sqlite.prepare("SELECT id FROM jobs").all() as any[];
+    const jobs = sqlite.prepare("SELECT id FROM jobs WHERE status IS NULL OR status != 'closed'").all() as any[];
     const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
     const payments = sqlite.prepare("SELECT * FROM payments").all() as any[];
     // Per-job, per-phase cost & estimate sums (estimates/invoices/job_costs carry a phase column).
@@ -679,6 +686,46 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }
 
+  // Fires when a job's WIP Date is set (empty → set). Notifies every active
+  // sales/BDM employee so they know to pay the referral partner. Idempotent:
+  // callers must only invoke this on the empty→set transition. Best-effort;
+  // never throws.
+  function notifyBDMOfWipStart(job: any) {
+    try {
+      if (!job) return;
+      const contact = job.contactId ? storage.getContact(Number(job.contactId)) : undefined;
+      const customerName = (contact as any)?.name || "customer";
+      const partnerName = job.referralPartnerId
+        ? (storage.getContact(Number(job.referralPartnerId)) as any)?.name
+        : undefined;
+      const source = job.leadSource ? String(job.leadSource) : "";
+      const partnerLine = partnerName
+        ? ` Referral partner: ${partnerName}.`
+        : (source ? ` Lead source: ${source}${job.leadSourceDetail ? ` (${job.leadSourceDetail})` : ""}.` : "");
+      const addr = job.address ? ` at ${job.address}` : "";
+      const title = `Job ${job.jobNumber} started — partner payout due`;
+      const body = `WIP started for ${customerName}${addr}.${partnerLine} Open the job to confirm and mark partner payout.`;
+      const nowIso = new Date().toISOString();
+
+      const insertNote = sqlite.prepare(
+        `INSERT INTO tech_notifications (tech_name, type, title, body, job_id, created_at) VALUES (?, 'wip_started', ?, ?, ?, ?)`
+      );
+      // Route to every active sales/BDM employee (Miranda + any future BDMs).
+      const employees = storage.getEmployees().filter((e: any) => {
+        const active = (e.isActive ?? e.is_active);
+        const isActive = active === undefined || active === true || active === 1;
+        const role = String((e as any).role || "").toLowerCase();
+        return isActive && (role === "sales" || role === "bdm");
+      });
+      for (const emp of employees) {
+        if (!emp?.name) continue;
+        insertNote.run(emp.name, title, body, job.id, nowIso);
+      }
+    } catch (e) {
+      console.error("[jobs] BDM WIP-start notification failed:", (e as any)?.message || e);
+    }
+  }
+
   app.get("/api/reports/weekly-billing", requireRole("owner"), (req, res) => {
     try { sqlite.exec(`ALTER TABLE payments ADD COLUMN credit_memo INTEGER DEFAULT 0`); } catch(_) {}
 
@@ -714,7 +761,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Map each job to its division tag (mitigation | reconstruction | both).
     // Missing/unknown tags fall into 'unassigned' so nothing is silently dropped.
     let jobDivRows: any[] = [];
-    try { jobDivRows = sqlite.prepare("SELECT id, division FROM jobs").all() as any[]; } catch (_) { jobDivRows = []; }
+    try { jobDivRows = sqlite.prepare("SELECT id, division FROM jobs WHERE status IS NULL OR status != 'closed'").all() as any[]; } catch (_) { jobDivRows = []; }
     const jobDivision: Record<number, string> = {};
     for (const j of jobDivRows) {
       const d = String(j.division || "").toLowerCase();
@@ -953,6 +1000,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ periodStart, groupBy, billed, collected, creditMemos, costs, settled });
   });
 
+  // NOTE: /api/jobs/closed must be registered before /api/jobs/:id so Express
+  // doesn’t interpret "closed" as a job id. The full closed-job endpoint is
+  // defined further below with the close/reopen handlers; here we only reserve
+  // the literal prefix in route order.
+  app.get("/api/jobs/closed", requireRole("owner", "admin"), (_req, res) => {
+    res.json(storage.getClosedJobs());
+  });
+
   app.get("/api/jobs/:id", (req, res) => {
     const j = storage.getJob(Number(req.params.id));
     if (!j) return res.status(404).json({ error: "Not found" });
@@ -962,6 +1017,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const job = storage.createJob(req.body);
       notifyNewJob(job);
+      // If the job was created with a WIP Date already set, treat that as an
+      // empty→set transition and notify BDMs immediately (partner payout due).
+      if ((job as any)?.wipDate) notifyBDMOfWipStart(job);
+      // Kick off geocoding in the background so the map picks up the pin as
+      // soon as Nominatim responds. Never blocks the response.
+      if (job?.address) geocodeJobInBackground(sqlite, job.id, job.address);
       res.json(job);
     } catch (err: any) {
       res.status(400).json({ error: err?.message || "Unable to create job" });
@@ -975,9 +1036,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!touchesPayout) return next();
     requireRole("owner", "admin", "sales")(req, res, next);
   }, (req, res) => {
-    const j = storage.updateJob(Number(req.params.id), req.body);
+    const jobId = Number(req.params.id);
+    const before: any = sqlite.prepare("SELECT address, latitude, wip_date FROM jobs WHERE id = ?").get(jobId);
+    const j = storage.updateJob(jobId, req.body);
     if (!j) return res.status(404).json({ error: "Not found" });
+    // If the address changed OR we still have no coordinates, (re)geocode.
+    const addressChanged = before && before.address !== j.address;
+    const missingCoords = j.latitude == null;
+    if (j.address && (addressChanged || missingCoords)) {
+      if (addressChanged) {
+        try { sqlite.prepare("UPDATE jobs SET latitude=NULL, longitude=NULL, geocoded_at=NULL WHERE id=?").run(jobId); } catch {}
+      }
+      geocodeJobInBackground(sqlite, jobId, j.address);
+    }
+    // BDM notification: fire ONLY on the empty→set transition of wipDate.
+    // Idempotent — re-saving the same wipDate does not re-notify.
+    const beforeWip = before && before.wip_date ? String(before.wip_date).trim() : "";
+    const afterWip = (j as any)?.wipDate ? String((j as any).wipDate).trim() : "";
+    if (!beforeWip && afterWip) {
+      notifyBDMOfWipStart(j);
+    }
     res.json(j);
+  });
+
+  // Bulk backfill for jobs that have an address but no coordinates. Owner/
+  // admin only — useful the first time the map is turned on. Runs in the
+  // background and returns the queued count immediately; callers can poll
+  // /api/jobs to watch coordinates fill in.
+  app.post("/api/jobs/geocode-missing", requireRole("owner", "admin"), (req, res) => {
+    const rows: any[] = sqlite.prepare(
+      "SELECT id, address FROM jobs WHERE address IS NOT NULL AND TRIM(address) <> '' AND (latitude IS NULL OR longitude IS NULL) AND (status IS NULL OR status <> 'closed')"
+    ).all();
+    for (const r of rows) geocodeJobInBackground(sqlite, r.id, r.address);
+    res.json({ queued: rows.length });
   });
   app.delete("/api/jobs/:id", requireRole("owner", "admin"), (req, res) => {
     const jobId = Number(req.params.id);
@@ -1012,6 +1103,46 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "Unable to delete job" });
     }
+  });
+
+  // ── Closed jobs (hidden from every other view) ─────────────────────────────
+  // Only owner/admin can close or reopen — closing hides the job from KPIs,
+  // dashboards, techs, and reports, so we restrict to leadership.
+  // (GET /api/jobs/closed is registered earlier, above /api/jobs/:id, so
+  // Express matches the literal path before the id parameter route.)
+  app.post("/api/jobs/:id/close", requireRole("owner", "admin"), (req, res) => {
+    const jobId = Number(req.params.id);
+    if (!Number.isFinite(jobId)) return res.status(400).json({ error: "Invalid job id" });
+    const emp = (req as any).employee;
+    const closedBy = emp?.name || "system";
+    const reason = (req.body?.reason ? String(req.body.reason).slice(0, 500) : undefined);
+    const updated = storage.closeJob(jobId, closedBy, reason);
+    if (!updated) return res.status(404).json({ error: "Job not found" });
+    // Audit log — best-effort; do not fail the close if audit insert errors.
+    try {
+      sqlite.prepare(
+        "INSERT INTO job_events (job_id, action, actor_name, details, created_at) VALUES (?, ?, ?, ?, ?)"
+      ).run(jobId, "closed", closedBy, JSON.stringify({ reason: reason || null, previousStatus: (updated as any).previousStatus }), new Date().toISOString());
+    } catch (_) {}
+    res.json(updated);
+  });
+
+  app.post("/api/jobs/:id/reopen", requireRole("owner", "admin"), (req, res) => {
+    const jobId = Number(req.params.id);
+    if (!Number.isFinite(jobId)) return res.status(400).json({ error: "Invalid job id" });
+    const emp = (req as any).employee;
+    const reopenedBy = emp?.name || "system";
+    const before = storage.getJob(jobId) as any;
+    if (!before) return res.status(404).json({ error: "Job not found" });
+    if (before.status !== "closed") return res.status(409).json({ error: "Job is not closed" });
+    const updated = storage.reopenJob(jobId, reopenedBy);
+    if (!updated) return res.status(500).json({ error: "Unable to reopen job" });
+    try {
+      sqlite.prepare(
+        "INSERT INTO job_events (job_id, action, actor_name, details, created_at) VALUES (?, ?, ?, ?, ?)"
+      ).run(jobId, "reopened", reopenedBy, JSON.stringify({ restoredStatus: (updated as any).status }), new Date().toISOString());
+    } catch (_) {}
+    res.json(updated);
   });
 
   // NOTE: Job notes are handled by the dedicated job_notes table routes further
@@ -2422,7 +2553,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Carrier scorecard (derived from jobs + supplements + invoices + payments)
   app.get("/api/carrier-scorecard", (_req, res) => {
-    const jobs = sqlite.prepare("SELECT * FROM jobs WHERE insurance_carrier IS NOT NULL AND insurance_carrier != ''").all() as any[];
+    const jobs = sqlite.prepare("SELECT * FROM jobs WHERE (status IS NULL OR status != 'closed') AND insurance_carrier IS NOT NULL AND insurance_carrier != ''").all() as any[];
     const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
     const payments = sqlite.prepare("SELECT * FROM payments WHERE type='received'").all() as any[];
     const supps = sqlite.prepare("SELECT * FROM supplements").all() as any[];
@@ -2569,7 +2700,7 @@ Titan Restoration LLC | Augusta, GA` },
 
   // ── Lead source attribution report ────────────────────────────────────────
   app.get("/api/reports/lead-attribution", (_req, res) => {
-    const jobs = sqlite.prepare("SELECT * FROM jobs").all() as any[];
+    const jobs = sqlite.prepare("SELECT * FROM jobs WHERE status IS NULL OR status != 'closed'").all() as any[];
     const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
     const payments = sqlite.prepare("SELECT * FROM payments WHERE type='received'").all() as any[];
     const contacts = sqlite.prepare("SELECT * FROM contacts").all() as any[];
@@ -2592,7 +2723,7 @@ Titan Restoration LLC | Augusta, GA` },
   // ── Referral Partner ROI ──────────────────────────────────────────────────
   app.get("/api/reports/partner-roi", (_req, res) => {
     const contacts = sqlite.prepare("SELECT * FROM contacts WHERE type='referral'").all() as any[];
-    const jobs = sqlite.prepare("SELECT * FROM jobs").all() as any[];
+    const jobs = sqlite.prepare("SELECT * FROM jobs WHERE status IS NULL OR status != 'closed'").all() as any[];
     const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
     const payouts = sqlite.prepare("SELECT * FROM payout_requests").all() as any[];
     const warrantyCalls = sqlite.prepare("SELECT * FROM warranty_calls").all() as any[];
@@ -3028,7 +3159,7 @@ cody@titanrestorationllc.com`;
   // ── Health check ─────────────────────────────────────────────────────────
   app.get("/api/health", (_req, res) => {
     try {
-      const jobs = (sqlite.prepare("SELECT COUNT(*) as c FROM jobs").get() as any).c;
+      const jobs = (sqlite.prepare("SELECT COUNT(*) as c FROM jobs WHERE status IS NULL OR status != 'closed'").get() as any).c;
       const contacts = (sqlite.prepare("SELECT COUNT(*) as c FROM contacts").get() as any).c;
       const invoices = (sqlite.prepare("SELECT COUNT(*) as c FROM invoices").get() as any).c;
       const walMode = (sqlite.prepare("PRAGMA journal_mode").get() as any).journal_mode;
@@ -3856,7 +3987,7 @@ Approve in Partner Portal → Admin View.
         `SELECT * FROM payments WHERE type = 'referral_payout' AND contact_id IN (${placeholders}) ORDER BY paid_at DESC`
       ).all(...memberIds);
 
-      const jobs: any[] = sqlite.prepare("SELECT id, job_number, address FROM jobs").all();
+      const jobs: any[] = sqlite.prepare("SELECT id, job_number, address FROM jobs WHERE status IS NULL OR status != 'closed'").all();
       const jobById: Record<number, any> = {};
       jobs.forEach((j: any) => { jobById[j.id] = j; });
 
@@ -3910,7 +4041,7 @@ Approve in Partner Portal → Admin View.
       if (!contact) return res.status(404).json({ error: "Partner not found" });
 
       // All jobs
-      const allJobs: any[] = sqlite.prepare("SELECT * FROM jobs ORDER BY created_at DESC").all();
+      const allJobs: any[] = sqlite.prepare("SELECT * FROM jobs WHERE status IS NULL OR status != 'closed' ORDER BY created_at DESC").all();
 
       // All payout requests for this partner
       const myPayouts: any[] = sqlite.prepare("SELECT * FROM payout_requests WHERE contact_id = ?").all(contactId);
@@ -4225,7 +4356,7 @@ Approve in Partner Portal → Admin View.
     if (!partnerAccessAllowed(req, Number(req.params.contactId)))
       return res.status(403).json({ error: "Not authorized to view this account." });
     const calls = storage.getWarrantyCalls(undefined, Number(req.params.contactId));
-    const jobs = sqlite.prepare("SELECT * FROM jobs").all() as any[];
+    const jobs = sqlite.prepare("SELECT * FROM jobs WHERE status IS NULL OR status != 'closed'").all() as any[];
     const enriched = calls.map((wc: any) => {
       const job = jobs.find((j: any) => j.id === wc.jobId);
       return {
@@ -4249,6 +4380,216 @@ Approve in Partner Portal → Admin View.
   try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN docusketch_sketch_url TEXT`); } catch(_) {}
   try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN docusketch_notes TEXT`); } catch(_) {}
   try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN docusketch_completed_at TEXT`); } catch(_) {}
+  // Geocode columns for the Service Area map on the dashboard.
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN latitude REAL`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN longitude REAL`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN geocoded_at TEXT`); } catch(_) {}
+
+  // Live tech location fixes (owner/admin map overlay). One row per employee;
+  // upserted on every geolocation ping and deleted on clock-out so techs
+  // don't linger on the map after their shift.
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS tech_locations (
+        employee_id INTEGER PRIMARY KEY,
+        employee_name TEXT NOT NULL,
+        latitude REAL NOT NULL,
+        longitude REAL NOT NULL,
+        accuracy_meters REAL,
+        job_id INTEGER,
+        captured_at TEXT NOT NULL
+      )
+    `);
+  } catch(_) {}
+
+  // ── MEGA-MIGRATION: 11-feature build (2026-07-30) ───────────────────────
+  //
+  // Escalation drafts outbox: universal table used by adjuster/carrier response
+  // (#1), AR promise-to-pay (#2), COI nags (#16), and cert reminders (#18).
+  // Every scheduled trigger inserts a row here; user reviews + one-clicks send.
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS escalation_drafts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL,           -- 'adjuster_silence' | 'ar_stalled' | 'coi_expiring' | 'cert_expiring' | 'weekly_ar_digest'
+        subject TEXT NOT NULL,
+        body TEXT NOT NULL,
+        recipient_name TEXT,
+        recipient_email TEXT,
+        recipient_phone TEXT,
+        related_job_id INTEGER,
+        related_invoice_id INTEGER,
+        related_contact_id INTEGER,
+        related_employee_id INTEGER,
+        related_coi_id INTEGER,
+        related_cert_id INTEGER,
+        status TEXT DEFAULT 'draft',  -- 'draft' | 'sent' | 'dismissed'
+        sent_at TEXT,
+        sent_by TEXT,
+        dedupe_key TEXT UNIQUE,       -- e.g. 'adjuster_silence:job=17:day=2026-07-30'
+        created_at TEXT NOT NULL
+      )
+    `);
+    sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_esc_status ON escalation_drafts(status, created_at DESC)`);
+    sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_esc_type ON escalation_drafts(type)`);
+  } catch(_) {}
+
+  // #1: Adjuster contact log — real "last contact" tracking, decoupled from
+  // invoice/payment dates. Every logged call/email/text writes a row and
+  // powers the silence timer.
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS adjuster_contacts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id INTEGER NOT NULL,
+        adjuster_name TEXT,
+        contacted_by TEXT NOT NULL,
+        method TEXT NOT NULL,         -- 'call' | 'email' | 'text' | 'in_person' | 'other'
+        direction TEXT DEFAULT 'outbound', -- 'inbound' | 'outbound'
+        notes TEXT,
+        contacted_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `);
+    sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_adjcontact_job ON adjuster_contacts(job_id, contacted_at DESC)`);
+  } catch(_) {}
+
+  // #2: Invoice touch log — per-invoice "contacted" record + status upgrade.
+  // Adds promise_to_pay / dispute / stalled to invoices without breaking
+  // the existing draft|sent|paid|overdue enum.
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS invoice_touches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_id INTEGER NOT NULL,
+        touched_by TEXT NOT NULL,
+        method TEXT NOT NULL,
+        outcome TEXT,                 -- 'promise_to_pay' | 'disputed' | 'no_answer' | 'other'
+        promise_date TEXT,            -- YYYY-MM-DD if outcome=promise_to_pay
+        promise_amount REAL,
+        notes TEXT,
+        touched_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `);
+    sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_inv_touch ON invoice_touches(invoice_id, touched_at DESC)`);
+  } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN followup_status TEXT`); } catch(_) {} // 'contacted'|'promised'|'disputed'|'stalled'
+  try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN last_touched_at TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN promise_to_pay_date TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN promise_to_pay_amount REAL`); } catch(_) {}
+
+  // #9: last-touch tracking on partner contacts.
+  try { sqlite.exec(`ALTER TABLE contacts ADD COLUMN last_touched_at TEXT`); } catch(_) {}
+
+  // #13: per-job margin floor override (falls back to org default).
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN margin_floor_pct REAL`); } catch(_) {}
+
+  // #5: geofence radius per job (meters). Default 200 ft ≈ 61m.
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN geofence_radius_m REAL DEFAULT 61`); } catch(_) {}
+
+  // #16: extend coi_records to support W9 as a document type. w9 rows have
+  // expiration_date = end of tax year; nag scheduler treats it uniformly.
+  // (No schema change needed — document_type text field already supports it.)
+  // Also add a "blocked" flag so dispatch-lock is explicit not derived.
+  try { sqlite.exec(`ALTER TABLE contacts ADD COLUMN dispatch_blocked INTEGER DEFAULT 0`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE contacts ADD COLUMN dispatch_block_reason TEXT`); } catch(_) {}
+
+  // #17: e-sign hardening — IP + user-agent + signed-PDF snapshot path.
+  try { sqlite.exec(`ALTER TABLE job_documents ADD COLUMN signer_ip TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE job_documents ADD COLUMN signer_user_agent TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE job_documents ADD COLUMN signed_pdf_path TEXT`); } catch(_) {}
+
+  // #12: storm_events — auto vs manual origin + external alert id.
+  try { sqlite.exec(`ALTER TABLE storm_events ADD COLUMN origin TEXT DEFAULT 'manual'`); } catch(_) {} // 'manual' | 'noaa'
+  try { sqlite.exec(`ALTER TABLE storm_events ADD COLUMN noaa_alert_id TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE storm_events ADD COLUMN noaa_severity TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE storm_events ADD COLUMN noaa_event TEXT`); } catch(_) {}
+
+  // Scheduler heartbeat table — tracks last run of each job so a restart
+  // doesn't re-fire hourly tasks and we can see it's alive.
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS scheduler_runs (
+        job_name TEXT PRIMARY KEY,
+        last_run_at TEXT,
+        last_status TEXT,
+        last_summary TEXT
+      )
+    `);
+  } catch(_) {}
+
+  // ── Live Tech Locations ─────────────────────────────────────────────────────
+  // POST /api/tech-locations/me
+  //   Any authenticated active employee can push their own position. We use
+  //   the session's employee identity — clients cannot spoof another tech.
+  //   We refuse the write unless the employee has an open time_clock row,
+  //   which means "off the clock" = no position leaks even if the browser
+  //   somehow keeps firing.
+  app.post("/api/tech-locations/me", requireStaffAuth, wrapAsync((req: any, res: any) => {
+    const emp = req.employee;
+    if (!emp?.id) return res.status(401).json({ error: "Unauthenticated" });
+
+    const { latitude, longitude, accuracy } = req.body ?? {};
+    if (typeof latitude !== "number" || typeof longitude !== "number"
+        || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return res.status(400).json({ error: "latitude and longitude required" });
+    }
+
+    // Must be clocked in — look up latest open time_clock row for this employee.
+    const open: any = sqlite.prepare(
+      "SELECT id, job_id FROM time_clock WHERE (employee_id = ? OR employee_name = ?) AND clock_out_at IS NULL ORDER BY id DESC LIMIT 1"
+    ).get(emp.id, emp.name);
+    if (!open) {
+      // Silently succeed with a hint so client can stop pinging. Not an error
+      // because it's normal for the tracker to still fire once after clock-out.
+      return res.json({ ok: true, tracked: false, reason: "not_clocked_in" });
+    }
+
+    const now = new Date().toISOString();
+    sqlite.prepare(`
+      INSERT INTO tech_locations (employee_id, employee_name, latitude, longitude, accuracy_meters, job_id, captured_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(employee_id) DO UPDATE SET
+        employee_name = excluded.employee_name,
+        latitude = excluded.latitude,
+        longitude = excluded.longitude,
+        accuracy_meters = excluded.accuracy_meters,
+        job_id = excluded.job_id,
+        captured_at = excluded.captured_at
+    `).run(emp.id, emp.name, latitude, longitude, Number.isFinite(accuracy) ? accuracy : null, open.job_id ?? null, now);
+
+    res.json({ ok: true, tracked: true });
+  }));
+
+  // GET /api/tech-locations
+  //   Owner/admin only. Returns each clocked-in tech's latest fix, filtered
+  //   to fixes captured in the last 10 minutes (stale fixes are hidden so a
+  //   frozen tab doesn't leave a ghost pin on the map).
+  app.get("/api/tech-locations", requireRole("owner", "admin"), wrapAsync((_req: any, res: any) => {
+    const cutoffMs = Date.now() - 10 * 60 * 1000;
+    const rows: any[] = sqlite.prepare(`
+      SELECT tl.*, j.job_number, j.address AS job_address
+      FROM tech_locations tl
+      LEFT JOIN jobs j ON j.id = tl.job_id
+      WHERE tl.captured_at IS NOT NULL
+    `).all();
+    const fresh = rows.filter(r => {
+      const t = Date.parse(r.captured_at);
+      return Number.isFinite(t) && t >= cutoffMs;
+    });
+    res.json(fresh.map(r => ({
+      employeeId: r.employee_id,
+      employeeName: r.employee_name,
+      latitude: r.latitude,
+      longitude: r.longitude,
+      accuracyMeters: r.accuracy_meters,
+      jobId: r.job_id,
+      jobNumber: r.job_number,
+      jobAddress: r.job_address,
+      capturedAt: r.captured_at,
+    })));
+  }));
 
 
   // ── DocuSketch integration per job ──────────────────────────────────────────
@@ -5606,7 +5947,7 @@ Approve in Partner Portal → Admin View.
 
   // ── Carrier Response Time Tracker ─────────────────────────────────────────
   app.get("/api/reports/carrier-response-time", (_req, res) => {
-    const jobs = sqlite.prepare("SELECT * FROM jobs WHERE insurance_carrier IS NOT NULL AND insurance_carrier != ''").all() as any[];
+    const jobs = sqlite.prepare("SELECT * FROM jobs WHERE (status IS NULL OR status != 'closed') AND insurance_carrier IS NOT NULL AND insurance_carrier != ''").all() as any[];
     const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
     const payments = sqlite.prepare("SELECT * FROM payments WHERE type='received'").all() as any[];
     const byCarrier: Record<string, any> = {};
@@ -5645,7 +5986,7 @@ Approve in Partner Portal → Admin View.
 
   // ── Profitability by Loss Type ────────────────────────────────────────────
   app.get("/api/reports/profitability-by-type", (_req, res) => {
-    const jobs = sqlite.prepare("SELECT * FROM jobs").all() as any[];
+    const jobs = sqlite.prepare("SELECT * FROM jobs WHERE status IS NULL OR status != 'closed'").all() as any[];
     const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
     const payments = sqlite.prepare("SELECT * FROM payments WHERE type='received'").all() as any[];
     const costs = sqlite.prepare("SELECT * FROM job_costs").all() as any[];
@@ -5903,7 +6244,7 @@ Approve in Partner Portal → Admin View.
   // records, and NPS surveys. Powers the previously-broken TechScorecard page.
   app.get("/api/tech-scorecard", (_req, res) => {
     try {
-      const jobs = sqlite.prepare("SELECT * FROM jobs").all() as any[];
+      const jobs = sqlite.prepare("SELECT * FROM jobs WHERE status IS NULL OR status != 'closed'").all() as any[];
       const photos = sqlite.prepare("SELECT job_id FROM photos").all() as any[];
       const drying = sqlite.prepare("SELECT job_id FROM drying_records").all() as any[];
       const nps = sqlite.prepare("SELECT * FROM nps_surveys").all() as any[];
@@ -6054,6 +6395,14 @@ Approve in Partner Portal → Admin View.
   // Fills missing PATCH/DELETE so every module's records can be edited & deleted.
   // Registered here (after all hand-written routes, before the 404 catch-all) so
   // it detects and skips any endpoints already defined above.
+  // Mega-build routes (2026-07-30): 11-feature build.
+  // Registered before the CRUD gap-filler so its explicit handlers take priority.
+  registerMegaBuildRoutes(app, sqlite, { requireRole, requireStaffAuth, wrapAsync });
+
+  // Kick off the in-process scheduler (adjuster silence, AR stalled, COI/cert
+  // reminders, NOAA polling). See server/scheduler.ts.
+  startScheduler(sqlite);
+
   registerCrudGapRoutes(app, sqlite, { requireRole, requireStaffAuth });
 
   // Unmatched /api/* routes should return a clean JSON 404 rather than falling

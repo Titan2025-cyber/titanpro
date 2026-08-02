@@ -875,7 +875,7 @@ export default function Jobs() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {["new","mitigation","drying","reconstruction","complete","closed"].map(s => (
+                    {["new","mitigation","drying","reconstruction","complete"].map(s => (
                       <SelectItem key={s} value={s} className="text-xs capitalize">{s}</SelectItem>
                     ))}
                   </SelectContent>

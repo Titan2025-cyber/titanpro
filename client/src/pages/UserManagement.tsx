@@ -83,6 +83,10 @@ export default function UserManagement() {
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/staff"] });
     queryClient.invalidateQueries({ queryKey: ["/api/staff/assignable"] });
+    // Login page "Quick PIN" name picker also reads from the employees table
+    // (via /api/auth/pin-users). Any add/edit/deactivate/delete must refresh
+    // that list so deactivated or removed users can no longer be selected.
+    queryClient.invalidateQueries({ queryKey: ["/api/auth/pin-users"] });
   };
 
   const createMutation = useMutation({
