@@ -710,6 +710,96 @@ if (!dryingCols.includes("psychrometric_readings")) {
   sqlite.exec(`ALTER TABLE drying_records ADD COLUMN psychrometric_readings TEXT NOT NULL DEFAULT '[]'`);
 }
 
+// ── Object storage columns ────────────────────────────────────────────────
+// Backfill storage_key columns onto every table that previously held image
+// or file blobs as base64 data URLs. When Railway object storage is
+// configured, new uploads populate storage_key and data_url stays empty;
+// legacy rows still work because reads fall back to data_url.
+const photoCols2 = (sqlite.prepare("PRAGMA table_info(photos)").all() as any[]).map((c: any) => c.name);
+if (!photoCols2.includes("storage_key")) {
+  sqlite.exec(`ALTER TABLE photos ADD COLUMN storage_key TEXT`);
+}
+// data_url on photos was declared NOT NULL originally; SQLite can't drop that
+// constraint in place, so we simply write empty string when the file lives in
+// the bucket and the existing NOT NULL check passes.
+
+const docCols = (sqlite.prepare("PRAGMA table_info(job_documents)").all() as any[]).map((c: any) => c.name);
+if (!docCols.includes("storage_key")) {
+  sqlite.exec(`ALTER TABLE job_documents ADD COLUMN storage_key TEXT`);
+}
+if (!docCols.includes("signature_storage_key")) {
+  // Signatures on e-signed forms are also base64 blobs today.
+  sqlite.exec(`ALTER TABLE job_documents ADD COLUMN signature_storage_key TEXT`);
+}
+
+// safety_checklists.photos_json holds an array of strings today; when the
+// bucket is on, each entry becomes { storageKey } instead of a data URL. We
+// don't need a new column — the JSON blob is polymorphic.
+
+// ── Migrate legacy inline blobs to object storage ─────────────────────────
+// Runs asynchronously on boot so it never blocks server startup. Iterates
+// every photo / document row that still has a base64 data URL and no
+// storage_key, uploads the bytes to the bucket, then null-outs data_url. Safe
+// to interrupt: the next boot picks up where it left off since the loop only
+// looks at un-migrated rows.
+async function migrateLegacyBlobsToBucket() {
+  const s3 = await import("./storage_s3");
+  if (!s3.isConfigured()) return;
+  console.log("[storage] starting legacy blob → bucket migration");
+  let photoCount = 0;
+  let docCount = 0;
+
+  try {
+    const photoRows = sqlite
+      .prepare("SELECT id, data_url FROM photos WHERE (storage_key IS NULL OR storage_key = '') AND data_url LIKE 'data:%'")
+      .all() as Array<{ id: number; data_url: string }>;
+    for (const row of photoRows) {
+      const parsed = s3.parseDataUrl(row.data_url);
+      if (!parsed) continue;
+      const key = s3.makeKey("photos", parsed.extension);
+      await s3.putObject(key, parsed.buffer, parsed.contentType);
+      sqlite
+        .prepare("UPDATE photos SET storage_key = ?, data_url = '' WHERE id = ?")
+        .run(key, row.id);
+      photoCount++;
+    }
+  } catch (e) {
+    console.error("[storage] photo migration error:", (e as any)?.message || e);
+  }
+
+  try {
+    const docRows = sqlite
+      .prepare("SELECT id, file_data FROM job_documents WHERE (storage_key IS NULL OR storage_key = '') AND file_data LIKE 'data:%'")
+      .all() as Array<{ id: number; file_data: string }>;
+    for (const row of docRows) {
+      const parsed = s3.parseDataUrl(row.file_data);
+      if (!parsed) continue;
+      const key = s3.makeKey("documents", parsed.extension);
+      await s3.putObject(key, parsed.buffer, parsed.contentType);
+      sqlite
+        .prepare("UPDATE job_documents SET storage_key = ?, file_data = '' WHERE id = ?")
+        .run(key, row.id);
+      docCount++;
+    }
+  } catch (e) {
+    console.error("[storage] document migration error:", (e as any)?.message || e);
+  }
+
+  if (photoCount || docCount) {
+    console.log(`[storage] migrated ${photoCount} photos and ${docCount} documents to bucket`);
+  } else {
+    console.log("[storage] no legacy blobs to migrate");
+  }
+}
+
+// Fire and forget — do NOT await, and do NOT block startup on it. Individual
+// row failures are swallowed above.
+setTimeout(() => {
+  migrateLegacyBlobsToBucket().catch((e) =>
+    console.error("[storage] migration failed:", e?.message || e)
+  );
+}, 3000);
+
 // One-time phase demo backfill for job 2 (fire loss — runs through BOTH mitigation
 // and reconstruction). On databases seeded before phase support existed, job 2
 // has only mitigation records, so the phase switch has nothing to show on the

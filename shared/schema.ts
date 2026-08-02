@@ -155,7 +155,12 @@ export const photos = sqliteTable("photos", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   jobId: integer("job_id").notNull(),
   filename: text("filename").notNull(),
-  dataUrl: text("data_url").notNull(), // base64
+  // Legacy base64 field. Empty string when the file lives in object storage;
+  // reads hydrate this from a signed URL server-side so the client shape
+  // never changes.
+  dataUrl: text("data_url").notNull(),
+  // Object-storage key. Empty/null when the file is inline (dev / legacy).
+  storageKey: text("storage_key"),
   caption: text("caption"),
   category: text("category").default("general"), // general | before | during | after | damage | moisture
   phase: text("phase").default("mitigation"), // mitigation | reconstruction
@@ -357,11 +362,15 @@ export const jobDocuments = sqliteTable("job_documents", {
   signerName: text("signer_name"),
   signerRole: text("signer_role"),  // "homeowner" | "insured" | "tech" | "contractor"
   signedAt: text("signed_at"),
-  // For PDF uploads: base64 data URL of the file
+  // For PDF uploads: base64 data URL of the file (empty when in object storage)
   fileData: text("file_data"),
   fileName: text("file_name"),
   fileMimeType: text("file_mime_type"),
   fileSize: integer("file_size"),
+  // Object-storage keys populated when Railway bucket is configured.
+  // signatureStorageKey covers signed forms; storageKey covers PDF uploads.
+  storageKey: text("storage_key"),
+  signatureStorageKey: text("signature_storage_key"),
   // Status: "unsigned" | "signed" | "uploaded"
   status: text("status").notNull().default("unsigned"),
   phase: text("phase").default("mitigation"), // mitigation | reconstruction

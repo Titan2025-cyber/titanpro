@@ -19,6 +19,11 @@ import { sendEmail, sendSms, getNotifySettings, saveNotifySettings, providerStat
 import { geocodeJobInBackground } from "./geocoder";
 import { startScheduler, runSchedulerNow } from "./scheduler";
 import { registerMegaBuildRoutes } from "./routes_megabuild";
+import {
+  writeImageFieldSafe,
+  hydrateImageRows,
+} from "./image_pipeline";
+import * as objectStorage from "./storage_s3";
 
 // ── Error handler wrapper ────────────────────────────────────────────────────
 type Handler = (req: any, res: any, next?: any) => any;
@@ -1289,9 +1294,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ── Photos ────────────────────────────────────────────────────────────────
-  app.get("/api/photos", (_req, res) => { res.json(storage.getPhotos()); });
-  app.get("/api/jobs/:id/photos", (req, res) => { res.json(storage.getPhotosByJob(Number(req.params.id))); });
-  app.post("/api/photos", (req, res) => { res.json(storage.createPhoto(req.body)); });
+  // Reads hydrate `data_url` from the S3 signed URL when the row has a
+  // storage_key set. Legacy rows without a key keep serving inline base64
+  // (until the boot migration lifts them into the bucket).
+  app.get("/api/photos", wrapAsync(async (_req, res) => {
+    const rows = storage.getPhotos() as any[];
+    await hydrateImageRows(rows, { urlField: "dataUrl", keyField: "storageKey" });
+    res.json(rows);
+  }));
+  app.get("/api/jobs/:id/photos", wrapAsync(async (req, res) => {
+    const rows = storage.getPhotosByJob(Number(req.params.id)) as any[];
+    await hydrateImageRows(rows, { urlField: "dataUrl", keyField: "storageKey" });
+    res.json(rows);
+  }));
+  // On write, hoist any incoming data URL into the bucket before insert so we
+  // never persist multi-megabyte base64 blobs into SQLite when storage is
+  // configured.
+  app.post("/api/photos", wrapAsync(async (req, res) => {
+    const body = { ...req.body };
+    const incomingUrl = body.dataUrl ?? body.data_url ?? "";
+    const stored = await writeImageFieldSafe(incomingUrl, "photos");
+    body.dataUrl = stored.dataUrl;
+    if (stored.storageKey) body.storageKey = stored.storageKey;
+    res.json(storage.createPhoto(body));
+  }));
   app.patch("/api/photos/:id", (req, res) => {
     const id = Number(req.params.id);
     const { category, caption } = req.body;
@@ -1953,22 +1979,56 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(storage.getJobDocuments(Number(req.params.id)));
   });
 
-  app.post("/api/jobs/:id/documents", (req, res) => {
-    const doc = storage.createJobDocument({ ...req.body, jobId: Number(req.params.id) });
+  // Hoists file_data (PDF upload) and signature_data (e-sign PNG) into the
+  // bucket before insert so signed forms don't bloat SQLite. Legacy rows keep
+  // rendering because reads still return whatever's in the DB when no
+  // storage_key is set.
+  app.post("/api/jobs/:id/documents", wrapAsync(async (req, res) => {
+    const body: any = { ...req.body, jobId: Number(req.params.id) };
+    if (body.fileData || body.file_data) {
+      const stored = await writeImageFieldSafe(body.fileData ?? body.file_data, "documents");
+      body.fileData = stored.dataUrl;
+      if (stored.storageKey) body.storageKey = stored.storageKey;
+    }
+    if (body.signatureData || body.signature_data) {
+      const stored = await writeImageFieldSafe(body.signatureData ?? body.signature_data, "signatures");
+      body.signatureData = stored.dataUrl;
+      if (stored.storageKey) body.signatureStorageKey = stored.storageKey;
+    }
+    const doc = storage.createJobDocument(body);
     res.json(doc);
-  });
+  }));
 
-  app.get("/api/documents/:id", (req, res) => {
-    const doc = storage.getJobDocument(Number(req.params.id));
+  app.get("/api/documents/:id", wrapAsync(async (req, res) => {
+    const doc = storage.getJobDocument(Number(req.params.id)) as any;
+    if (!doc) return res.status(404).json({ error: "Not found" });
+    // Hydrate any bucket-backed fields on demand.
+    if (doc.storageKey && objectStorage.isConfigured()) {
+      try { doc.fileData = await objectStorage.getReadUrl(doc.storageKey); } catch {}
+    }
+    if (doc.signatureStorageKey && objectStorage.isConfigured()) {
+      try { doc.signatureData = await objectStorage.getReadUrl(doc.signatureStorageKey); } catch {}
+    }
+    res.json(doc);
+  }));
+
+  app.patch("/api/documents/:id", wrapAsync(async (req, res) => {
+    const body: any = { ...req.body };
+    // Same hoist for updates that replace the file or the signature.
+    if (body.fileData || body.file_data) {
+      const stored = await writeImageFieldSafe(body.fileData ?? body.file_data, "documents");
+      body.fileData = stored.dataUrl;
+      if (stored.storageKey) body.storageKey = stored.storageKey;
+    }
+    if (body.signatureData || body.signature_data) {
+      const stored = await writeImageFieldSafe(body.signatureData ?? body.signature_data, "signatures");
+      body.signatureData = stored.dataUrl;
+      if (stored.storageKey) body.signatureStorageKey = stored.storageKey;
+    }
+    const doc = storage.updateJobDocument(Number(req.params.id), body);
     if (!doc) return res.status(404).json({ error: "Not found" });
     res.json(doc);
-  });
-
-  app.patch("/api/documents/:id", (req, res) => {
-    const doc = storage.updateJobDocument(Number(req.params.id), req.body);
-    if (!doc) return res.status(404).json({ error: "Not found" });
-    res.json(doc);
-  });
+  }));
 
   app.delete("/api/documents/:id", (req, res) => {
     storage.deleteJobDocument(Number(req.params.id));
@@ -3312,7 +3372,7 @@ cody@titanrestorationllc.com`;
   const result = sqlite.prepare(`INSERT INTO adjuster_portal_sessions (adjuster_id, adjuster_name, carrier, access_token, job_ids, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(adjusterId || null, adjusterName, carrier, token, JSON.stringify(jobIds || []), expiresAt, now);
   res.json({ id: result.lastInsertRowid, accessToken: token, expiresAt });
   });
-  app.get("/api/adjuster-portal/access/:token", (req, res) => {
+  app.get("/api/adjuster-portal/access/:token", wrapAsync(async (req: any, res: any) => {
   const session = sqlite.prepare("SELECT * FROM adjuster_portal_sessions WHERE access_token = ? AND expires_at > ?").get(req.params.token, new Date().toISOString()) as any;
   if (!session) return res.status(401).json({ error: "Invalid or expired access token" });
   // Update last accessed
@@ -3326,7 +3386,9 @@ cody@titanrestorationllc.com`;
   // For each job, attach drying records, photos, equipment log, estimates, supplements
   const enriched = (jobs as any[]).map((job: any) => {
     const drying = sqlite.prepare("SELECT * FROM drying_records WHERE job_id = ? ORDER BY reading_date ASC").all(job.id);
-    const photos = sqlite.prepare("SELECT id, filename, data_url, caption, category, taken_at FROM photos WHERE job_id = ? ORDER BY taken_at ASC, id ASC").all(job.id);
+    // Include storage_key so hydration below can generate signed URLs for
+    // bucket-backed photos. Legacy rows still have data_url populated.
+    const photos = sqlite.prepare("SELECT id, filename, data_url, storage_key, caption, category, taken_at FROM photos WHERE job_id = ? ORDER BY taken_at ASC, id ASC").all(job.id);
     const estimates = sqlite.prepare("SELECT id, title, status, total, created_at FROM estimates WHERE job_id = ?").all(job.id);
     const equipmentLog = sqlite.prepare(`
       SELECT ed.id, ed.deployed_at, ed.returned_at, ed.days_out, e.name, e.category, e.model
@@ -3339,8 +3401,12 @@ cody@titanrestorationllc.com`;
     ).all(job.id);
     return { ...job, dryingRecords: drying, photos, photoCount: photos.length, estimates, equipmentLog, equipmentOnSite, supplements };
   });
+  // Hydrate photo URLs for every job in a single pass.
+  for (const j of enriched) {
+    await hydrateImageRows(j.photos as any[], { urlField: "data_url", keyField: "storage_key" });
+  }
   res.json({ adjusterName: session.adjuster_name, carrier: session.carrier, credentials, jobs: enriched });
-  });
+  }));
 
   // Adjuster responds to a supplement (approve / partial / request info) — read-only portal action
   app.post("/api/adjuster-portal/supplement-response", (req, res) => {
@@ -6198,13 +6264,27 @@ Approve in Partner Portal → Admin View.
     try { sqlite.exec(`CREATE TABLE IF NOT EXISTS safety_checklists (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, tech_name TEXT NOT NULL, checklist_type TEXT NOT NULL DEFAULT 'pre_job', items_json TEXT NOT NULL DEFAULT '[]', photos_json TEXT DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', completed_at TEXT, created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
     res.json(sqlite.prepare("SELECT * FROM safety_checklists ORDER BY id DESC").all());
   });
-  app.post("/api/safety-checklists", (req, res) => {
+  app.post("/api/safety-checklists", wrapAsync(async (req, res) => {
     try { sqlite.exec(`CREATE TABLE IF NOT EXISTS safety_checklists (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, tech_name TEXT NOT NULL, checklist_type TEXT NOT NULL DEFAULT 'pre_job', items_json TEXT NOT NULL DEFAULT '[]', photos_json TEXT DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', completed_at TEXT, created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
     const { job_id, tech_name, checklist_type, items_json, photos_json, status, completed_at, created_at } = req.body;
+
+    // photos_json historically stored an array of data URLs. When the bucket
+    // is configured, replace each data-URL entry with { storageKey } so the
+    // JSON stays small and the raw bytes live in object storage. Legacy
+    // entries (already URLs or already {storageKey}) pass through unchanged.
+    const incoming: any[] = Array.isArray(photos_json) ? photos_json : [];
+    const normalized = await Promise.all(incoming.map(async (entry: any) => {
+      const url = typeof entry === "string" ? entry : (entry?.dataUrl ?? entry?.url ?? "");
+      if (!url) return entry;
+      const stored = await writeImageFieldSafe(url, "checklists");
+      if (stored.storageKey) return { storageKey: stored.storageKey };
+      return typeof entry === "string" ? entry : { ...entry, dataUrl: stored.dataUrl };
+    }));
+
     const r = sqlite.prepare(`INSERT INTO safety_checklists (job_id, tech_name, checklist_type, items_json, photos_json, status, completed_at, created_at) VALUES (?,?,?,?,?,?,?,?)`)
-      .run(job_id||0, tech_name||'', checklist_type||'pre_job', JSON.stringify(items_json||[]), JSON.stringify(photos_json||[]), status||'pending', completed_at||null, created_at||new Date().toISOString());
+      .run(job_id||0, tech_name||'', checklist_type||'pre_job', JSON.stringify(items_json||[]), JSON.stringify(normalized), status||'pending', completed_at||null, created_at||new Date().toISOString());
     res.json(sqlite.prepare("SELECT * FROM safety_checklists WHERE id=?").get(r.lastInsertRowid));
-  });
+  }));
   app.patch("/api/safety-checklists/:id", (req, res) => {
     const { status, items_json, completed_at } = req.body;
     const existing = sqlite.prepare("SELECT * FROM safety_checklists WHERE id=?").get(Number(req.params.id)) as any;
