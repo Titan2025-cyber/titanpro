@@ -23,6 +23,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import type { Job, Invoice, Payment } from "@shared/schema";
+import { DateManager } from "@/components/JobPipeline";
 
 const STATUS_COLORS: Record<string, string> = {
   new: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
@@ -686,8 +687,8 @@ export default function Dashboard() {
               ) : (
                 <div className="divide-y">
                   {activeJobs.slice(0, 6).map(job => (
-                    <Link key={job.id} href={`/jobs/${job.id}`}>
-                      <div className="flex items-center gap-3 px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer" data-testid={`job-row-${job.id}`}>
+                    <div key={job.id} className="flex items-center gap-3 px-4 py-3 hover:bg-muted/50 transition-colors" data-testid={`job-row-${job.id}`}>
+                      <Link href={`/jobs/${job.id}`} className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer">
                         <div className="text-xl w-8 text-center">{LOSS_ICONS[job.lossType] || "📋"}</div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
@@ -705,8 +706,13 @@ export default function Dashboard() {
                           <div className="text-xs font-medium text-foreground">{job.assignedTech || "—"}</div>
                           <div className="text-xs text-muted-foreground">{job.insuranceCarrier || "Self-pay"}</div>
                         </div>
+                      </Link>
+                      {/* Dates popover — clicking here edits milestone dates and moves
+                          the job forward through PROGRESS_STAGES without navigating. */}
+                      <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+                        <DateManager job={job as any} />
                       </div>
-                    </Link>
+                    </div>
                   ))}
                 </div>
               )}
