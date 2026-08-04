@@ -327,6 +327,44 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
     )
   `);
 
+  // ── Ensure canonical roster exists (idempotent, every boot) ──────────────
+  // On some deployments the wider `seed()` in storage.ts is skipped because it
+  // guards on the contacts table — which is populated — leaving `employees`
+  // empty. That makes /api/auth/pin-users return [] and the Quick PIN kiosk
+  // shows "no one is available." Insert only rows that don't already exist,
+  // so this stays safe against a populated DB.
+  const CANONICAL_ROSTER: { name: string; role: string; position?: string | null; phone?: string | null; email?: string | null; }[] = [
+    { name: "Cody Brantley",    role: "owner", position: "Owner",         phone: "706-922-0154", email: "cody@titanaugusta.com" },
+    { name: "John",             role: "tech",  position: "Field Tech" },
+    { name: "Clint",            role: "tech",  position: "Field Tech" },
+    { name: "Blake",            role: "admin", position: "Admin" },
+    { name: "Miranda Brantley", role: "sales", position: "Sales / BDM" },
+  ];
+  const rosterInsert = sqlite.prepare(
+    "INSERT INTO employees (name, role, position, phone, gmail_email, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)"
+  );
+  const rosterReactivate = sqlite.prepare(
+    "UPDATE employees SET is_active = 1 WHERE LOWER(name) = LOWER(?) AND is_active = 0"
+  );
+  const rosterCheck = sqlite.prepare("SELECT id, is_active FROM employees WHERE LOWER(name) = LOWER(?)");
+  const rosterNow = new Date().toISOString();
+  for (const r of CANONICAL_ROSTER) {
+    const found: any = rosterCheck.get(r.name);
+    if (!found) {
+      try {
+        rosterInsert.run(r.name, r.role, r.position ?? null, r.phone ?? null, r.email ?? null, rosterNow);
+        writeAudit(sqlite, null, r.name, "roster_ensured", "employee", null, `Canonical roster row inserted for ${r.name}`);
+      } catch (e: any) {
+        // If the row happens to exist with a different case or extra data,
+        // ignore — the credential-seed block below will pick it up.
+        console.warn(`[auth] roster insert skipped for ${r.name}: ${e?.message || e}`);
+      }
+    } else if (!found.is_active) {
+      rosterReactivate.run(r.name);
+      writeAudit(sqlite, found.id, r.name, "roster_reactivated", "employee", found.id, `Reactivated ${r.name} via roster ensure`);
+    }
+  }
+
   // Seed default credentials for existing employees.
   // Owner: "admin1234", Techs: "titan1234" — must be changed on first login.
   // PINs: a unique random compliant PIN per user, recorded to the audit log
