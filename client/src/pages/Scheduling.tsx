@@ -1,13 +1,14 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { UserSelect } from "@/components/UserSelect";
 import { useState } from "react";
-import { Plus, ChevronLeft, ChevronRight, Briefcase, Bell, Plane } from "lucide-react";
+import { Plus, ChevronLeft, ChevronRight, Briefcase, Bell, Plane, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Shift, Job } from "@shared/schema";
 
@@ -56,10 +57,40 @@ function isoDate(d: Date) {
   return d.toISOString().split("T")[0];
 }
 
+// The dialog handles both create AND edit. When `editingId` is null we call
+// POST /api/shifts; otherwise PATCH /api/shifts/:id. A Delete button on the
+// edit form makes shift removal a clear, one-click action instead of a hidden
+// hover interaction that was easy to miss.
+const BLANK_FORM = { techName: "", shiftDate: isoDate(new Date()), startTime: "08:00", endTime: "16:00", title: "", jobId: "", notes: "" };
+
 export default function Scheduling() {
   const [weekRef, setWeekRef] = useState(new Date());
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ techName: "", shiftDate: isoDate(new Date()), startTime: "08:00", endTime: "16:00", title: "", jobId: "", notes: "" });
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [form, setForm] = useState(BLANK_FORM);
+  const { toast } = useToast();
+
+  // Open the dialog fresh for a new shift on `dateStr` (or today).
+  function openCreate(dateStr?: string) {
+    setEditingId(null);
+    setForm({ ...BLANK_FORM, shiftDate: dateStr || isoDate(new Date()) });
+    setOpen(true);
+  }
+
+  // Open the dialog pre-filled from an existing shift for editing.
+  function openEdit(s: Shift) {
+    setEditingId(s.id);
+    setForm({
+      techName: s.techName || "",
+      shiftDate: s.shiftDate || isoDate(new Date()),
+      startTime: s.startTime || "08:00",
+      endTime: s.endTime || "16:00",
+      title: s.title || "",
+      jobId: s.jobId != null ? String(s.jobId) : "",
+      notes: (s as any).notes || "",
+    });
+    setOpen(true);
+  }
 
   const weekDates0 = getWeekDates(weekRef);
   const weekStart = isoDate(weekDates0[0]);
@@ -79,14 +110,30 @@ export default function Scheduling() {
     queryFn: () => apiRequest("GET", "/api/staff/assignable").then(r => r.json()),
   });
 
-  const createMutation = useMutation({
-    mutationFn: (data: any) => apiRequest("POST", "/api/shifts", data),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/shifts"] }); setOpen(false); },
+  const saveMutation = useMutation({
+    // Route to POST when creating a new shift, PATCH when editing an existing
+    // one — keeps the dialog code path identical for both flows.
+    mutationFn: (data: any) => {
+      if (editingId != null) return apiRequest("PATCH", `/api/shifts/${editingId}`, data);
+      return apiRequest("POST", "/api/shifts", data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/shifts"] });
+      setOpen(false);
+      setEditingId(null);
+      toast({ title: editingId != null ? "Shift updated" : "Shift created" });
+    },
+    onError: (e: any) => toast({ title: "Save failed", description: e?.message || "Please try again.", variant: "destructive" }),
   });
 
   const deleteShift = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/shifts/${id}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/shifts"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/shifts"] });
+      setOpen(false);
+      setEditingId(null);
+      toast({ title: "Shift deleted" });
+    },
   });
 
   const weekDates = weekDates0;
@@ -100,14 +147,18 @@ export default function Scheduling() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Scheduling</h1>
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setEditingId(null); }}>
           <DialogTrigger asChild>
-            <Button className="bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red-dark))] text-white">
+            <Button
+              className="bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red-dark))] text-white"
+              onClick={() => openCreate()}
+              data-testid="button-new-shift"
+            >
               <Plus className="w-4 h-4 mr-2" />Assign Job / Shift
             </Button>
           </DialogTrigger>
           <DialogContent>
-            <DialogHeader><DialogTitle>Assign Job / Shift</DialogTitle></DialogHeader>
+            <DialogHeader><DialogTitle>{editingId != null ? "Edit Shift" : "Assign Job / Shift"}</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <div>
                 <Label>Assign To (system user)</Label>
@@ -154,11 +205,25 @@ export default function Scheduling() {
                 </div>
               )}
 
-              <Button
-                className="w-full bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red-dark))] text-white"
-                disabled={createMutation.isPending || !form.techName}
-                onClick={() => createMutation.mutate({ ...form, jobId: form.jobId ? Number(form.jobId) : null })}
-              >{createMutation.isPending ? "Saving…" : "Save Shift"}</Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  className="flex-1 bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red-dark))] text-white"
+                  disabled={saveMutation.isPending || !form.techName}
+                  onClick={() => saveMutation.mutate({ ...form, jobId: form.jobId ? Number(form.jobId) : null })}
+                  data-testid="button-save-shift"
+                >{saveMutation.isPending ? "Saving…" : editingId != null ? "Update Shift" : "Save Shift"}</Button>
+                {editingId != null && (
+                  <Button
+                    variant="outline"
+                    className="border-destructive text-destructive hover:bg-destructive/10"
+                    disabled={deleteShift.isPending}
+                    onClick={() => {
+                      if (confirm("Delete this shift? This cannot be undone.")) deleteShift.mutate(editingId);
+                    }}
+                    data-testid="button-delete-shift"
+                  ><Trash2 className="w-4 h-4" /></Button>
+                )}
+              </div>
             </div>
           </DialogContent>
         </Dialog>
@@ -172,7 +237,8 @@ export default function Scheduling() {
         <Button variant="ghost" size="sm" onClick={() => setWeekRef(new Date())}>Today</Button>
       </div>
 
-      {/* Calendar grid */}
+      {/* Calendar grid — click a day header or empty space to add, click a
+         shift to edit / delete. Time-off pills remain read-only (HR module). */}
       <div className="grid grid-cols-7 gap-1">
         {weekDates.map((date, i) => {
           const dateStr = isoDate(date);
@@ -180,11 +246,30 @@ export default function Scheduling() {
           const dayOff = timeOffOnDate(dateStr);
           const today = isoDate(new Date()) === dateStr;
           return (
-            <div key={i} className={`rounded-lg border min-h-[120px] ${today ? "border-[hsl(var(--titan-red))] bg-[hsl(var(--titan-red)/0.03)]" : "border-border"}`}>
-              <div className={`px-2 py-1 text-xs font-semibold border-b ${today ? "text-[hsl(var(--titan-red))]" : "text-muted-foreground"}`}>
-                {DAY_LABELS[i]} <span className={`font-bold ${today ? "" : "text-foreground"}`}>{date.getDate()}</span>
-              </div>
-              <div className="p-1 space-y-1">
+            <div
+              key={i}
+              className={`rounded-lg border min-h-[120px] flex flex-col ${today ? "border-[hsl(var(--titan-red))] bg-[hsl(var(--titan-red)/0.03)]" : "border-border"}`}
+            >
+              <button
+                type="button"
+                className={`w-full flex items-center justify-between px-2 py-1 text-xs font-semibold border-b hover:bg-muted transition-colors ${today ? "text-[hsl(var(--titan-red))]" : "text-muted-foreground"}`}
+                onClick={() => openCreate(dateStr)}
+                title="Add shift for this day"
+                data-testid={`day-header-${dateStr}`}
+              >
+                <span>{DAY_LABELS[i]} <span className={`font-bold ${today ? "" : "text-foreground"}`}>{date.getDate()}</span></span>
+                <Plus className="w-3 h-3 opacity-50" />
+              </button>
+              <div
+                className="p-1 space-y-1 flex-1 cursor-pointer"
+                onClick={(e) => {
+                  // Only trigger add-on-empty when the actual container was
+                  // clicked (not a child pill). We check the target directly
+                  // instead of stopPropagation on children so shift edits still
+                  // route to their own handler.
+                  if (e.target === e.currentTarget) openCreate(dateStr);
+                }}
+              >
                 {dayOff.map(t => (
                   <div
                     key={`off-${t.id}`}
@@ -203,7 +288,13 @@ export default function Scheduling() {
                   const job = jobs.find(j => j.id === s.jobId);
                   const colorClass = colorForName(s.techName);
                   return (
-                    <div key={s.id} className={`text-xs rounded border px-1.5 py-1 ${colorClass} relative group cursor-pointer`} data-testid={`shift-${s.id}`}>
+                    <div
+                      key={s.id}
+                      className={`text-xs rounded border px-1.5 py-1 ${colorClass} cursor-pointer hover:brightness-95 transition`}
+                      data-testid={`shift-${s.id}`}
+                      onClick={() => openEdit(s)}
+                      title="Click to edit shift"
+                    >
                       <p className="font-semibold truncate">{s.techName}</p>
                       {s.title && <p className="truncate opacity-80">{s.title}</p>}
                       {s.startTime && <p className="opacity-70">{s.startTime}{s.endTime ? `–${s.endTime}` : ""}</p>}
@@ -213,10 +304,6 @@ export default function Scheduling() {
                           <span className="truncate font-medium">{job.jobNumber}</span>
                         </span>
                       )}
-                      <button
-                        className="absolute top-0 right-0 p-0.5 hidden group-hover:flex text-destructive/70 hover:text-destructive"
-                        onClick={() => deleteShift.mutate(s.id)}
-                      >×</button>
                     </div>
                   );
                 })}

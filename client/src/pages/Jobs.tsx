@@ -592,6 +592,31 @@ export default function Jobs() {
     leadSource: "" as LeadSource | "",
     leadSourceDetail: "",
   });
+  // "existing" → pick from the customer dropdown. "new" → type customer
+  // details here and we'll create the contact on submit.
+  const [customerMode, setCustomerMode] = useState<"existing" | "new">("new");
+  const [newCustomer, setNewCustomer] = useState({ name: "", email: "", phone: "", address: "" });
+
+  function resetForm() {
+    setForm({
+      jobNumber: `TP-${new Date().getFullYear()}-`,
+      contactId: "",
+      lossType: "water",
+      status: "new",
+      progressStage: "pending_sale",
+      location: "Augusta",
+      address: "",
+      description: "",
+      assignedTech: "",
+      insuranceCarrier: "",
+      claimNumber: "",
+      salesDate: new Date().toISOString().slice(0, 10),
+      leadSource: "",
+      leadSourceDetail: "",
+    });
+    setNewCustomer({ name: "", email: "", phone: "", address: "" });
+    setCustomerMode("new");
+  }
 
   const { data: jobs = [], isLoading } = useQuery<Job[]>({ queryKey: ["/api/jobs"] });
   const { data: contacts = [] } = useQuery<Contact[]>({ queryKey: ["/api/contacts"] });
@@ -605,14 +630,46 @@ export default function Jobs() {
   );
   const { toast } = useToast();
 
+  // Job creation flow supports two paths:
+  //   1. Existing customer → POST /api/jobs with contactId.
+  //   2. New customer → POST /api/contacts first, then POST /api/jobs with the
+  //      returned contactId. This is the flow when the operator picks the
+  //      "New Customer" toggle in the New Job dialog.
   const createMutation = useMutation({
-    mutationFn: (data: any) => apiRequest("POST", "/api/jobs", data),
+    mutationFn: async (data: any) => {
+      let contactId: number | null = data.contactId ?? null;
+      if (customerMode === "new") {
+        const trimmed = newCustomer.name.trim();
+        if (!trimmed) throw new Error("Customer name required");
+        // Reuse the job address for the customer address when the customer
+        // address is blank — saves a redundant typing step.
+        const contactAddress = newCustomer.address.trim() || (data.address || "").trim();
+        const contactRes = await apiRequest("POST", "/api/contacts", {
+          name: trimmed,
+          type: "customer",
+          email: newCustomer.email.trim() || null,
+          phone: newCustomer.phone.trim() || null,
+          address: contactAddress || null,
+        });
+        const contact = await contactRes.json();
+        contactId = contact?.id ?? null;
+      }
+      const jobRes = await apiRequest("POST", "/api/jobs", { ...data, contactId });
+      return jobRes.json();
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/contacts"] });
       setOpen(false);
+      resetForm();
       toast({ title: "Job created" });
     },
+    onError: (e: any) => toast({
+      title: "Could not create job",
+      description: e?.message || "Please check the form and try again.",
+      variant: "destructive",
+    }),
   });
 
   const bulkUpdateMutation = useMutation({
@@ -720,14 +777,67 @@ export default function Jobs() {
                   </Select>
                 </div>
 
+                {/* Customer picker — either pick an existing contact or type a
+                   new one right here. When "New" is active, we auto-create the
+                   contact on submit and link it to the job in one round trip. */}
                 <div>
-                  <Label>Customer</Label>
-                  <Select value={form.contactId} onValueChange={v => setForm(f => ({ ...f, contactId: v }))}>
-                    <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
-                    <SelectContent>
-                      {customers.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                  <div className="flex items-center justify-between mb-1">
+                    <Label>Customer</Label>
+                    <div className="flex border rounded overflow-hidden text-[11px]">
+                      <button
+                        type="button"
+                        className={`px-2 py-0.5 ${customerMode === "new" ? "bg-[hsl(var(--titan-blue))] text-white" : "hover:bg-muted"}`}
+                        onClick={() => setCustomerMode("new")}
+                        data-testid="button-customer-mode-new"
+                      >New</button>
+                      <button
+                        type="button"
+                        className={`px-2 py-0.5 ${customerMode === "existing" ? "bg-[hsl(var(--titan-blue))] text-white" : "hover:bg-muted"}`}
+                        onClick={() => setCustomerMode("existing")}
+                        data-testid="button-customer-mode-existing"
+                      >Existing</button>
+                    </div>
+                  </div>
+                  {customerMode === "existing" ? (
+                    <Select value={form.contactId} onValueChange={v => setForm(f => ({ ...f, contactId: v }))}>
+                      <SelectTrigger data-testid="select-customer"><SelectValue placeholder="Select customer" /></SelectTrigger>
+                      <SelectContent>
+                        {customers.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <div className="space-y-2 rounded-md border border-dashed p-2">
+                      <Input
+                        value={newCustomer.name}
+                        onChange={e => setNewCustomer(c => ({ ...c, name: e.target.value }))}
+                        placeholder="Customer name *"
+                        data-testid="input-new-customer-name"
+                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        <Input
+                          value={newCustomer.phone}
+                          onChange={e => setNewCustomer(c => ({ ...c, phone: e.target.value }))}
+                          placeholder="Phone"
+                          data-testid="input-new-customer-phone"
+                        />
+                        <Input
+                          value={newCustomer.email}
+                          onChange={e => setNewCustomer(c => ({ ...c, email: e.target.value }))}
+                          placeholder="Email"
+                          data-testid="input-new-customer-email"
+                        />
+                      </div>
+                      <Input
+                        value={newCustomer.address}
+                        onChange={e => setNewCustomer(c => ({ ...c, address: e.target.value }))}
+                        placeholder="Customer address (defaults to job address)"
+                        data-testid="input-new-customer-address"
+                      />
+                      <p className="text-[11px] text-muted-foreground">
+                        This contact will be created and linked to the job on save.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -792,10 +902,14 @@ export default function Jobs() {
 
                 <Button
                   className="w-full bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red-dark))] text-white"
-                  disabled={createMutation.isPending}
+                  disabled={
+                    createMutation.isPending ||
+                    (customerMode === "new" && !newCustomer.name.trim()) ||
+                    (customerMode === "existing" && !form.contactId)
+                  }
                   onClick={() => createMutation.mutate({
                     ...form,
-                    contactId: form.contactId ? Number(form.contactId) : null,
+                    contactId: customerMode === "existing" && form.contactId ? Number(form.contactId) : null,
                     createdAt: new Date().toISOString(),
                   })}
                   data-testid="button-create-job"
