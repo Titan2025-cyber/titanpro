@@ -333,6 +333,13 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
   // empty. That makes /api/auth/pin-users return [] and the Quick PIN kiosk
   // shows "no one is available." Insert only rows that don't already exist,
   // so this stays safe against a populated DB.
+  //
+  // Insert uses ONLY base columns (name, role, created_at) — the ones the
+  // very first storage.ts CREATE TABLE guarantees. Everything else is set
+  // via separate UPDATEs so a schema mismatch on any one column doesn't
+  // abort the whole row. is_active defaults to 1 (from the ALTER TABLE
+  // default) so newly inserted rows are already visible to the Quick PIN
+  // picker.
   const CANONICAL_ROSTER: { name: string; role: string; position?: string | null; phone?: string | null; email?: string | null; }[] = [
     { name: "Cody Brantley",    role: "owner", position: "Owner",         phone: "706-922-0154", email: "cody@titanaugusta.com" },
     { name: "John",             role: "tech",  position: "Field Tech" },
@@ -340,30 +347,80 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
     { name: "Blake",            role: "admin", position: "Admin" },
     { name: "Miranda Brantley", role: "sales", position: "Sales / BDM" },
   ];
-  const rosterInsert = sqlite.prepare(
-    "INSERT INTO employees (name, role, position, phone, gmail_email, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)"
-  );
-  const rosterReactivate = sqlite.prepare(
-    "UPDATE employees SET is_active = 1 WHERE LOWER(name) = LOWER(?) AND is_active = 0"
-  );
   const rosterCheck = sqlite.prepare("SELECT id, is_active FROM employees WHERE LOWER(name) = LOWER(?)");
   const rosterNow = new Date().toISOString();
+
+  // Diagnostic snapshot of the employees schema so we can see, in the logs,
+  // exactly which columns exist when this block runs.
+  try {
+    const schemaCols = (sqlite.prepare("PRAGMA table_info(employees)").all() as any[]).map(c => c.name);
+    const preCount: any = sqlite.prepare("SELECT COUNT(*) AS n FROM employees WHERE is_active = 1").get();
+    console.log(`[auth] roster ensure starting — employees columns: ${schemaCols.join(",")}; active count: ${preCount?.n ?? "?"}`);
+  } catch (e: any) {
+    console.warn(`[auth] roster ensure — could not read schema: ${e?.message || e}`);
+  }
+
+  const trySetColumn = (id: number, name: string, col: string, val: any) => {
+    try {
+      sqlite.prepare(`UPDATE employees SET ${col} = ? WHERE id = ?`).run(val, id);
+    } catch (e: any) {
+      console.warn(`[auth] roster ${name}: could not set ${col}: ${e?.message || e}`);
+    }
+  };
+
+  let insertedCount = 0;
+  let reactivatedCount = 0;
   for (const r of CANONICAL_ROSTER) {
-    const found: any = rosterCheck.get(r.name);
-    if (!found) {
-      try {
-        rosterInsert.run(r.name, r.role, r.position ?? null, r.phone ?? null, r.email ?? null, rosterNow);
-        writeAudit(sqlite, null, r.name, "roster_ensured", "employee", null, `Canonical roster row inserted for ${r.name}`);
-      } catch (e: any) {
-        // If the row happens to exist with a different case or extra data,
-        // ignore — the credential-seed block below will pick it up.
-        console.warn(`[auth] roster insert skipped for ${r.name}: ${e?.message || e}`);
+    try {
+      const found: any = rosterCheck.get(r.name);
+      if (!found) {
+        // Minimal INSERT that only relies on the base CREATE TABLE columns
+        // in storage.ts (name, role, created_at). All other fields go via
+        // best-effort UPDATEs so one bad column can't break the row.
+        let insertedId: number | null = null;
+        try {
+          const info = sqlite.prepare(
+            "INSERT INTO employees (name, role, created_at) VALUES (?, ?, ?)"
+          ).run(r.name, r.role, rosterNow);
+          insertedId = Number(info.lastInsertRowid);
+          insertedCount++;
+          console.log(`[auth] roster inserted ${r.name} (id=${insertedId})`);
+        } catch (e: any) {
+          console.error(`[auth] roster INSERT FAILED for ${r.name}: ${e?.message || e}`);
+          continue;
+        }
+        // Best-effort fill in the extra columns individually.
+        trySetColumn(insertedId, r.name, "is_active", 1);
+        if (r.position != null) trySetColumn(insertedId, r.name, "position", r.position);
+        if (r.phone != null)    trySetColumn(insertedId, r.name, "phone", r.phone);
+        if (r.email != null)    trySetColumn(insertedId, r.name, "gmail_email", r.email);
+        // Precompute avatar_initials so the picker renders even before the
+        // first login. (buildEmployeePayload falls back to name letters, but
+        // pin-users reads avatar_initials directly.)
+        const initials = r.name.split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
+        trySetColumn(insertedId, r.name, "avatar_initials", initials);
+        try {
+          writeAudit(sqlite, null, r.name, "roster_ensured", "employee", insertedId, `Canonical roster row inserted for ${r.name}`);
+        } catch { /* audit is best-effort */ }
+      } else if (!found.is_active) {
+        try {
+          sqlite.prepare("UPDATE employees SET is_active = 1 WHERE id = ?").run(found.id);
+          reactivatedCount++;
+          console.log(`[auth] roster reactivated ${r.name} (id=${found.id})`);
+          writeAudit(sqlite, found.id, r.name, "roster_reactivated", "employee", found.id, `Reactivated ${r.name} via roster ensure`);
+        } catch (e: any) {
+          console.warn(`[auth] roster reactivate failed for ${r.name}: ${e?.message || e}`);
+        }
       }
-    } else if (!found.is_active) {
-      rosterReactivate.run(r.name);
-      writeAudit(sqlite, found.id, r.name, "roster_reactivated", "employee", found.id, `Reactivated ${r.name} via roster ensure`);
+    } catch (e: any) {
+      console.warn(`[auth] roster loop error for ${r.name}: ${e?.message || e}`);
     }
   }
+
+  try {
+    const postCount: any = sqlite.prepare("SELECT COUNT(*) AS n FROM employees WHERE is_active = 1").get();
+    console.log(`[auth] roster ensure done — inserted=${insertedCount} reactivated=${reactivatedCount} active_now=${postCount?.n ?? "?"}`);
+  } catch { /* logging only */ }
 
   // Seed default credentials for existing employees.
   // Owner: "admin1234", Techs: "titan1234" — must be changed on first login.
@@ -844,10 +901,57 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
   // phone, and 2FA state are intentionally omitted. Deactivating or deleting a
   // user in User Management removes them from this list instantly (both pages
   // share the invalidation).
+  // Last-mile safety net: if the DB comes up with zero active employees
+  // (a scenario we've hit on the hosted preview when a stale empty data.db is
+  // preserved across redeploys), inline-seed the canonical roster on the FIRST
+  // pin-users request so the kiosk never renders "no one is available." Every
+  // subsequent request short-circuits normally.
+  const inlineRosterSeed = () => {
+    const roster: { name: string; role: string; position?: string; phone?: string; email?: string; }[] = [
+      { name: "Cody Brantley",    role: "owner", position: "Owner",         phone: "706-922-0154", email: "cody@titanaugusta.com" },
+      { name: "John",             role: "tech",  position: "Field Tech" },
+      { name: "Clint",            role: "tech",  position: "Field Tech" },
+      { name: "Blake",            role: "admin", position: "Admin" },
+      { name: "Miranda Brantley", role: "sales", position: "Sales / BDM" },
+    ];
+    const now = new Date().toISOString();
+    let inserted = 0;
+    for (const r of roster) {
+      try {
+        const found: any = sqlite.prepare("SELECT id FROM employees WHERE LOWER(name) = LOWER(?)").get(r.name);
+        let id: number;
+        if (found) {
+          id = found.id;
+          try { sqlite.prepare("UPDATE employees SET is_active = 1 WHERE id = ?").run(id); } catch {}
+        } else {
+          const info = sqlite.prepare("INSERT INTO employees (name, role, created_at) VALUES (?, ?, ?)").run(r.name, r.role, now);
+          id = Number(info.lastInsertRowid);
+          inserted++;
+        }
+        try { sqlite.prepare("UPDATE employees SET is_active = 1 WHERE id = ?").run(id); } catch {}
+        if (r.position) { try { sqlite.prepare("UPDATE employees SET position = ? WHERE id = ?").run(r.position, id); } catch {} }
+        if (r.phone)    { try { sqlite.prepare("UPDATE employees SET phone = ? WHERE id = ?").run(r.phone, id); } catch {} }
+        if (r.email)    { try { sqlite.prepare("UPDATE employees SET gmail_email = ? WHERE id = ?").run(r.email, id); } catch {} }
+        const initials = r.name.split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
+        try { sqlite.prepare("UPDATE employees SET avatar_initials = ? WHERE id = ?").run(initials, id); } catch {}
+      } catch (e: any) {
+        console.warn(`[auth] inline roster seed failed for ${r.name}: ${e?.message || e}`);
+      }
+    }
+    return inserted;
+  };
+
   app.get("/api/auth/pin-users", (_req, res) => {
-    const rows: any[] = sqlite.prepare(
+    let rows: any[] = sqlite.prepare(
       "SELECT name, avatar_initials FROM employees WHERE is_active = 1 ORDER BY name"
     ).all();
+    if (rows.length === 0) {
+      const inserted = inlineRosterSeed();
+      console.log(`[auth] pin-users returned 0 rows — inline seeded ${inserted} row(s)`);
+      rows = sqlite.prepare(
+        "SELECT name, avatar_initials FROM employees WHERE is_active = 1 ORDER BY name"
+      ).all();
+    }
     res.json(rows.map(r => ({
       name: r.name,
       avatarInitials: r.avatar_initials || r.name.split(" ").map((w: string) => w[0]).join("").toUpperCase().slice(0, 2),

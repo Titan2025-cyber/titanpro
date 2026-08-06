@@ -27,8 +27,12 @@ app.use(
         defaultSrc: ["'self'"],
         // Vite emits a tiny inline module-preload bootstrap; allow inline + eval
         // for the bundled runtime. Scripts are otherwise same-origin only.
-        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
-        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        // Leaflet (used by ServiceAreaMap / StormMap / RoutePlanner) is loaded from
+        // unpkg.com as a global <script>; without allowing that origin the map fails
+        // to initialize because window.L never appears.
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://unpkg.com"],
+        // Leaflet's CSS + Google Fonts + our own inline style attributes.
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://unpkg.com"],
         fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
         imgSrc: ["'self'", "data:", "blob:", "https:"],
         connectSrc: ["'self'", "https:", "wss:"],

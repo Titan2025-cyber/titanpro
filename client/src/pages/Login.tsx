@@ -80,16 +80,45 @@ export default function Login() {
 
   // Live PIN name list from /api/auth/pin-users. Refetched every 30s and each
   // time the user opens the PIN tab, so admin actions in User Management show
-  // up here without a full-page reload.
+  // up here without a full-page reload. Defensive: accepts response body as
+  // either a bare array or `{ users: [...] }` / `{ data: [...] }` in case a
+  // middleware wraps it in the future.
   const [pinUsers, setPinUsers] = useState<PinUser[]>([]);
+  const [pinLoadError, setPinLoadError] = useState<string>("");
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
         const res = await apiRequest("GET", "/api/auth/pin-users");
-        const data = await res.json();
-        if (!cancelled && Array.isArray(data)) setPinUsers(data);
-      } catch { /* silent — keeps last-known list visible */ }
+        const raw = await res.json();
+        const arr: any[] = Array.isArray(raw)
+          ? raw
+          : Array.isArray(raw?.users) ? raw.users
+          : Array.isArray(raw?.data) ? raw.data
+          : [];
+        // Normalize each entry — the server returns { name, avatarInitials } but
+        // also handle {name, avatar_initials} / plain strings just in case.
+        const normalized: PinUser[] = arr
+          .map((u: any) => {
+            if (typeof u === "string") return { name: u, avatarInitials: u.split(" ").map((w: string) => w[0]).join("").toUpperCase().slice(0, 2) };
+            const name = u?.name ?? u?.Name ?? "";
+            const initials = u?.avatarInitials ?? u?.avatar_initials ?? name.split(" ").map((w: string) => w[0]).join("").toUpperCase().slice(0, 2);
+            return { name, avatarInitials: initials };
+          })
+          .filter(u => u.name);
+        if (!cancelled) {
+          setPinUsers(normalized);
+          setPinLoadError(normalized.length === 0 ? "Team roster loaded empty. If this persists, contact the owner." : "");
+          if (typeof console !== "undefined" && normalized.length === 0) {
+            console.warn("[login] pin-users returned no rows. Raw response:", raw);
+          }
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setPinLoadError(`Could not load team list: ${e?.message || "network error"}`);
+          console.warn("[login] pin-users fetch failed:", e);
+        }
+      }
     };
     load();
     const iv = window.setInterval(load, 30_000);
@@ -470,7 +499,7 @@ export default function Login() {
                       <div className="grid grid-cols-2 gap-1.5">
                         {pinUsers.length === 0 ? (
                           <div className="col-span-2 text-xs text-muted-foreground py-2">
-                            No active team members. Ask an owner to add you in User Management.
+                            {pinLoadError || "No active team members. Ask an owner to add you in User Management."}
                           </div>
                         ) : (
                           pinUsers.map(u => (
