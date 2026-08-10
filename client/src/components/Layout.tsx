@@ -23,6 +23,7 @@ import {
 import { useState, useEffect, type ReactNode } from "react";
 import GlobalSearch from "@/components/GlobalSearch";
 import MyAccountDialog from "@/components/MyAccountDialog";
+import InstallPrompt from "@/components/InstallPrompt";
 import { useAuth } from "@/lib/auth";
 
 interface NavItem {
@@ -551,6 +552,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </div>
 
       <MyAccountDialog open={accountOpen} onOpenChange={setAccountOpen} />
+
+      {/* Add-to-home-screen banner for phones. Only renders when the browser
+          fires beforeinstallprompt (Android/Chrome) or when running iOS
+          Safari not already in standalone mode. Auto-hidden once installed. */}
+      <InstallPrompt />
     </div>
   );
 }
