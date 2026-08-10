@@ -173,6 +173,26 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+      // Backfill coordinates on boot for any jobs with an address but no
+      // lat/lng. Older jobs (created before geocoding was wired in) never
+      // got coordinates, so the Service Area map was empty. This runs in
+      // the background — Nominatim is throttled to 1 req/sec so a large
+      // batch takes a while, but pins land as each one resolves.
+      setTimeout(async () => {
+        try {
+          const { sqlite } = await import("./storage");
+          const { geocodeJobInBackground } = await import("./geocoder");
+          const rows: any[] = sqlite.prepare(
+            "SELECT id, address FROM jobs WHERE address IS NOT NULL AND TRIM(address) <> '' AND (latitude IS NULL OR longitude IS NULL) AND (status IS NULL OR status <> 'closed')"
+          ).all();
+          if (rows.length > 0) {
+            log(`geocoding ${rows.length} job address${rows.length === 1 ? "" : "es"} in background`);
+            for (const r of rows) geocodeJobInBackground(sqlite, r.id, r.address);
+          }
+        } catch (err: any) {
+          log(`boot-time geocode backfill skipped: ${err?.message || err}`);
+        }
+      }, 3_000);
     },
   );
 })();

@@ -305,6 +305,23 @@ export function ServiceAreaMap() {
 
   const missing = withAddress.length - geocoded.length;
 
+  // Auto-backfill on first mount when we have addressed jobs but no coords.
+  // Old jobs created before geocoding was wired in never got lat/lng, so the
+  // map appeared empty. This runs the same POST /api/jobs/geocode-missing the
+  // button would, but automatically, exactly once per browser session.
+  const autoBackfillTriedRef = useRef(false);
+  useEffect(() => {
+    if (autoBackfillTriedRef.current) return;
+    if (withAddress.length === 0) return;      // nothing to backfill
+    if (geocoded.length > 0) return;           // already have some pins
+    if (backfilling) return;
+    autoBackfillTriedRef.current = true;
+    void runBackfill();
+    // We intentionally trigger this from render-effect once withAddress
+    // > 0 and geocoded.length === 0 — subsequent fetches will short-circuit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [withAddress.length, geocoded.length]);
+
   return (
     <Card>
       <CardHeader className="pb-3">

@@ -1079,11 +1079,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(j);
   });
 
-  // Bulk backfill for jobs that have an address but no coordinates. Owner/
-  // admin only — useful the first time the map is turned on. Runs in the
-  // background and returns the queued count immediately; callers can poll
-  // /api/jobs to watch coordinates fill in.
-  app.post("/api/jobs/geocode-missing", requireRole("owner", "admin"), (req, res) => {
+  // Bulk backfill for jobs that have an address but no coordinates. Any
+  // authenticated staff can trigger this from the dashboard "Map N missing"
+  // button; there's no write-side risk beyond re-geocoding public addresses.
+  // Runs in the background and returns the queued count immediately;
+  // callers can poll /api/jobs to watch coordinates fill in.
+  app.post("/api/jobs/geocode-missing", (req, res) => {
     const rows: any[] = sqlite.prepare(
       "SELECT id, address FROM jobs WHERE address IS NOT NULL AND TRIM(address) <> '' AND (latitude IS NULL OR longitude IS NULL) AND (status IS NULL OR status <> 'closed')"
     ).all();
