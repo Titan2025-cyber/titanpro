@@ -71,6 +71,13 @@ export const jobs = sqliteTable("jobs", {
   // views, dashboards, KPIs, and AI scans; still viewable and reopenable from
   // the dedicated Closed Jobs page.
   previousStatus: text("previous_status"),   // Phase to restore on reopen
+  // Year the property was built — optional intake field; drives EPA RRP
+  // (lead) and asbestos AI risk flagging on the job. Nullable when unknown.
+  // Auto-prefilled from /api/property-lookup (OSM Overpass) when possible.
+  yearBuilt: integer("year_built"),
+  // Approx living area in sq ft. Auto-prefilled from OSM building geometry
+  // when available (footprint area × building:levels). Editable at any time.
+  squareFeet: integer("square_feet"),
   closedAt: text("closed_at"),
   closedBy: text("closed_by"),
   closedReason: text("closed_reason"),

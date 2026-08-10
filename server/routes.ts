@@ -17,6 +17,7 @@ import { registerGmailRoutes } from "./routes_gmail";
 import { registerPresenceRoutes } from "./routes_presence";
 import { sendEmail, sendSms, getNotifySettings, saveNotifySettings, providerStatus } from "./notify";
 import { geocodeJobInBackground } from "./geocoder";
+import { lookupProperty } from "./property_lookup";
 import { startScheduler, runSchedulerNow } from "./scheduler";
 import { registerMegaBuildRoutes } from "./routes_megabuild";
 import {
@@ -512,6 +513,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Jobs ──────────────────────────────────────────────────────────────────
   app.get("/api/jobs", (_req, res) => { res.json(storage.getJobs()); });
+
+  // Property record lookup by address — called from the New Job form and
+  // JobDetail address editor to auto-prefill year_built and square_feet from
+  // OpenStreetMap. Always resolves to JSON, never 500s on upstream failure.
+  app.get("/api/property-lookup", async (req, res) => {
+    const address = String(req.query.address || "").trim();
+    if (!address) return res.json({ yearBuilt: null, squareFeet: null, source: null, note: "Address required." });
+    try {
+      const result = await lookupProperty(address);
+      res.json(result);
+    } catch (_e: any) {
+      res.json({ yearBuilt: null, squareFeet: null, source: null, note: "Lookup temporarily unavailable." });
+    }
+  });
 
 
   // ── Job Financial Summary (all jobs in one call) ──────────────────────────

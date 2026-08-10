@@ -814,9 +814,12 @@ export default function JobDetail() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/jobs"] }),
   });
 
-  // Close / reopen state. Owner+admin only — the server also enforces this.
+  // Close / reopen state. UI is open to everyone — the server enforces
+  // owner+admin at /api/jobs/:id/close (a non-admin click just gets a 403
+  // toast). This keeps role-gate breakage from ever silently hiding the
+  // button when a role string has an unexpected case or whitespace.
   const { employee: currentEmployee } = useAuth();
-  const canManageClose = currentEmployee?.role === "owner" || currentEmployee?.role === "admin";
+  const canManageClose = true;
   const [closeOpen, setCloseOpen] = useState(false);
   const [closeReason, setCloseReason] = useState("");
   const [reopenOpen, setReopenOpen] = useState(false);
@@ -844,6 +847,32 @@ export default function JobDetail() {
     onError: (e: any) =>
       toast({ title: "Could not reopen job", description: e?.message || "Server rejected the request.", variant: "destructive" }),
   });
+
+  // Generic patch for any editable job field (jobNumber, yearBuilt, squareFeet).
+  const updateJob = useMutation({
+    mutationFn: (patch: Record<string, any>) =>
+      apiRequest("PATCH", `/api/jobs/${id}`, patch),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${id}`] });
+    },
+    onError: (e: any) => toast({ title: "Update failed", description: e?.message || "Try again.", variant: "destructive" }),
+  });
+
+  // Contact patch — identical shape, hits /api/contacts/:id. Used by the
+  // in-job Customer editor so operators can fix a typo or phone number without
+  // leaving the job page.
+  const updateContactMut = useMutation({
+    mutationFn: async (payload: { contactId: number; patch: Record<string, any> }) =>
+      apiRequest("PATCH", `/api/contacts/${payload.contactId}`, payload.patch),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/contacts"] }),
+    onError: (e: any) => toast({ title: "Customer update failed", description: e?.message || "Try again.", variant: "destructive" }),
+  });
+
+  // Header inline-edit state.
+  const [editingJobNumber, setEditingJobNumber] = useState(false);
+  const [jobNumberDraft, setJobNumberDraft] = useState("");
+  const [propRefresh, setPropRefresh] = useState<{ status: "idle" | "loading" | "done" | "empty" | "error"; note: string }>({ status: "idle", note: "" });
 
   if (isLoading) return <div className="p-6 text-muted-foreground">Loading…</div>;
   if (!job) return <div className="p-6 text-destructive">Job not found.</div>;
@@ -877,9 +906,49 @@ export default function JobDetail() {
         <Link href="/jobs">
           <Button variant="ghost" size="sm"><ArrowLeft className="w-4 h-4 mr-1" />Jobs</Button>
         </Link>
-        <div className="flex-1">
-          <h1 className="text-xl font-bold">{job.jobNumber}</h1>
-          <p className="text-sm text-muted-foreground">{job.lossType} · {job.address}</p>
+        <div className="flex-1 min-w-0">
+          {editingJobNumber ? (
+            <div className="flex items-center gap-2">
+              <Input
+                autoFocus
+                value={jobNumberDraft}
+                onChange={e => setJobNumberDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter") {
+                    const v = jobNumberDraft.trim();
+                    if (v && v !== job.jobNumber) {
+                      updateJob.mutate({ jobNumber: v }, { onSuccess: () => toast({ title: "Job number updated", description: v }) });
+                    }
+                    setEditingJobNumber(false);
+                  } else if (e.key === "Escape") {
+                    setEditingJobNumber(false);
+                  }
+                }}
+                className="h-8 text-lg font-bold max-w-[220px]"
+                data-testid="input-edit-job-number"
+              />
+              <Button size="sm" variant="ghost" onClick={() => {
+                const v = jobNumberDraft.trim();
+                if (v && v !== job.jobNumber) {
+                  updateJob.mutate({ jobNumber: v }, { onSuccess: () => toast({ title: "Job number updated", description: v }) });
+                }
+                setEditingJobNumber(false);
+              }}><Check className="w-4 h-4" /></Button>
+              <Button size="sm" variant="ghost" onClick={() => setEditingJobNumber(false)}><X className="w-4 h-4" /></Button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="group inline-flex items-center gap-1.5 text-xl font-bold hover:text-[hsl(var(--titan-blue))] transition-colors"
+              onClick={() => { setJobNumberDraft(job.jobNumber); setEditingJobNumber(true); }}
+              title="Click to edit job number"
+              data-testid="btn-edit-job-number"
+            >
+              <span>{job.jobNumber}</span>
+              <Pencil className="w-3.5 h-3.5 opacity-0 group-hover:opacity-60" />
+            </button>
+          )}
+          <p className="text-sm text-muted-foreground truncate">{job.lossType} · {job.address}</p>
         </div>
         <div className="flex items-center gap-2">
           <ReviewRequestButton jobId={Number(id)} jobStatus={job.status} />
@@ -1110,16 +1179,95 @@ export default function JobDetail() {
           </Card>
 
           {contact && (
-            <Card>
-              <CardHeader className="pb-2"><CardTitle className="text-sm">Customer</CardTitle></CardHeader>
-              <CardContent className="pt-0 space-y-1">
-                <p className="font-semibold">{contact.name}</p>
-                {contact.phone && <a href={`tel:${contact.phone}`} className="flex items-center gap-2 text-sm text-[hsl(var(--titan-blue))] hover:underline"><Phone className="w-3 h-3" />{contact.phone}</a>}
-                {contact.email && <a href={`mailto:${contact.email}`} className="flex items-center gap-2 text-sm text-[hsl(var(--titan-blue))] hover:underline"><Mail className="w-3 h-3" />{contact.email}</a>}
-                {contact.address && <p className="flex items-center gap-2 text-sm text-muted-foreground"><MapPin className="w-3 h-3" />{contact.address}</p>}
-              </CardContent>
-            </Card>
+            <EditableCustomerCard
+              contact={contact}
+              saving={updateContactMut.isPending}
+              onSave={(patch) => updateContactMut.mutate({ contactId: contact.id, patch })}
+            />
           )}
+
+          {/* Property record card — editable Year Built & Square Feet plus a
+              button to re-run the OSM lookup. Year Built drives EPA RRP lead
+              risk flagging in the AI agent. */}
+          <Card>
+            <CardHeader className="pb-2 flex flex-row items-center justify-between">
+              <CardTitle className="text-sm">Property Details</CardTitle>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1.5 text-xs"
+                disabled={!job.address || propRefresh.status === "loading"}
+                onClick={async () => {
+                  setPropRefresh({ status: "loading", note: "Looking up public records…" });
+                  try {
+                    const resp = await fetch(`/api/property-lookup?address=${encodeURIComponent(job.address || "")}`);
+                    const data = await resp.json();
+                    const patch: any = {};
+                    if (data.yearBuilt) patch.yearBuilt = data.yearBuilt;
+                    if (data.squareFeet) patch.squareFeet = data.squareFeet;
+                    if (Object.keys(patch).length > 0) updateJob.mutate(patch);
+                    setPropRefresh({ status: (data.yearBuilt || data.squareFeet) ? "done" : "empty", note: data.note || "" });
+                  } catch {
+                    setPropRefresh({ status: "error", note: "Lookup unavailable." });
+                  }
+                }}
+                data-testid="btn-refresh-property"
+              >
+                <RefreshCw className={`w-3 h-3 ${propRefresh.status === "loading" ? "animate-spin" : ""}`} /> Refresh from address
+              </Button>
+            </CardHeader>
+            <CardContent className="pt-0 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">Year Built</Label>
+                  <Input
+                    type="number"
+                    min={1700}
+                    max={new Date().getFullYear() + 1}
+                    placeholder="e.g. 1965"
+                    defaultValue={(job as any).yearBuilt ?? ""}
+                    key={`yb-${(job as any).yearBuilt ?? ""}`}
+                    onBlur={e => {
+                      const v = e.target.value.trim();
+                      const num = v === "" ? null : Number(v) || null;
+                      if (num !== ((job as any).yearBuilt ?? null)) {
+                        updateJob.mutate({ yearBuilt: num });
+                      }
+                    }}
+                    data-testid="input-detail-year-built"
+                  />
+                  {(((job as any).yearBuilt || 0) > 0 && ((job as any).yearBuilt || 0) < 1978) && (
+                    <p className="text-[11px] text-amber-700 dark:text-amber-400 mt-1">Pre-1978 — EPA RRP lead-safe protocol applies.</p>
+                  )}
+                </div>
+                <div>
+                  <Label className="text-xs">Square Feet</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    placeholder="e.g. 1800"
+                    defaultValue={(job as any).squareFeet ?? ""}
+                    key={`sf-${(job as any).squareFeet ?? ""}`}
+                    onBlur={e => {
+                      const v = e.target.value.trim();
+                      const num = v === "" ? null : Number(v) || null;
+                      if (num !== ((job as any).squareFeet ?? null)) {
+                        updateJob.mutate({ squareFeet: num });
+                      }
+                    }}
+                    data-testid="input-detail-square-feet"
+                  />
+                </div>
+              </div>
+              {propRefresh.status !== "idle" && (
+                <p className={`text-[11px] ${
+                  propRefresh.status === "done" ? "text-green-700 dark:text-green-400" :
+                  propRefresh.status === "error" ? "text-amber-700 dark:text-amber-400" :
+                  "text-muted-foreground"
+                }`}>{propRefresh.note}</p>
+              )}
+            </CardContent>
+          </Card>
 
           {contact && <CustomerPortalCard contact={contact} />}
 
@@ -1381,5 +1529,106 @@ export default function JobDetail() {
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EditableCustomerCard
+// Inline editor for the customer contact linked to a job. Operators often
+// discover typos or updated phone numbers while working the job — this saves
+// them a trip back to the Contacts page.
+//
+// UX: displays as the read-only card by default; clicking "Edit" swaps to a
+// stacked field editor with Save/Cancel. Save calls the parent-supplied
+// onSave with only the changed fields.
+// ─────────────────────────────────────────────────────────────────────────────
+function EditableCustomerCard(props: {
+  contact: Contact;
+  onSave: (patch: Partial<Contact>) => void;
+  saving: boolean;
+}) {
+  const { contact, onSave, saving } = props;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({
+    name: contact.name || "",
+    phone: contact.phone || "",
+    email: contact.email || "",
+    address: contact.address || "",
+  });
+
+  useEffect(() => {
+    setDraft({
+      name: contact.name || "",
+      phone: contact.phone || "",
+      email: contact.email || "",
+      address: contact.address || "",
+    });
+  }, [contact.id, contact.name, contact.phone, contact.email, contact.address]);
+
+  const handleSave = () => {
+    const patch: Partial<Contact> = {};
+    if (draft.name.trim() && draft.name !== contact.name) patch.name = draft.name.trim();
+    if (draft.phone !== (contact.phone || "")) (patch as any).phone = draft.phone.trim() || null;
+    if (draft.email !== (contact.email || "")) (patch as any).email = draft.email.trim() || null;
+    if (draft.address !== (contact.address || "")) (patch as any).address = draft.address.trim() || null;
+    if (Object.keys(patch).length > 0) onSave(patch);
+    setEditing(false);
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 flex flex-row items-center justify-between">
+        <CardTitle className="text-sm">Customer</CardTitle>
+        {!editing ? (
+          <Button size="sm" variant="ghost" className="h-7 gap-1.5 text-xs"
+            onClick={() => setEditing(true)} data-testid="btn-edit-customer">
+            <Pencil className="w-3 h-3" /> Edit
+          </Button>
+        ) : (
+          <div className="flex gap-1">
+            <Button size="sm" variant="ghost" className="h-7 gap-1.5 text-xs"
+              onClick={handleSave} disabled={saving} data-testid="btn-save-customer">
+              <Check className="w-3 h-3" /> Save
+            </Button>
+            <Button size="sm" variant="ghost" className="h-7 gap-1.5 text-xs"
+              onClick={() => { setEditing(false); setDraft({
+                name: contact.name || "", phone: contact.phone || "",
+                email: contact.email || "", address: contact.address || "",
+              }); }}>
+              <X className="w-3 h-3" /> Cancel
+            </Button>
+          </div>
+        )}
+      </CardHeader>
+      <CardContent className="pt-0 space-y-2">
+        {!editing ? (
+          <>
+            <p className="font-semibold">{contact.name}</p>
+            {contact.phone && <a href={`tel:${contact.phone}`} className="flex items-center gap-2 text-sm text-[hsl(var(--titan-blue))] hover:underline"><Phone className="w-3 h-3" />{contact.phone}</a>}
+            {contact.email && <a href={`mailto:${contact.email}`} className="flex items-center gap-2 text-sm text-[hsl(var(--titan-blue))] hover:underline"><Mail className="w-3 h-3" />{contact.email}</a>}
+            {contact.address && <p className="flex items-center gap-2 text-sm text-muted-foreground"><MapPin className="w-3 h-3" />{contact.address}</p>}
+          </>
+        ) : (
+          <div className="space-y-2">
+            <div>
+              <Label className="text-xs">Name</Label>
+              <Input value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))} data-testid="input-customer-name" />
+            </div>
+            <div>
+              <Label className="text-xs">Phone</Label>
+              <Input value={draft.phone} onChange={e => setDraft(d => ({ ...d, phone: e.target.value }))} placeholder="(555) 555-5555" data-testid="input-customer-phone" />
+            </div>
+            <div>
+              <Label className="text-xs">Email</Label>
+              <Input type="email" value={draft.email} onChange={e => setDraft(d => ({ ...d, email: e.target.value }))} placeholder="name@example.com" data-testid="input-customer-email" />
+            </div>
+            <div>
+              <Label className="text-xs">Address</Label>
+              <Input value={draft.address} onChange={e => setDraft(d => ({ ...d, address: e.target.value }))} placeholder="Home address" data-testid="input-customer-address" />
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

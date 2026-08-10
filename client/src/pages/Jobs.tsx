@@ -1,6 +1,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { UserSelect } from "@/components/UserSelect";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link, useLocation } from "wouter";
 import {
   Plus, Search, MapPin, User, ChevronRight, Calendar,
@@ -591,11 +591,51 @@ export default function Jobs() {
     salesDate: new Date().toISOString().slice(0, 10),
     leadSource: "" as LeadSource | "",
     leadSourceDetail: "",
+    // Property details — auto-prefilled from OpenStreetMap when the address
+    // matches a known building, editable at any time.
+    yearBuilt: "" as string | number,
+    squareFeet: "" as string | number,
   });
+  // Property-lookup state — refs track whether the operator has manually
+  // typed a value so a later address change doesn't wipe out their entry.
+  const [propLookup, setPropLookup] = useState<{ status: "idle" | "loading" | "done" | "empty" | "error"; note: string }>({ status: "idle", note: "" });
+  const yearEditedRef = useRef(false);
+  const sqftEditedRef = useRef(false);
+
   // "existing" → pick from the customer dropdown. "new" → type customer
   // details here and we'll create the contact on submit.
   const [customerMode, setCustomerMode] = useState<"existing" | "new">("new");
   const [newCustomer, setNewCustomer] = useState({ name: "", email: "", phone: "", address: "" });
+
+  // Debounced property lookup: fires 900ms after the operator stops typing.
+  // Fills yearBuilt + squareFeet only if the operator hasn't manually edited
+  // those fields.
+  useEffect(() => {
+    const raw = form.address.trim();
+    if (raw.length < 6) {
+      setPropLookup({ status: "idle", note: "" });
+      return;
+    }
+    setPropLookup({ status: "loading", note: "Looking up public property records…" });
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const resp = await fetch(`/api/property-lookup?address=${encodeURIComponent(raw)}`, { signal: controller.signal });
+        if (!resp.ok) throw new Error(String(resp.status));
+        const data = await resp.json();
+        setForm(f => ({
+          ...f,
+          yearBuilt: yearEditedRef.current ? f.yearBuilt : (data.yearBuilt ?? ""),
+          squareFeet: sqftEditedRef.current ? f.squareFeet : (data.squareFeet ?? ""),
+        }));
+        const filled = (data.yearBuilt || data.squareFeet);
+        setPropLookup({ status: filled ? "done" : "empty", note: data.note || "" });
+      } catch (_e) {
+        if (!controller.signal.aborted) setPropLookup({ status: "error", note: "Lookup unavailable — enter year built manually." });
+      }
+    }, 900);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [form.address]);
 
   function resetForm() {
     setForm({
@@ -613,8 +653,13 @@ export default function Jobs() {
       salesDate: new Date().toISOString().slice(0, 10),
       leadSource: "",
       leadSourceDetail: "",
+      yearBuilt: "",
+      squareFeet: "",
     });
     setNewCustomer({ name: "", email: "", phone: "", address: "" });
+    setPropLookup({ status: "idle", note: "" });
+    yearEditedRef.current = false;
+    sqftEditedRef.current = false;
     setCustomerMode("new");
   }
 
@@ -844,6 +889,18 @@ export default function Jobs() {
                   <div>
                     <Label>Address</Label>
                     <Input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="Job site address" />
+                    {propLookup.status !== "idle" && (
+                      <p className={`text-[11px] mt-1 ${
+                        propLookup.status === "loading" ? "text-muted-foreground" :
+                        propLookup.status === "done" ? "text-green-700 dark:text-green-400" :
+                        propLookup.status === "error" ? "text-amber-700 dark:text-amber-400" :
+                        "text-muted-foreground"
+                      }`}>
+                        {propLookup.status === "loading" && "⏳ "}
+                        {propLookup.status === "done" && "✓ "}
+                        {propLookup.note}
+                      </p>
+                    )}
                   </div>
                   <div>
                     <Label>Location</Label>
@@ -854,6 +911,43 @@ export default function Jobs() {
                         <SelectItem value="Columbia">Columbia</SelectItem>
                       </SelectContent>
                     </Select>
+                  </div>
+                </div>
+
+                {/* Property record fields — auto-prefilled from OpenStreetMap.
+                    Year Built drives EPA RRP lead-safe (pre-1978). Editable. */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>Year Built</Label>
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      min={1700}
+                      max={new Date().getFullYear() + 1}
+                      placeholder="e.g. 1965"
+                      value={form.yearBuilt as any}
+                      onChange={e => {
+                        yearEditedRef.current = true;
+                        setForm(f => ({ ...f, yearBuilt: e.target.value }));
+                      }}
+                      data-testid="input-year-built"
+                    />
+                    <p className="text-[11px] text-muted-foreground mt-1">Pre-1978 triggers EPA RRP lead review.</p>
+                  </div>
+                  <div>
+                    <Label>Square Feet</Label>
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      placeholder="e.g. 1800"
+                      value={form.squareFeet as any}
+                      onChange={e => {
+                        sqftEditedRef.current = true;
+                        setForm(f => ({ ...f, squareFeet: e.target.value }));
+                      }}
+                      data-testid="input-square-feet"
+                    />
                   </div>
                 </div>
 
@@ -910,6 +1004,9 @@ export default function Jobs() {
                   onClick={() => createMutation.mutate({
                     ...form,
                     contactId: customerMode === "existing" && form.contactId ? Number(form.contactId) : null,
+                    // Coerce numeric strings to real numbers (or null when blank).
+                    yearBuilt: form.yearBuilt === "" || form.yearBuilt == null ? null : Number(form.yearBuilt) || null,
+                    squareFeet: form.squareFeet === "" || form.squareFeet == null ? null : Number(form.squareFeet) || null,
                     createdAt: new Date().toISOString(),
                   })}
                   data-testid="button-create-job"

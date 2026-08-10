@@ -174,6 +174,8 @@ sqlite.exec(`
     closed_reason TEXT,
     reopened_at TEXT,
     reopened_by TEXT,
+    year_built INTEGER,
+    square_feet INTEGER,
     created_at TEXT NOT NULL DEFAULT ''
   );
 
@@ -631,6 +633,16 @@ if (!jobCols.includes("reopened_at")) {
 }
 if (!jobCols.includes("reopened_by")) {
   sqlite.exec(`ALTER TABLE jobs ADD COLUMN reopened_by TEXT`);
+}
+// Year the property was built — captured at intake so the AI lead/asbestos
+// check (server/routes_aiagent.ts) can flag EPA RRP risk without a separate
+// hazmat_flags lookup. Auto-prefilled from /api/property-lookup.
+if (!jobCols.includes("year_built")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN year_built INTEGER`);
+}
+// Approx living area in square feet (from OSM building footprint * levels).
+if (!jobCols.includes("square_feet")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN square_feet INTEGER`);
 }
 
 // Invoice settlement / insurance-reduction tracking (idempotent migration).
