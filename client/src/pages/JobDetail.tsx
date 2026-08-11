@@ -186,7 +186,9 @@ function NotesTab({ jobId }: { jobId: number }) {
   // rule: 'all employees see all notes'. The Private toggle stays available
   // for the rare owner-only comment.
   const [newPublic, setNewPublic] = useState(true);
-  const [filter, setFilter] = useState<"all" | "public" | "private">("all");
+  // Filter state kept for compatibility with a few downstream references,
+  // but the UI no longer exposes the public/private toggle to employees.
+  const [filter] = useState<"all" | "public" | "private">("all");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editBody, setEditBody] = useState("");
   const [editPublic, setEditPublic] = useState(false);
@@ -235,37 +237,27 @@ function NotesTab({ jobId }: { jobId: number }) {
     setEditTag(note.tag || "");
   };
 
-  const filtered = notes.filter(n => {
-    if (filter === "public") return n.isPublic;
-    if (filter === "private") return !n.isPublic;
-    return true;
-  });
-
-  const publicCount = notes.filter(n => n.isPublic).length;
-  const privateCount = notes.filter(n => !n.isPublic).length;
+  // Every note is visible to every employee. The `isPublic` flag now only
+  // controls whether the homeowner sees the note in the customer portal.
+  // We drop the public/private filter buttons entirely so the crew can't
+  // accidentally hide notes from themselves.
+  const filtered = notes;
+  const homeownerVisible = notes.filter(n => n.isPublic).length;
 
   return (
     <div className="space-y-4">
-      {/* Stats bar */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <button
-          onClick={() => setFilter("all")}
-          className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${filter === "all" ? "bg-foreground text-background border-foreground" : "border-border hover:border-foreground/40"}`}
-        >
-          All ({notes.length})
-        </button>
-        <button
-          onClick={() => setFilter("public")}
-          className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border transition-colors ${filter === "public" ? "bg-green-600 text-white border-green-600" : "border-green-300 text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-950/30"}`}
-        >
-          <Globe className="w-3 h-3" />Public ({publicCount})
-        </button>
-        <button
-          onClick={() => setFilter("private")}
-          className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border transition-colors ${filter === "private" ? "bg-[hsl(var(--titan-red))] text-white border-[hsl(var(--titan-red))]" : "border-[hsl(var(--titan-red)/0.4)] text-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red)/0.05)]"}`}
-        >
-          <Lock className="w-3 h-3" />Private ({privateCount})
-        </button>
+      {/* Header — count + homeowner-visible callout */}
+      <div className="flex items-center gap-3 flex-wrap text-xs text-muted-foreground">
+        <span>
+          <span className="font-semibold text-foreground">{notes.length}</span>{" "}
+          note{notes.length === 1 ? "" : "s"} — all visible to every employee
+        </span>
+        {homeownerVisible > 0 && (
+          <span className="flex items-center gap-1 text-green-700 dark:text-green-400">
+            <Globe className="w-3 h-3" />
+            {homeownerVisible} shared with homeowner
+          </span>
+        )}
       </div>
 
       {/* Notes list */}
@@ -274,7 +266,7 @@ function NotesTab({ jobId }: { jobId: number }) {
       {!isLoading && filtered.length === 0 && (
         <div className="text-center py-8 text-muted-foreground">
           <StickyNote className="w-8 h-8 mx-auto mb-2 opacity-30" />
-          <p className="text-sm">No {filter !== "all" ? filter + " " : ""}notes yet.</p>
+          <p className="text-sm">No notes yet.</p>
         </div>
       )}
 
@@ -282,7 +274,7 @@ function NotesTab({ jobId }: { jobId: number }) {
         {filtered.map(note => (
           <Card
             key={note.id}
-            className={`border transition-colors ${note.isPublic ? "border-green-200 dark:border-green-800 bg-green-50/40 dark:bg-green-950/10" : "border-border"}`}
+            className="border border-border transition-colors"
           >
             {editingId === note.id ? (
               /* ── Edit mode ── */
@@ -301,7 +293,7 @@ function NotesTab({ jobId }: { jobId: number }) {
                       data-testid={`switch-note-public-edit-${note.id}`}
                     />
                     <span className={`text-xs font-medium flex items-center gap-1 ${editPublic ? "text-green-600" : "text-muted-foreground"}`}>
-                      {editPublic ? <><Globe className="w-3 h-3" />Public — visible to homeowner</> : <><Lock className="w-3 h-3" />Private — company only</>}
+                      {editPublic ? <><Globe className="w-3 h-3" />Shared with homeowner</> : <><Lock className="w-3 h-3" />Staff only (homeowner won't see)</>}
                     </span>
                   </div>
                   <Input
@@ -336,9 +328,11 @@ function NotesTab({ jobId }: { jobId: number }) {
                       {note.tag && (
                         <span className="text-xs bg-[hsl(var(--titan-blue)/0.12)] text-[hsl(var(--titan-blue))] px-2 py-0.5 rounded-full">@{note.tag}</span>
                       )}
-                      <span className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${note.isPublic ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" : "bg-muted text-muted-foreground"}`}>
-                        {note.isPublic ? <><Globe className="w-3 h-3" />Public</> : <><Lock className="w-3 h-3" />Private</>}
-                      </span>
+                      {note.isPublic && (
+                        <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                          <Globe className="w-3 h-3" />Homeowner
+                        </span>
+                      )}
                       <span className="text-xs text-muted-foreground ml-auto">
                         {note.createdAt ? fmtDate(note.createdAt, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }) : ""}
                         {note.editedAt && <span className="italic ml-1">(edited)</span>}
@@ -409,7 +403,7 @@ function NotesTab({ jobId }: { jobId: number }) {
               />
             </div>
             <div className="flex flex-col gap-1">
-              <Label className="text-xs">Visibility</Label>
+              <Label className="text-xs">Homeowner Portal</Label>
               <div className="flex items-center gap-2 h-7">
                 <Switch
                   checked={newPublic}
@@ -418,18 +412,17 @@ function NotesTab({ jobId }: { jobId: number }) {
                 />
                 <span className={`text-xs font-medium flex items-center gap-1 ${newPublic ? "text-green-600" : "text-muted-foreground"}`}>
                   {newPublic
-                    ? <><Globe className="w-3 h-3" />Public — homeowner can see this</>
-                    : <><Lock className="w-3 h-3" />Private — company only</>}
+                    ? <><Globe className="w-3 h-3" />Share with homeowner</>
+                    : <><Lock className="w-3 h-3" />Staff only (homeowner won't see)</>}
                 </span>
               </div>
             </div>
           </div>
 
-          {newPublic && (
-            <div className="text-xs bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 rounded px-3 py-2">
-              This note will appear in the homeowner's Customer Portal under job updates.
-            </div>
-          )}
+          <div className="text-xs bg-muted/50 border border-border rounded px-3 py-2 text-muted-foreground">
+            <strong className="text-foreground">Every employee sees every note.</strong>{" "}
+            The toggle above only controls whether the homeowner sees it in their Customer Portal.
+          </div>
 
           <Button
             size="sm"
@@ -1300,28 +1293,33 @@ export default function JobDetail() {
           </Card>
 
           {/* Recent public notes preview on activity tab */}
-          {notes.filter(n => n.isPublic).length > 0 && (
-            <Card className="border-green-200 dark:border-green-800">
+          {notes.length > 0 && (
+            <Card>
               <CardHeader className="pb-2 flex flex-row items-center justify-between">
                 <CardTitle className="text-sm flex items-center gap-2">
-                  <Globe className="w-4 h-4 text-green-600" />
-                  Public Updates (visible to homeowner)
+                  <StickyNote className="w-4 h-4" />
+                  Recent Notes
                 </CardTitle>
-                <Badge variant="outline" className="text-green-700 border-green-300 text-xs">{notes.filter(n => n.isPublic).length} note{notes.filter(n => n.isPublic).length !== 1 ? "s" : ""}</Badge>
+                <Badge variant="outline" className="text-xs">{notes.length} note{notes.length !== 1 ? "s" : ""}</Badge>
               </CardHeader>
               <CardContent className="pt-0 space-y-2">
-                {notes.filter(n => n.isPublic).slice(0, 3).map(note => (
-                  <div key={note.id} className="text-sm bg-green-50/60 dark:bg-green-950/10 rounded p-2.5">
+                {notes.slice(-3).reverse().map(note => (
+                  <div key={note.id} className="text-sm bg-muted/40 rounded p-2.5">
                     <div className="flex items-center gap-2 mb-1">
                       <span className="text-xs font-semibold">{note.author}</span>
                       {note.tag && <span className="text-xs text-muted-foreground">@{note.tag}</span>}
+                      {note.isPublic && (
+                        <span className="flex items-center gap-0.5 text-[10px] text-green-700 dark:text-green-400">
+                          <Globe className="w-2.5 h-2.5" />homeowner
+                        </span>
+                      )}
                       <span className="text-xs text-muted-foreground ml-auto">{note.createdAt ? fmtDateShort(note.createdAt) : ""}</span>
                     </div>
                     <p className="text-muted-foreground">{note.body}</p>
                   </div>
                 ))}
-                {notes.filter(n => n.isPublic).length > 3 && (
-                  <p className="text-xs text-muted-foreground text-center">+ {notes.filter(n => n.isPublic).length - 3} more — open Notes tab to view all</p>
+                {notes.length > 3 && (
+                  <p className="text-xs text-muted-foreground text-center">+ {notes.length - 3} more — open Notes tab to view all</p>
                 )}
               </CardContent>
             </Card>
