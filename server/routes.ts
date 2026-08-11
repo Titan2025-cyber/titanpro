@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage, sqlite } from "./storage";
+import BetterSqlite3 from "better-sqlite3";
 import crypto from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { registerCrudGapRoutes } from "./routes_crud_gaps";
@@ -1090,6 +1091,135 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     ).all();
     for (const r of rows) geocodeJobInBackground(sqlite, r.id, r.address);
     res.json({ queued: rows.length });
+  });
+
+  // ── Backup rescue ─────────────────────────────────────────────
+  // Owner-only endpoints to list the rotating DB snapshots and restore one.
+  // Written specifically for the scenario where a redeploy or migration
+  // eats data — the operator can pick the most recent backup taken before
+  // the incident and roll the live DB back to that point without shell
+  // access. Restore takes a safety copy of the current file first so the
+  // operation is itself reversible.
+  app.get("/api/admin/backups", requireRole("owner"), async (req, res) => {
+    try {
+      const fs = await import("fs");
+      const path = await import("path");
+      const dbPath = process.env.DATABASE_PATH || "data.db";
+      const backupDir = process.env.BACKUP_DIR || path.join(path.dirname(dbPath), "backups");
+      if (!fs.existsSync(backupDir)) return res.json({ backupDir, backups: [], current: null });
+      const files = fs.readdirSync(backupDir)
+        .filter(f => /^data-.*\.db$/.test(f))
+        .map(f => {
+          const full = path.join(backupDir, f);
+          const stat = fs.statSync(full);
+          // Probe the backup to report how many jobs/employees it contains —
+          // helps the owner pick the right snapshot without guessing.
+          let jobs = 0, employees = 0, jobNumbers: string[] = [];
+          try {
+            const probe = new BetterSqlite3(full, { readonly: true });
+            try {
+              const jr: any = probe.prepare("SELECT COUNT(*) AS n FROM jobs").get();
+              const er: any = probe.prepare("SELECT COUNT(*) AS n FROM employees WHERE is_active = 1").get();
+              const sample: any[] = probe.prepare("SELECT job_number FROM jobs ORDER BY id DESC LIMIT 5").all();
+              jobs = Number(jr?.n || 0);
+              employees = Number(er?.n || 0);
+              jobNumbers = sample.map(r => r.job_number).filter(Boolean);
+            } catch { /* schema mismatch */ }
+            probe.close();
+          } catch { /* unreadable */ }
+          return {
+            file: f,
+            path: full,
+            sizeBytes: stat.size,
+            mtime: stat.mtime.toISOString(),
+            jobs,
+            activeEmployees: employees,
+            recentJobNumbers: jobNumbers,
+          };
+        })
+        .sort((a, b) => b.mtime.localeCompare(a.mtime));
+      // Current live DB summary for comparison.
+      let current: any = null;
+      try {
+        const stat = fs.statSync(dbPath);
+        const jr: any = sqlite.prepare("SELECT COUNT(*) AS n FROM jobs").get();
+        const er: any = sqlite.prepare("SELECT COUNT(*) AS n FROM employees WHERE is_active = 1").get();
+        current = {
+          path: dbPath,
+          sizeBytes: stat.size,
+          mtime: stat.mtime.toISOString(),
+          jobs: Number(jr?.n || 0),
+          activeEmployees: Number(er?.n || 0),
+        };
+      } catch { /* db not on disk yet */ }
+      res.json({ backupDir, current, backups: files });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+
+  // Restore a specific backup. The current DB is safety-copied to
+  // <db>.pre-restore-<timestamp>.bak before the swap so the operation is
+  // reversible. Requires ?file=<name> that matches one of the listed
+  // backups (name-only, never a full path — defends against traversal).
+  app.post("/api/admin/backups/restore", requireRole("owner"), async (req, res) => {
+    try {
+      const file = String(req.body?.file || "").trim();
+      if (!/^data-[A-Za-z0-9._:-]+\.db$/.test(file)) {
+        return res.status(400).json({ error: "Invalid backup file name" });
+      }
+      const fs = await import("fs");
+      const path = await import("path");
+      const dbPath = process.env.DATABASE_PATH || "data.db";
+      const backupDir = process.env.BACKUP_DIR || path.join(path.dirname(dbPath), "backups");
+      const src = path.join(backupDir, file);
+      if (!fs.existsSync(src)) return res.status(404).json({ error: "Backup not found" });
+
+      // 1) Safety-copy the current DB.
+      const safety = dbPath + ".pre-restore-" + Date.now() + ".bak";
+      fs.copyFileSync(dbPath, safety);
+
+      // 2) Copy the chosen backup over the current DB. The running process
+      //    already has an open handle — this replaces the file underneath
+      //    it. SQLite will keep using its in-memory pages until restart. We
+      //    return a hint telling the operator to redeploy (which restarts
+      //    the process cleanly) so the new file is opened fresh.
+      fs.copyFileSync(src, dbPath);
+
+      res.json({
+        restored: file,
+        safetyCopy: safety,
+        note: "Restore complete. Redeploy or restart the server so the new DB file is opened cleanly.",
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+
+  // Force an immediate on-demand backup (in addition to the scheduled ones).
+  // Handy before risky operations — an operator can hit this from the
+  // browser and know a fresh snapshot exists.
+  app.post("/api/admin/backups/snapshot", requireRole("owner"), async (req, res) => {
+    try {
+      const fs = await import("fs");
+      const path = await import("path");
+      const dbPath = process.env.DATABASE_PATH || "data.db";
+      const backupDir = process.env.BACKUP_DIR || path.join(path.dirname(dbPath), "backups");
+      if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const dest = path.join(backupDir, `data-${stamp}.db`);
+      const anyDb = sqlite as any;
+      if (typeof anyDb.backup === "function") {
+        await anyDb.backup(dest);
+      } else {
+        sqlite.pragma("wal_checkpoint(TRUNCATE)");
+        fs.copyFileSync(dbPath, dest);
+      }
+      const stat = fs.statSync(dest);
+      res.json({ file: path.basename(dest), path: dest, sizeBytes: stat.size, mtime: stat.mtime.toISOString() });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
   });
 
   // Diagnostic: report the geocode status of every active job. Useful when

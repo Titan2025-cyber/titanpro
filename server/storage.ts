@@ -36,25 +36,60 @@ try {
   console.warn("[storage] First-boot seed skipped (non-fatal):", e);
 }
 
-// Recovery seed: if the target DB exists but has no active employees, the
-// sandbox is running against a stale/empty preserved copy. Reseed from
-// seed-data.db so the login screen isn't empty. Runs at most once per boot.
-try {
-  if (fs.existsSync(DB_PATH) && fs.existsSync("seed-data.db")) {
-    const probe = new BetterSqlite3(DB_PATH, { readonly: true });
-    let hasUsers = false;
-    try {
-      const row: any = probe.prepare("SELECT COUNT(*) AS n FROM employees WHERE is_active = 1").get();
-      hasUsers = Number(row?.n || 0) > 0;
-    } catch { /* table missing = empty DB */ }
-    probe.close();
-    if (!hasUsers) {
-      fs.copyFileSync("seed-data.db", DB_PATH);
-      console.log("[storage] Recovery seed applied (target had no active employees) -> " + DB_PATH);
+// Recovery seed (DANGEROUS — DISABLED BY DEFAULT):
+//
+// Historically: if the target DB existed but had no active employees, this
+// would overwrite it with seed-data.db. That's a data-loss footgun — a
+// migration or transient error that leaves employees.is_active = 0 for all
+// users would clobber the entire production DB on the next boot. This was
+// almost certainly the cause of the "lost job info after a redeploy"
+// incident reported by the operator.
+//
+// Now: only runs when ALLOW_RECOVERY_SEED=1 is explicitly set. In every
+// other case, an empty DB just stays empty and the operator restores from
+// a backup via /api/admin/backups. The bundled seed-data.db is untouched
+// on disk and available if you ever intentionally need to reset.
+if (process.env.ALLOW_RECOVERY_SEED === "1") {
+  try {
+    if (fs.existsSync(DB_PATH) && fs.existsSync("seed-data.db")) {
+      const probe = new BetterSqlite3(DB_PATH, { readonly: true });
+      let hasUsers = false;
+      try {
+        const row: any = probe.prepare("SELECT COUNT(*) AS n FROM employees WHERE is_active = 1").get();
+        hasUsers = Number(row?.n || 0) > 0;
+      } catch { /* table missing = empty DB */ }
+      probe.close();
+      if (!hasUsers) {
+        // Even when the operator opts in, make a safety copy of whatever
+        // is currently on disk before overwriting it so nothing is ever
+        // truly gone.
+        try {
+          const safety = DB_PATH + ".pre-recovery-" + Date.now() + ".bak";
+          fs.copyFileSync(DB_PATH, safety);
+          console.log("[storage] Pre-recovery safety copy: " + safety);
+        } catch (safetyErr) {
+          console.warn("[storage] Pre-recovery safety copy failed (aborting seed):", safetyErr);
+          throw safetyErr;
+        }
+        fs.copyFileSync("seed-data.db", DB_PATH);
+        console.log("[storage] Recovery seed applied (opt-in via ALLOW_RECOVERY_SEED) -> " + DB_PATH);
+      }
     }
+  } catch (e) {
+    console.warn("[storage] Recovery seed skipped (non-fatal):", e);
   }
-} catch (e) {
-  console.warn("[storage] Recovery seed skipped (non-fatal):", e);
+} else if (fs.existsSync(DB_PATH)) {
+  // Log-only diagnostic — helps Cody see when the DB looks unusually empty
+  // right after a boot without silently overwriting anything.
+  try {
+    const probe = new BetterSqlite3(DB_PATH, { readonly: true });
+    try {
+      const jobsRow: any = probe.prepare("SELECT COUNT(*) AS n FROM jobs").get();
+      const empRow: any = probe.prepare("SELECT COUNT(*) AS n FROM employees WHERE is_active = 1").get();
+      console.log(`[storage] DB opened at ${DB_PATH}: ${Number(jobsRow?.n||0)} jobs, ${Number(empRow?.n||0)} active employees`);
+    } catch { /* tables may not exist yet on very first boot */ }
+    probe.close();
+  } catch { /* non-fatal */ }
 }
 export const sqlite: Database = new BetterSqlite3(DB_PATH);
 const db = drizzle(sqlite, { schema });
