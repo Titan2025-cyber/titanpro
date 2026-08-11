@@ -5,7 +5,8 @@
  */
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import { Camera, Upload, Trash2, FolderOpen, X, ZoomIn, CloudUpload, AlertTriangle, RefreshCw } from "lucide-react";
+import { Camera, Upload, Trash2, FolderOpen, X, ZoomIn, CloudUpload, AlertTriangle, RefreshCw, FileText, CheckSquare, Square } from "lucide-react";
+import jsPDF from "jspdf";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -45,6 +46,11 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
   const [uploading, setUploading] = useState(false);
   const [activeFilter, setActiveFilter] = useState("all");
   const [lightbox, setLightbox] = useState<Photo | null>(null);
+  // Photo report mode: when true, tiles become selectable (checkbox in the
+  // corner) and clicking toggles selection instead of opening the lightbox.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [generatingReport, setGeneratingReport] = useState(false);
 
   const { data: photos = [], isLoading } = useQuery<Photo[]>({
     queryKey: ["/api/jobs", String(jobId), "photos"],
@@ -195,6 +201,100 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
 
   const filtered = activeFilter === "all" ? phaseScoped : phaseScoped.filter(p => p.category === activeFilter);
 
+  // ── Photo report (PDF) helpers ───────────────────────────────────────
+  // Tap a tile in select mode to add/remove it from the report. All selected
+  // photos render into a compact multi-page PDF (2 per page in a grid) with
+  // caption, category, and timestamp beneath each image.
+  const toggleSelect = (id: number) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const selectAllVisible = () => {
+    setSelectedIds(new Set(filtered.map(p => p.id)));
+  };
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const generateReport = async () => {
+    const chosen = filtered.filter(p => selectedIds.has(p.id));
+    if (chosen.length === 0) {
+      toast({ title: "No photos selected", description: "Tap photos to include them in the report.", variant: "destructive" });
+      return;
+    }
+    setGeneratingReport(true);
+    try {
+      const doc = new jsPDF({ unit: "mm", format: "letter" });
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+      const margin = 12;
+      const gap = 8;
+      // 2-up layout: two photos per page, stacked vertically. Each half gets
+      // ~40% of page height for the image and ~10% for the caption block.
+      const halfH = (pageH - margin * 2 - gap) / 2;
+      const imgH = halfH * 0.72;
+      const captionH = halfH - imgH;
+      const imgW = pageW - margin * 2;
+
+      // Cover page
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(20);
+      doc.text("Photo Report", pageW / 2, 40, { align: "center" });
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(11);
+      doc.text(`Job #${jobId}`, pageW / 2, 50, { align: "center" });
+      doc.setFontSize(10);
+      doc.text(`${chosen.length} photo${chosen.length === 1 ? "" : "s"} — generated ${new Date().toLocaleString()}`, pageW / 2, 58, { align: "center" });
+
+      // Photo pages
+      for (let i = 0; i < chosen.length; i++) {
+        const photo = chosen[i];
+        const slot = i % 2;
+        if (slot === 0) doc.addPage();
+        const y0 = margin + slot * (halfH + gap);
+
+        // Image — jsPDF accepts data URIs directly for JPEG/PNG.
+        try {
+          const dataUrl = photo.dataUrl;
+          const fmt = dataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
+          // Preserve aspect ratio by fitting into the imgW x imgH box.
+          doc.addImage(dataUrl, fmt, margin, y0, imgW, imgH, undefined, "FAST");
+        } catch (e) {
+          doc.setFontSize(9);
+          doc.text(`[image failed to load: ${photo.filename || photo.id}]`, margin + 2, y0 + 10);
+        }
+
+        // Caption block
+        const capY = y0 + imgH + 5;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        const line1 = photo.caption?.trim() || photo.filename || `Photo ${photo.id}`;
+        doc.text(doc.splitTextToSize(line1, imgW), margin, capY);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8);
+        const parts: string[] = [];
+        if (photo.category) parts.push(photo.category.charAt(0).toUpperCase() + photo.category.slice(1));
+        if (photo.takenAt) {
+          const t = new Date(photo.takenAt);
+          if (!isNaN(t.getTime())) parts.push(t.toLocaleString());
+        }
+        if (parts.length) doc.text(parts.join(" • "), margin, capY + 5);
+      }
+
+      const filename = `Photo_Report_Job_${jobId}_${new Date().toISOString().slice(0, 10)}.pdf`;
+      doc.save(filename);
+      toast({ title: "Report generated", description: `${chosen.length} photo${chosen.length === 1 ? "" : "s"} exported as PDF.` });
+      // Exit select mode after successful export.
+      setSelectMode(false);
+      setSelectedIds(new Set());
+    } catch (e: any) {
+      toast({ title: "Report failed", description: e?.message || "Try again.", variant: "destructive" });
+    } finally {
+      setGeneratingReport(false);
+    }
+  };
+
   // Offline-queued photo POSTs for this job (saved on-device, not yet synced).
   const {
     pending: pendingQueue,
@@ -340,6 +440,65 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
         </div>
       )}
 
+      {/* Photo report toolbar — select mode toggle + PDF export.
+          Hidden when there are no photos to work with. */}
+      {phaseScoped.length > 0 && (
+        <div className="flex items-center justify-between gap-2 border rounded-lg bg-muted/30 px-2 py-1.5">
+          {selectMode ? (
+            <>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs font-medium">
+                  {selectedIds.size} selected
+                </span>
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={selectAllVisible} data-testid="button-photos-select-all">
+                  Select all visible
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={clearSelection} data-testid="button-photos-clear-selection">
+                  Clear
+                </Button>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => { setSelectMode(false); clearSelection(); }}
+                  data-testid="button-photos-cancel-select"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7 text-xs bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
+                  onClick={generateReport}
+                  disabled={generatingReport || selectedIds.size === 0}
+                  data-testid="button-photos-generate-report"
+                >
+                  <FileText className="w-3.5 h-3.5 mr-1" />
+                  {generatingReport ? "Generating…" : `Export PDF (${selectedIds.size})`}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span className="text-xs text-muted-foreground">
+                Build a PDF report from selected photos.
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => setSelectMode(true)}
+                data-testid="button-photos-enter-select"
+              >
+                <CheckSquare className="w-3.5 h-3.5 mr-1" />
+                Select for report
+              </Button>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Photo grid */}
       {isLoading ? (
         <div className="grid grid-cols-3 gap-2">
@@ -429,21 +588,36 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
             const tileStamp = takenDate && !isNaN(takenDate.getTime())
               ? takenDate.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
               : null;
+            const isSelected = selectedIds.has(photo.id);
             return (
               <div
                 key={photo.id}
-                className="relative group rounded-lg overflow-hidden border bg-muted aspect-square cursor-pointer"
+                className={`relative group rounded-lg overflow-hidden border bg-muted aspect-square cursor-pointer ${
+                  selectMode && isSelected ? "ring-2 ring-[hsl(var(--titan-blue))] ring-offset-2" : ""
+                }`}
                 data-testid={`photo-${photo.id}`}
-                onClick={() => setLightbox(photo)}
+                onClick={() => selectMode ? toggleSelect(photo.id) : setLightbox(photo)}
               >
                 <img
                   src={photo.dataUrl}
                   alt={photo.caption || photo.filename}
-                  className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                  className={`w-full h-full object-cover transition-transform group-hover:scale-105 ${
+                    selectMode && !isSelected ? "opacity-70" : ""
+                  }`}
                 />
-                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                  <ZoomIn className="w-6 h-6 text-white" />
-                </div>
+                {selectMode ? (
+                  <div className="absolute top-1.5 right-1.5 rounded-full bg-white/95 dark:bg-black/80 p-0.5 shadow-sm">
+                    {isSelected ? (
+                      <CheckSquare className="w-5 h-5 text-[hsl(var(--titan-blue))]" />
+                    ) : (
+                      <Square className="w-5 h-5 text-muted-foreground" />
+                    )}
+                  </div>
+                ) : (
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                    <ZoomIn className="w-6 h-6 text-white" />
+                  </div>
+                )}
                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5">
                   <div className="flex items-center justify-between gap-1.5">
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${CATEGORY_COLORS[photo.category ?? ""] || "bg-gray-100 text-gray-700"}`}>

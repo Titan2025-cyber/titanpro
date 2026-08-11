@@ -1428,19 +1428,7 @@ export default function JobDetail() {
 
         {/* ── Insurance Tab ── */}
         <TabsContent value="insurance" className="mt-4 space-y-4">
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Shield className="w-4 h-4 text-[hsl(var(--titan-blue))]" />Adjuster Information</CardTitle></CardHeader>
-            <CardContent className="pt-0 grid grid-cols-2 gap-2 text-sm">
-              <div><p className="text-xs text-muted-foreground">Adjuster</p><p className="font-medium">{job.adjusterName || "—"}</p></div>
-              <div><p className="text-xs text-muted-foreground">Phone</p>
-                {job.adjusterPhone
-                  ? <a href={`tel:${job.adjusterPhone}`} className="text-[hsl(var(--titan-blue))] hover:underline">{job.adjusterPhone}</a>
-                  : <p>—</p>}
-              </div>
-              <div><p className="text-xs text-muted-foreground">Policy #</p><p className="font-medium">{job.policyNumber || "—"}</p></div>
-              <div><p className="text-xs text-muted-foreground">Claim #</p><p className="font-medium">{job.claimNumber || "—"}</p></div>
-            </CardContent>
-          </Card>
+          <InsuranceEditor job={job} updateJob={updateJob} />
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-sm">{stateLabel} Insurance Statutes</CardTitle></CardHeader>
             <CardContent className="pt-0 space-y-2">
@@ -1636,6 +1624,155 @@ function EditableCustomerCard(props: {
             <div>
               <Label className="text-xs">Address</Label>
               <Input value={draft.address} onChange={e => setDraft(d => ({ ...d, address: e.target.value }))} placeholder="Home address" data-testid="input-customer-address" />
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * InsuranceEditor \u2014 inline-editable adjuster/claim card on the Insurance tab.
+ * Displays as read-only until the operator clicks Edit; then reveals inputs
+ * for adjuster name, phone, policy #, claim #. Save PATCHes /api/jobs/:id
+ * via the shared updateJob mutation so cache invalidation is consistent
+ * with the rest of the page.
+ */
+function InsuranceEditor({ job, updateJob }: { job: any; updateJob: any }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({
+    adjusterName: job.adjusterName ?? "",
+    adjusterPhone: job.adjusterPhone ?? "",
+    policyNumber: job.policyNumber ?? "",
+    claimNumber: job.claimNumber ?? "",
+    insuranceCompany: (job as any).insuranceCompany ?? "",
+  });
+  // Sync draft whenever the underlying job changes (e.g. after save invalidation).
+  useEffect(() => {
+    setDraft({
+      adjusterName: job.adjusterName ?? "",
+      adjusterPhone: job.adjusterPhone ?? "",
+      policyNumber: job.policyNumber ?? "",
+      claimNumber: job.claimNumber ?? "",
+      insuranceCompany: (job as any).insuranceCompany ?? "",
+    });
+  }, [job.adjusterName, job.adjusterPhone, job.policyNumber, job.claimNumber, (job as any).insuranceCompany]);
+
+  const save = async () => {
+    await updateJob.mutateAsync({
+      adjusterName: draft.adjusterName.trim() || null,
+      adjusterPhone: draft.adjusterPhone.trim() || null,
+      policyNumber: draft.policyNumber.trim() || null,
+      claimNumber: draft.claimNumber.trim() || null,
+      insuranceCompany: draft.insuranceCompany.trim() || null,
+    });
+    setEditing(false);
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 flex flex-row items-center justify-between">
+        <CardTitle className="text-sm flex items-center gap-2">
+          <Shield className="w-4 h-4 text-[hsl(var(--titan-blue))]" />
+          Adjuster Information
+        </CardTitle>
+        {editing ? (
+          <div className="flex gap-1.5">
+            <Button size="sm" variant="ghost" onClick={() => setEditing(false)} data-testid="button-insurance-cancel">
+              <X className="w-3.5 h-3.5 mr-1" />Cancel
+            </Button>
+            <Button size="sm" onClick={save} disabled={updateJob.isPending} data-testid="button-insurance-save">
+              <Check className="w-3.5 h-3.5 mr-1" />{updateJob.isPending ? "Saving\u2026" : "Save"}
+            </Button>
+          </div>
+        ) : (
+          <Button size="sm" variant="outline" onClick={() => setEditing(true)} data-testid="button-insurance-edit">
+            <Pencil className="w-3.5 h-3.5 mr-1" />Edit
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent className="pt-0">
+        {editing ? (
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div className="col-span-2">
+              <Label className="text-xs">Insurance Company</Label>
+              <Input
+                className="mt-1"
+                value={draft.insuranceCompany}
+                onChange={e => setDraft(d => ({ ...d, insuranceCompany: e.target.value }))}
+                placeholder="e.g. State Farm, Allstate"
+                data-testid="input-insurance-company"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Adjuster Name</Label>
+              <Input
+                className="mt-1"
+                value={draft.adjusterName}
+                onChange={e => setDraft(d => ({ ...d, adjusterName: e.target.value }))}
+                placeholder="Full name"
+                data-testid="input-adjuster-name"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Adjuster Phone</Label>
+              <Input
+                className="mt-1"
+                value={draft.adjusterPhone}
+                onChange={e => setDraft(d => ({ ...d, adjusterPhone: e.target.value }))}
+                placeholder="(555) 555-5555"
+                data-testid="input-adjuster-phone"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Policy #</Label>
+              <Input
+                className="mt-1"
+                value={draft.policyNumber}
+                onChange={e => setDraft(d => ({ ...d, policyNumber: e.target.value }))}
+                data-testid="input-policy-number"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Claim #</Label>
+              <Input
+                className="mt-1"
+                value={draft.claimNumber}
+                onChange={e => setDraft(d => ({ ...d, claimNumber: e.target.value }))}
+                data-testid="input-claim-number"
+              />
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <div className="col-span-2">
+              <p className="text-xs text-muted-foreground">Insurance Carrier</p>
+              <p className="font-medium">{job.insuranceCarrier || "—"}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Adjuster</p>
+              <p className="font-medium">{job.adjusterName || "—"}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Phone</p>
+              {job.adjusterPhone
+                ? <a href={`tel:${job.adjusterPhone}`} className="text-[hsl(var(--titan-blue))] hover:underline font-medium">{job.adjusterPhone}</a>
+                : <p className="font-medium">—</p>}
+            </div>
+            <div className="col-span-2">
+              <p className="text-xs text-muted-foreground">Adjuster Email</p>
+              {job.adjusterEmail
+                ? <a href={`mailto:${job.adjusterEmail}`} className="text-[hsl(var(--titan-blue))] hover:underline font-medium break-all">{job.adjusterEmail}</a>
+                : <p className="font-medium">—</p>}
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Policy #</p>
+              <p className="font-medium">{job.policyNumber || "—"}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Claim #</p>
+              <p className="font-medium">{job.claimNumber || "—"}</p>
             </div>
           </div>
         )}
