@@ -1091,6 +1091,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     for (const r of rows) geocodeJobInBackground(sqlite, r.id, r.address);
     res.json({ queued: rows.length });
   });
+
+  // Diagnostic: report the geocode status of every active job. Useful when
+  // pins aren't dropping to see whether the row has an address, has been
+  // geocoded, or has a numeric-but-invalid lat/lng from a bad import.
+  app.get("/api/jobs/geocode-status", (req, res) => {
+    const rows: any[] = sqlite.prepare(
+      "SELECT id, job_number, address, latitude, longitude, geocoded_at, status FROM jobs WHERE status IS NULL OR status <> 'closed' ORDER BY id DESC"
+    ).all();
+    const summary = {
+      total: rows.length,
+      withAddress: rows.filter(r => (r.address || "").trim().length > 0).length,
+      geocoded: rows.filter(r => Number.isFinite(r.latitude) && Number.isFinite(r.longitude)).length,
+      missingCoords: rows.filter(r => (r.address || "").trim().length > 0 && !(Number.isFinite(r.latitude) && Number.isFinite(r.longitude))).length,
+      noAddress: rows.filter(r => !(r.address || "").trim()).length,
+    };
+    res.json({ summary, jobs: rows });
+  });
   app.delete("/api/jobs/:id", requireRole("owner", "admin"), (req, res) => {
     const jobId = Number(req.params.id);
     if (!Number.isFinite(jobId)) return res.status(400).json({ error: "Invalid job id" });

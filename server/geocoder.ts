@@ -53,24 +53,55 @@ export async function geocodeAddress(rawAddress: string | null | undefined): Pro
   const prev = queue;
   queue = queue.then(() => gate);
 
+  // Try the raw address first; if Nominatim returns zero hits, retry with
+  // country hint appended. SC/GA residential addresses without ", USA" often
+  // 0-hit because Nominatim assumes the caller knows the country.
+  const attempts = [rawAddress];
+  const upper = rawAddress.toUpperCase();
+  if (!/UNITED STATES|\bUSA\b|\bUS\b/.test(upper)) attempts.push(`${rawAddress}, USA`);
+
   try {
     await prev;
-    await throttle();
-    const url = new URL("https://nominatim.openstreetmap.org/search");
-    url.searchParams.set("q", rawAddress);
-    url.searchParams.set("format", "jsonv2");
-    url.searchParams.set("limit", "1");
-    url.searchParams.set("addressdetails", "0");
-    const res = await fetch(url.toString(), { headers: { "User-Agent": USER_AGENT, "Accept-Language": "en" } });
-    if (!res.ok) return null;
-    const arr = await res.json() as Array<{ lat: string; lon: string }>;
-    if (!Array.isArray(arr) || arr.length === 0) return null;
-    const lat = parseFloat(arr[0].lat);
-    const lng = parseFloat(arr[0].lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-    cache.set(key, { lat, lng, at: Date.now() });
-    return { lat, lng };
-  } catch {
+    for (const query of attempts) {
+      await throttle();
+      const url = new URL("https://nominatim.openstreetmap.org/search");
+      url.searchParams.set("q", query);
+      url.searchParams.set("format", "jsonv2");
+      url.searchParams.set("limit", "1");
+      url.searchParams.set("addressdetails", "0");
+      url.searchParams.set("countrycodes", "us");   // Titan's service area is US-only
+      let res: Response;
+      try {
+        res = await fetch(url.toString(), {
+          headers: { "User-Agent": USER_AGENT, "Accept-Language": "en" },
+        });
+      } catch (fetchErr: any) {
+        console.warn(`[geocoder] fetch failed for "${query}":`, fetchErr?.message || fetchErr);
+        continue;
+      }
+      if (!res.ok) {
+        console.warn(`[geocoder] Nominatim ${res.status} for "${query}"`);
+        continue;
+      }
+      let arr: Array<{ lat: string; lon: string }>;
+      try {
+        arr = await res.json() as any;
+      } catch (jsonErr) {
+        console.warn(`[geocoder] JSON parse failed for "${query}"`);
+        continue;
+      }
+      if (!Array.isArray(arr) || arr.length === 0) continue;
+      const lat = parseFloat(arr[0].lat);
+      const lng = parseFloat(arr[0].lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      cache.set(key, { lat, lng, at: Date.now() });
+      console.log(`[geocoder] resolved "${rawAddress}" → ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+      return { lat, lng };
+    }
+    console.warn(`[geocoder] no results for "${rawAddress}" after ${attempts.length} attempt(s)`);
+    return null;
+  } catch (err: any) {
+    console.warn(`[geocoder] unexpected error for "${rawAddress}":`, err?.message || err);
     return null;
   } finally {
     resolve();
@@ -91,6 +122,9 @@ export function geocodeJobInBackground(sqlite: Database.Database, jobId: number,
       sqlite.prepare(
         "UPDATE jobs SET latitude = ?, longitude = ?, geocoded_at = ? WHERE id = ?"
       ).run(coords.lat, coords.lng, new Date().toISOString(), jobId);
-    } catch { /* schema race — ignore */ }
+      console.log(`[geocoder] saved job #${jobId} → ${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`);
+    } catch (err: any) {
+      console.warn(`[geocoder] DB write failed for job #${jobId}:`, err?.message || err);
+    }
   })();
 }
