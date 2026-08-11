@@ -15,6 +15,7 @@ import {
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDate } from "@/lib/dates";
 
 // apiRequest throws Error(`<status>: <body>`) where <body> is usually JSON like
 // {"error":"..."}. Pull out the human message.
@@ -313,7 +314,7 @@ export default function UserManagement() {
                       )}
                       {emp.lastLoginAt && (
                         <p className="text-xs text-muted-foreground">
-                          Last login: {new Date(emp.lastLoginAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                          Last login: {fmtDate(emp.lastLoginAt, { month: "short", day: "numeric", year: "numeric" })}
                         </p>
                       )}
                     </div>

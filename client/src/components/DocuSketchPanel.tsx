@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { ScanLine, ExternalLink, Link2, CheckCircle2, Clock, AlertCircle, Eye, Download, Pencil, X, Save } from "lucide-react";
+import { fmtDateShort } from "@/lib/dates";
 
 interface DocuSketchPanelProps {
   jobId: number;
@@ -182,7 +183,7 @@ export default function DocuSketchPanel({ jobId, job }: DocuSketchPanelProps) {
             {job?.docusketch_completed_at && form.docusketchStatus === "complete" && (
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground text-xs w-24 shrink-0">Completed</span>
-                <span>{new Date(job.docusketch_completed_at).toLocaleDateString()}</span>
+                <span>{fmtDateShort(job.docusketch_completed_at)}</span>
               </div>
             )}
             {form.docusketchNotes && (

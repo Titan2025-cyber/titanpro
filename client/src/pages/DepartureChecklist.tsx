@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { ClipboardCheck, CheckCircle, AlertTriangle, Plus, Trash2, Pencil } from "lucide-react";
+import { fmtDateShort } from "@/lib/dates";
 
 
 const CHECKLIST_TEMPLATES: Record<string, { label: string; required: boolean }[]> = {
@@ -328,7 +329,7 @@ export default function DepartureChecklist() {
                           ) : (
                             <Badge className="bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400 text-xs">Partial</Badge>
                           )}
-                          <p className="text-xs text-muted-foreground mt-0.5">{c.created_at ? new Date(c.created_at).toLocaleDateString() : ""}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">{c.created_at ? fmtDateShort(c.created_at) : ""}</p>
                         </div>
                         <div className="flex items-center gap-1">
                           <EditDepartureChecklistDialog checklist={c} jobs={jobs} onDone={invalidateChecklists} />

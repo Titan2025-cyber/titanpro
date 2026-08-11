@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { CalendarClock, Plus, Send, CheckCircle, Clock, AlertTriangle, MessageSquare } from "lucide-react";
+import { fmtDateShort } from "@/lib/dates";
 
 const STATUS_COLORS: Record<string, string> = {
   scheduled: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400",
@@ -162,7 +163,7 @@ export default function AppointmentReminders() {
                         <Badge variant="outline">{r.channel?.toUpperCase()}</Badge>
                       </div>
                       <p className="text-sm font-medium mt-1">{r.contact_name || "Homeowner"} {r.contact_phone && `· ${r.contact_phone}`}</p>
-                      <p className="text-xs text-muted-foreground">{r.scheduled_for ? new Date(r.scheduled_for).toLocaleString() : "Time not set"}</p>
+                      <p className="text-xs text-muted-foreground">{r.scheduled_for ? fmtDateShort(r.scheduled_for) : "Time not set"}</p>
                       {r.message_body && <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{r.message_body}</p>}
                     </div>
                     <div className="flex gap-2 shrink-0">
@@ -174,7 +175,7 @@ export default function AppointmentReminders() {
                           <Button size="sm" variant="outline" onClick={() => cancelMutation.mutate(r.id)} data-testid={`button-cancel-${r.id}`}>Cancel</Button>
                         </>
                       )}
-                      {r.sent_at && <p className="text-xs text-muted-foreground self-center">Sent {new Date(r.sent_at).toLocaleDateString()}</p>}
+                      {r.sent_at && <p className="text-xs text-muted-foreground self-center">Sent {fmtDateShort(r.sent_at)}</p>}
                     </div>
                   </div>
                 </CardContent>

@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDateShort } from "@/lib/dates";
 import {
   MailWarning, Send, Play, Clock, CheckCircle2, AlertCircle,
   History, Settings2, DollarSign, Inbox,
@@ -315,7 +316,7 @@ export default function PaymentReminders() {
                     ) : (
                       <Badge variant="outline" className="text-amber-600 border-amber-200">No email</Badge>
                     )}
-                    <span className="text-xs text-muted-foreground">{h.sent_at ? new Date(h.sent_at).toLocaleDateString() : ""}</span>
+                    <span className="text-xs text-muted-foreground">{h.sent_at ? fmtDateShort(h.sent_at) : ""}</span>
                   </div>
                 </div>
               ))}

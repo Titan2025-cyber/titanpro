@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { FileCheck, Plus, Download, CheckCircle, Clock, AlertTriangle } from "lucide-react";
+import { fmtDateShort } from "@/lib/dates";
 
 const WAIVER_TYPES: Record<string, { label: string; description: string }> = {
   conditional_progress: { label: "Conditional Progress", description: "Waives lien rights for progress payment, contingent on payment clearing" },
@@ -83,7 +84,7 @@ export default function LienWaivers() {
       "SIGNATURE",
       `Signer: ${w.signer_name || "_______________________"}`,
       `Title: ${w.signer_title || "_______________________"}`,
-      `Date Signed: ${w.signed_at ? new Date(w.signed_at).toLocaleDateString() : "_______________________"}`,
+      `Date Signed: ${w.signed_at ? fmtDateShort(w.signed_at) : "_______________________"}`,
       "",
       w.notes ? `Notes: ${w.notes}` : "",
       "",
@@ -193,7 +194,7 @@ export default function LienWaivers() {
                       <p className="text-sm font-medium mt-1">{WAIVER_TYPES[w.waiver_type]?.label}</p>
                       <div className="flex gap-3 text-xs text-muted-foreground mt-0.5 flex-wrap">
                         {w.amount && <span>${(w.amount).toLocaleString()}</span>}
-                        {w.through_date && <span>Through: {new Date(w.through_date).toLocaleDateString()}</span>}
+                        {w.through_date && <span>Through: {fmtDateShort(w.through_date)}</span>}
                         {w.signer_name && <span>Signer: {w.signer_name}</span>}
                       </div>
                     </div>

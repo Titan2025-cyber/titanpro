@@ -15,6 +15,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDateShort, todayLocalISO } from "@/lib/dates";
 import {
   Users, BookOpen, GraduationCap, AlertTriangle, Bot, ShieldCheck,
   Plus, Trash2, Loader2, FileText, Copy, ClipboardCheck, Star, Sparkles,
@@ -35,7 +36,7 @@ const EMP_TYPES = [
 const STATUSES = [
   { v: "active", l: "Active" }, { v: "on_leave", l: "On Leave" }, { v: "terminated", l: "Terminated" },
 ];
-function fmt(d?: string) { return d ? new Date(d).toLocaleDateString() : "—"; }
+function fmt(d?: string) { return d ? fmtDateShort(d) : "—"; }
 
 // ═════════════════════════════════════════════════════════════════════════
 // 1. EMPLOYEES
@@ -283,7 +284,7 @@ function TrainingsTab() {
     onSuccess: () => { inval("/api/hr/training-assignments"); toast({ title: "Assigned" }); },
   });
   const complete = useMutation({
-    mutationFn: (id: number) => apiRequest("PATCH", `/api/hr/training-assignments/${id}`, { status: "completed", completedOn: new Date().toISOString().slice(0, 10) }).then(j),
+    mutationFn: (id: number) => apiRequest("PATCH", `/api/hr/training-assignments/${id}`, { status: "completed", completedOn: todayLocalISO() }).then(j),
     onSuccess: () => { inval("/api/hr/training-assignments"); toast({ title: "Marked complete" }); },
   });
 

@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Radio, Plus, FileText, MapPin, Camera, Activity, CheckCircle, Clock, AlertTriangle } from "lucide-react";
+import { fmtDateShort } from "@/lib/dates";
 
 const STATUS_COLORS: Record<string, string> = {
   scheduled: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400",
@@ -257,7 +258,7 @@ export default function DroneLiDAR() {
                       {job && <p className="text-sm mt-1 flex items-center gap-1 text-muted-foreground"><MapPin className="w-3 h-3" />{job.address}</p>}
                       <div className="flex gap-4 mt-1 text-xs text-muted-foreground flex-wrap">
                         {a.pilotName && <span><Camera className="w-3 h-3 inline mr-0.5" />{a.pilotName}</span>}
-                        {a.flightDate && <span>Flight: {new Date(a.flightDate).toLocaleDateString()}</span>}
+                        {a.flightDate && <span>Flight: {fmtDateShort(a.flightDate)}</span>}
                         {a.areaSqFt && <span><Activity className="w-3 h-3 inline mr-0.5" />{a.areaSqFt.toLocaleString()} SF scanned</span>}
                       </div>
                       {a.structuralNotes && <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{a.structuralNotes}</p>}

@@ -9,6 +9,7 @@
  */
 
 import jsPDF from "jspdf";
+import { fmtDate } from "@/lib/dates";
 
 // ─── Brand constants ─────────────────────────────────────────────────────────
 const RED   = [204, 0, 0]   as const;  // Titan red  #CC0000
@@ -177,7 +178,7 @@ export function generateWorkAuthPDF(data: WorkAuthPDFData): string {
     assessment: "Assessment / Inspection Only",
   };
 
-  const signedDate = new Date(data.signedAt).toLocaleDateString("en-US", {
+  const signedDate = fmtDate(data.signedAt, {
     year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit"
   });
 
@@ -251,7 +252,7 @@ export function generateWorkAuthPDF(data: WorkAuthPDFData): string {
   badge(doc, "AUTHORIZED", 150, y + 5, RED);
   y += 18;
 
-  field(doc, "Authorization Date", new Date(data.startDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }), 18, y);
+  field(doc, "Authorization Date", fmtDate(data.startDate, { year: "numeric", month: "long", day: "numeric" }), 18, y);
   if (data.assignedTech) field(doc, "Assigned Technician", data.assignedTech, 110, y);
   y += 12;
 
@@ -399,7 +400,7 @@ export function generateRightToRenovatePDF(data: RightToRenovatePDFData): string
     mail: "Delivered by U.S. mail",
   };
 
-  const signedDate = new Date(data.signedAt).toLocaleDateString("en-US", {
+  const signedDate = fmtDate(data.signedAt, {
     year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit"
   });
 
@@ -549,7 +550,7 @@ export function generateRightToRenovatePDF(data: RightToRenovatePDFData): string
 export function generateDeviationPDF(data: DeviationPDFData): string {
   const doc = new jsPDF({ unit: "mm", format: "letter" });
 
-  const signedDate = new Date(data.signedAt).toLocaleDateString("en-US", {
+  const signedDate = fmtDate(data.signedAt, {
     year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit"
   });
 
@@ -783,10 +784,10 @@ function money(n: number): string {
   return "$" + (Number(n) || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function fmtDate(v?: string): string {
-  if (!v) return "—";
-  const t = Date.parse(v);
-  return isNaN(t) ? v : new Date(t).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+// Local wrapper so "empty" renders as an em-dash instead of "" in PDFs.
+// The heavy lifting (timezone-safe parsing) is in @/lib/dates.
+function fmtDateOrDash(v?: string | number | Date | null): string {
+  return v ? (fmtDate(v) || "—") : "—";
 }
 
 export function generateInvoicePDF(data: InvoicePDFData): string {
@@ -803,12 +804,12 @@ export function generateInvoicePDF(data: InvoicePDFData): string {
   doc.text(data.invoiceNumber, 14, y + 3);
   badge(doc, (data.status || "draft").toUpperCase(), 14, y + 10, statusColors[data.status] || GRAY);
   setFont(doc, "normal", 8, GRAY);
-  doc.text(`Invoice Date: ${fmtDate(data.createdAt)}`, 196, y, { align: "right" });
-  doc.text(`Due Date: ${fmtDate(data.dueDate)}`, 196, y + 4.5, { align: "right" });
+  doc.text(`Invoice Date: ${fmtDateOrDash(data.createdAt)}`, 196, y, { align: "right" });
+  doc.text(`Due Date: ${fmtDateOrDash(data.dueDate)}`, 196, y + 4.5, { align: "right" });
   if (data.jobNumber) doc.text(`Job File: ${data.jobNumber}`, 196, y + 9, { align: "right" });
   if (data.paidAt) {
     setFont(doc, "bold", 8, [0, 150, 80]);
-    doc.text(`Paid: ${fmtDate(data.paidAt)}`, 196, y + 13.5, { align: "right" });
+    doc.text(`Paid: ${fmtDateOrDash(data.paidAt)}`, 196, y + 13.5, { align: "right" });
   }
   y += 18;
 

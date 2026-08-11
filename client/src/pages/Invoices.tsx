@@ -12,6 +12,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { generateInvoicePDF, downloadPDF } from "@/lib/pdfEngine";
 import type { Invoice, Job, Contact } from "@shared/schema";
+import { fmtDate, fmtDateShort } from "@/lib/dates";
 
 type LineItemRow = { description: string; quantity: string; unitPrice: string };
 const blankRow = (): LineItemRow => ({ description: "", quantity: "1", unitPrice: "" });
@@ -28,7 +29,7 @@ function fmtDate(value?: string | null): string {
   if (!value) return "No due date";
   const parsed = Date.parse(value);
   if (isNaN(parsed)) return value;
-  return new Date(parsed).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return fmtDate(parsed, { month: "short", day: "numeric", year: "numeric" });
 }
 
 export default function Invoices() {
@@ -458,8 +459,8 @@ export default function Invoices() {
                     </div>
                     <div className="text-right">
                       <p className="text-xs text-muted-foreground">Job: {job?.jobNumber || "—"}</p>
-                      <p className="text-xs text-muted-foreground">Due: {inv.dueDate ? (isNaN(Date.parse(inv.dueDate)) ? inv.dueDate : new Date(inv.dueDate).toLocaleDateString()) : "—"}</p>
-                      {inv.paidAt && <p className="text-xs text-green-600">Paid: {new Date(inv.paidAt).toLocaleDateString()}</p>}
+                      <p className="text-xs text-muted-foreground">Due: {inv.dueDate ? (isNaN(Date.parse(inv.dueDate)) ? inv.dueDate : fmtDateShort(inv.dueDate)) : "—"}</p>
+                      {inv.paidAt && <p className="text-xs text-green-600">Paid: {fmtDateShort(inv.paidAt)}</p>}
                     </div>
                   </div>
 

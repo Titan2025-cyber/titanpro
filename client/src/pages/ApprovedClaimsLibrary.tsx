@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Library, Plus, Search, Trash2, Copy, Pencil } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDateShort } from "@/lib/dates";
 
 interface ApprovedClaim {
   id: number; carrier: string; claimNumber: string; jobId: number;
@@ -94,7 +95,7 @@ export default function ApprovedClaimsLibrary() {
   const uniqueCarriers = [...new Set(claims.map(c => c.carrier))].length;
 
   const copyPrecedent = (claim: ApprovedClaim) => {
-    const text = `PRECEDENT: ${claim.carrier} approved "${claim.lineItemCode} — ${claim.lineItemDescription}" ($${claim.approvedAmount?.toLocaleString()}) on claim ${claim.claimNumber || "N/A"} dated ${claim.approvedDate ? new Date(claim.approvedDate).toLocaleDateString() : "N/A"}${claim.adjusterName ? `, Adjuster: ${claim.adjusterName}` : ""}.`;
+    const text = `PRECEDENT: ${claim.carrier} approved "${claim.lineItemCode} — ${claim.lineItemDescription}" ($${claim.approvedAmount?.toLocaleString()}) on claim ${claim.claimNumber || "N/A"} dated ${claim.approvedDate ? fmtDateShort(claim.approvedDate) : "N/A"}${claim.adjusterName ? `, Adjuster: ${claim.adjusterName}` : ""}.`;
     navigator.clipboard.writeText(text);
     toast({ title: "Precedent Copied", description: "Paste into your supplement letter." });
   };
@@ -204,7 +205,7 @@ export default function ApprovedClaimsLibrary() {
                     </div>
                     <p className="text-sm">{claim.lineItemDescription}</p>
                     <p className="text-xs text-muted-foreground">
-                      Claim {claim.claimNumber || "N/A"}{claim.adjusterName ? ` · ${claim.adjusterName}` : ""}{claim.approvedDate ? ` · ${new Date(claim.approvedDate).toLocaleDateString()}` : ""}
+                      Claim {claim.claimNumber || "N/A"}{claim.adjusterName ? ` · ${claim.adjusterName}` : ""}{claim.approvedDate ? ` · ${fmtDateShort(claim.approvedDate)}` : ""}
                     </p>
                     {claim.notes && <p className="text-xs text-muted-foreground italic">{claim.notes}</p>}
                   </div>

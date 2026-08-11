@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { useState } from "react";
+import { fmtDate } from "@/lib/dates";
 
 const ACTION_ICONS: Record<string, any> = {
   created: "✨", updated: "✏️", status_changed: "🔄", note_added: "📝",
@@ -83,7 +84,7 @@ export default function ActivityLog() {
   // Group by date
   const grouped: Record<string, any[]> = {};
   filtered.forEach(log => {
-    const dateKey = new Date(log.created_at).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+    const dateKey = fmtDate(log.created_at, { weekday: "long", month: "long", day: "numeric" });
     if (!grouped[dateKey]) grouped[dateKey] = [];
     grouped[dateKey].push(log);
   });

@@ -12,6 +12,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import DryingRecords from "@/components/DryingRecords";
 import JobPhotos from "@/components/JobPhotos";
 import type { Job, Contact } from "@shared/schema";
+import { fmtDateShort } from "@/lib/dates";
 
 
 const LOSS_ICONS: Record<string, string> = {
@@ -159,7 +160,7 @@ function JobCard({ job, contacts }: { job: Job; contacts: Contact[] }) {
                       <div className="flex items-center gap-1 mb-0.5">
                         <span className="font-semibold">{n.author}</span>
                         {n.tag && <span className="text-[hsl(var(--titan-blue))]">@{n.tag}</span>}
-                        <span className="text-muted-foreground ml-auto">{n.createdAt ? new Date(n.createdAt).toLocaleDateString() : ""}</span>
+                        <span className="text-muted-foreground ml-auto">{n.createdAt ? fmtDateShort(n.createdAt) : ""}</span>
                       </div>
                       <p>{n.text}</p>
                     </div>

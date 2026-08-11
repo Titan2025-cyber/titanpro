@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDateShort } from "@/lib/dates";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -102,7 +103,7 @@ function marginBadge(pct: number) {
 function exportCsv(costs: JobCost[], jobNumber: string) {
   const headers = ["Date", "Category", "Description", "Vendor", "Qty", "Unit Cost", "Total", "Entered By"];
   const rows = costs.map((c) => [
-    c.costDate ? new Date(c.costDate).toLocaleDateString() : "",
+    c.costDate ? fmtDateShort(c.costDate) : "",
     c.category,
     `"${(c.description ?? "").replace(/"/g, '""')}"`,
     c.vendor ?? "",
@@ -562,7 +563,7 @@ export function JobCostingPanel({ jobId, phase }: JobCostingPanelProps) {
                       return (
                       <TableRow key={c.id} data-testid={`cost-row-${c.id}`}>
                         <TableCell className="text-xs py-2">
-                          {c.costDate ? new Date(c.costDate).toLocaleDateString() : "—"}
+                          {c.costDate ? fmtDateShort(c.costDate) : "—"}
                         </TableCell>
                         <TableCell className="py-2">
                           <Badge className={`${CATEGORY_COLORS[c.category] ?? "bg-gray-100 text-gray-700"} border text-xs capitalize`}>

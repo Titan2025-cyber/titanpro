@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dialog";
 import type { Job, Invoice, Payment } from "@shared/schema";
 import { DateManager } from "@/components/JobPipeline";
+import { fmtDate, todayLocalISO } from "@/lib/dates";
 
 const STATUS_COLORS: Record<string, string> = {
   new: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
@@ -216,7 +217,7 @@ export default function Dashboard() {
   const [bucketTo, setBucketTo] = useState("");     // date-range end (revenue/AR)
   const openBucketPanel = (b: "active" | "revenue" | "ar" | "cycle" | "payouts") => { setBucketSearch(""); setBucketStatus("all"); setBucketFrom(""); setBucketTo(""); setOpenBucket(b); };
   const money = (n: number) => `$${(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-  const fmtDate = (d?: string | null) => d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—";
+  const fmtDate = (d?: string | null) => d ? fmtDate(d, { month: "short", day: "numeric", year: "numeric" }) : "—";
 
   const receivedPayments = payments.filter(p => p.type === "received");
   const outstandingInvoices = invoices.filter(i => i.status !== "paid" && i.status !== "draft");
@@ -318,7 +319,7 @@ export default function Dashboard() {
     URL.revokeObjectURL(url);
   };
 
-  const stamp = () => new Date().toISOString().slice(0, 10);
+  const stamp = () => todayLocalISO();
 
   const exportRevenueCSV = () => exportCSV(
     `titan-revenue-${stamp()}.csv`,

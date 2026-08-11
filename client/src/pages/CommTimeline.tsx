@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { useState } from "react";
 import { Plus, Mail, MessageSquare, Phone, FileText, Users, Tag, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDate } from "@/lib/dates";
 
 const TAG_COLORS: Record<string, string> = {
   supplement: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400",
@@ -195,7 +196,7 @@ export default function CommTimeline() {
                           )}
                         </div>
                         <div className="text-right shrink-0">
-                          <p className="text-xs text-muted-foreground">{new Date(entry.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</p>
+                          <p className="text-xs text-muted-foreground">{fmtDate(entry.created_at, { month: "short", day: "numeric" })}</p>
                           <p className="text-xs text-muted-foreground">{new Date(entry.created_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</p>
                           <div className="flex items-center gap-2 mt-1 justify-end">
                             <button onClick={() => openEdit(entry)} className="text-xs text-muted-foreground hover:text-foreground" data-testid={`button-edit-comm-timeline-${entry.id}`}>edit</button>

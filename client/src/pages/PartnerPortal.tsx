@@ -31,6 +31,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Contact, PayoutRequest, PayoutMethod, Job } from "@shared/schema";
+import { fmtDate } from "@/lib/dates";
 
 const PAYOUT_METHODS = ["cashapp", "venmo", "zelle", "direct_deposit"];
 
@@ -74,7 +75,7 @@ const LOSS_ICONS: Record<string, string> = {
 function fmt$(n: number) { return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
 function fmtDate(d?: string | null) {
   if (!d) return "—";
-  return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return fmtDate(d, { month: "short", day: "numeric", year: "numeric" });
 }
 
 // ── Job Progress Bar ──────────────────────────────────────────────────────────
@@ -329,7 +330,7 @@ function PartnerDashboard({ summary, partnerName, partner, onWithdraw }: { summa
 
   const tenure = getTenure(summary.partnerSince);
   const sinceDisplay = summary.partnerSince
-    ? new Date(summary.partnerSince).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+    ? fmtDate(summary.partnerSince, { month: "long", day: "numeric", year: "numeric" })
     : null;
 
   const lifetimeStats = [
@@ -716,7 +717,7 @@ const LEAD_STATUS_STYLE: Record<string, { label: string; cls: string }> = {
   converted: { label: "Converted",  cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" },
   declined:  { label: "Declined",   cls: "bg-muted text-muted-foreground" },
 };
-const leadDate = (s?: string | null) => s ? new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "\u2014";
+const leadDate = (s?: string | null) => s ? fmtDate(s, { month: "short", day: "numeric", year: "numeric" }) : "\u2014";
 
 function ReferJob({ partner }: { partner: Contact }) {
   const { toast } = useToast();
@@ -965,7 +966,7 @@ function CompanyPortalView({ company, onLogout }: { company: Contact; onLogout: 
   });
 
   const fmt = (n: number) => `$${(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  const fmtDate = (s: string) => s ? new Date(s).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "";
+  const fmtDate = (s: string) => s ? fmtDate(s, undefined, { month: "short", day: "numeric", year: "numeric" }) : "";
 
   return (
     <div className="space-y-4">

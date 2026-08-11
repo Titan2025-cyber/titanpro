@@ -25,6 +25,7 @@ import { useToast } from "@/hooks/use-toast";
 const loadJsPDF = async () => (await import("jspdf")).default;
 type JsPDFDoc = Awaited<ReturnType<typeof loadJsPDF>> extends new (...args: any[]) => infer R ? R : any;
 import type { Job, DryingRecord } from "@shared/schema";
+import { fmtDate, fmtDateShort } from "@/lib/dates";
 
 // ─── Brand constants ──────────────────────────────────────────────────────────
 const RED      = [204, 0, 0]    as const;
@@ -265,7 +266,7 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
         : "—";
 
       const cells = [
-        rec.recordDate ? new Date(rec.recordDate).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "2-digit" }) : "—",
+        rec.recordDate ? fmtDate(rec.recordDate, { month: "2-digit", day: "2-digit", year: "2-digit" }) : "—",
         rec.area || "—",
         rec.material || "—",
         wme,
@@ -336,7 +337,7 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
       doc.text(`${highest.wme}% WME`, M + 4, y + 9);
       setFont("normal", 7.5, GRAY);
       doc.text(`${highest.material} — ${highest.area}`, M + 4, y + 13);
-      doc.text(`Date: ${highest.date ? new Date(highest.date).toLocaleDateString() : "—"}`, M + 4, y + 16);
+      doc.text(`Date: ${highest.date ? fmtDateShort(highest.date) : "—"}`, M + 4, y + 16);
 
       // Arrow
       setFont("bold", 14, BLUE);
@@ -349,7 +350,7 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
       doc.text(`${final.wme}% WME`, PW * 0.55, y + 9);
       setFont("normal", 7.5, GRAY);
       doc.text(`${final.material} — ${final.area}`, PW * 0.55, y + 13);
-      doc.text(`Date: ${final.date ? new Date(final.date).toLocaleDateString() : "—"}`, PW * 0.55, y + 16);
+      doc.text(`Date: ${final.date ? fmtDateShort(final.date) : "—"}`, PW * 0.55, y + 16);
 
       // Reduction %
       const pct = ((highest.wme - final.wme) / highest.wme * 100).toFixed(0);
@@ -681,7 +682,7 @@ export function DryStandardReportGenerator({
                           <TableRow key={rec.id} className="text-xs">
                             <TableCell className="py-1.5">
                               {rec.recordDate
-                                ? new Date(rec.recordDate).toLocaleDateString()
+                                ? fmtDateShort(rec.recordDate)
                                 : "—"}
                             </TableCell>
                             <TableCell className="py-1.5">{rec.area || "—"}</TableCell>

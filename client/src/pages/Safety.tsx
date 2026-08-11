@@ -34,6 +34,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { SafetyIncident, Job } from "@shared/schema";
+import { fmtDateShort, todayLocalISO } from "@/lib/dates";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -84,7 +85,7 @@ interface ReportDialogProps {
 
 function ReportIncidentDialog({ open, onClose, jobs, defaultJobId }: ReportDialogProps) {
   const { toast } = useToast();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocalISO();
 
   const [form, setForm] = useState({
     incidentType: "near_miss",
@@ -337,7 +338,7 @@ function UpdateIncidentDialog({ incident, open, onClose }: UpdateDialogProps) {
         correctiveAction: form.correctiveAction || null,
         followUpDate: form.followUpDate || null,
         closedAt: form.status === "closed"
-          ? (form.closedAt || new Date().toISOString().slice(0, 10))
+          ? (form.closedAt || todayLocalISO())
           : null,
       }),
     onSuccess: () => {
@@ -363,7 +364,7 @@ function UpdateIncidentDialog({ incident, open, onClose }: UpdateDialogProps) {
     mutationFn: () =>
       apiRequest("PATCH", `/api/safety-incidents/${incident.id}`, {
         status: "closed",
-        closedAt: new Date().toISOString().slice(0, 10),
+        closedAt: todayLocalISO(),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/safety-incidents"] });
@@ -430,7 +431,7 @@ function UpdateIncidentDialog({ incident, open, onClose }: UpdateDialogProps) {
               <Input
                 type="date"
                 className="mt-1 h-8 text-xs"
-                value={form.closedAt || new Date().toISOString().slice(0, 10)}
+                value={form.closedAt || todayLocalISO()}
                 onChange={e => setF("closedAt", e.target.value)}
                 data-testid="update-input-closed-at"
               />
@@ -553,7 +554,7 @@ function IncidentCard({ incident, jobs, showJobLink = true }: IncidentCardProps)
                       onClick={() =>
                         apiRequest("PATCH", `/api/safety-incidents/${incident.id}`, {
                           status: "closed",
-                          closedAt: new Date().toISOString().slice(0, 10),
+                          closedAt: todayLocalISO(),
                         }).then(() => {
                           queryClient.invalidateQueries({ queryKey: ["/api/safety-incidents"] });
                           toast({ title: "Incident closed" });
@@ -588,7 +589,7 @@ function IncidentCard({ incident, jobs, showJobLink = true }: IncidentCardProps)
                 <span className="flex items-center gap-1">
                   <Clock className="w-3 h-3" />
                   {incident.incidentDate
-                    ? new Date(incident.incidentDate).toLocaleDateString()
+                    ? fmtDateShort(incident.incidentDate)
                     : "—"}
                 </span>
                 {linkedJob && (
@@ -607,14 +608,14 @@ function IncidentCard({ incident, jobs, showJobLink = true }: IncidentCardProps)
                     className={`flex items-center gap-1 ${overdue ? "text-red-600 font-medium" : ""}`}
                   >
                     <CalendarX2 className="w-3 h-3" />
-                    Follow-up: {new Date(incident.followUpDate).toLocaleDateString()}
+                    Follow-up: {fmtDateShort(incident.followUpDate)}
                     {overdue && " (OVERDUE)"}
                   </span>
                 )}
                 {incident.closedAt && (
                   <span className="flex items-center gap-1 text-green-600">
                     <CheckCircle2 className="w-3 h-3" />
-                    Closed {new Date(incident.closedAt).toLocaleDateString()}
+                    Closed {fmtDateShort(incident.closedAt)}
                   </span>
                 )}
               </div>

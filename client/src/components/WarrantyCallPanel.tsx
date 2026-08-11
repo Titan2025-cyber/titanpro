@@ -18,6 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { todayLocalISO } from "@/lib/dates";
 
 interface WarrantyCall {
   id: number;
@@ -70,7 +71,7 @@ const EMPTY_FORM: FormState = {
   issueDescription: "",
   resolution: "",
   techAssigned: "",
-  visitDate: new Date().toISOString().slice(0, 10),
+  visitDate: todayLocalISO(),
   laborHours: "1",
   laborRate: String(LABOR_RATE_DEFAULT),
   materialCost: "0",

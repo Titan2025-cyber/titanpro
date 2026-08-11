@@ -12,6 +12,7 @@ import {
   DollarSign, Package, Zap, Search, ChevronDown, ChevronUp, FileText,
   TrendingUp, Wifi, WifiOff
 } from "lucide-react";
+import { fmtDate } from "@/lib/dates";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from "recharts";
@@ -209,7 +210,7 @@ export default function RampImport() {
 
   // ── Format helpers ─────────────────────────────────────────────────────────
   const fmt = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  const fmtDate = (d: string) => fmtDate(d, { month: "short", day: "numeric", year: "numeric" });
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">

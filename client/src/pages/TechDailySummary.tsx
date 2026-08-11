@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { User, MapPin, Briefcase, CalendarCheck, Clock } from "lucide-react";
 import { useState } from "react";
 import { Link } from "wouter";
+import { fmtDate, todayLocalISO } from "@/lib/dates";
 
 const TECHS = ["John", "Mason", "Clint", "Blake", "Blake Foster"];
 
@@ -33,7 +34,7 @@ export default function TechDailySummary() {
 
   const activeJobs: any[] = data?.activeJobs || [];
   const scheduledToday: any[] = data?.scheduledToday || [];
-  const today = data?.date || new Date().toISOString().slice(0, 10);
+  const today = data?.date || todayLocalISO();
 
   return (
     <div className="space-y-6 p-6">
@@ -43,7 +44,7 @@ export default function TechDailySummary() {
           <div>
             <h1 className="text-xl font-bold">Tech Daily Summary</h1>
             <p className="text-sm text-muted-foreground">
-              {new Date(today + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
+              {fmtDate(today + "T12:00:00", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
             </p>
           </div>
         </div>

@@ -24,6 +24,7 @@ import type { DryingRecord } from "@shared/schema";
 import { SyncChip, useJobQueue } from "@/components/SyncChip";
 import { CloudUpload, RefreshCw } from "lucide-react";
 import { formatAge } from "@/lib/offlineQueue";
+import { todayLocalISO } from "@/lib/dates";
 
 // ── IICRC S500 Reference Data ────────────────────────────────────────────────
 const WATER_CATEGORIES = [
@@ -735,7 +736,7 @@ function RecordCard({ record, jobId, readOnly }: { record: DryingRecord; jobId: 
 function NewRecordForm({ jobId, onClose }: { jobId: number; onClose: () => void }) {
   const { toast } = useToast();
   const [form, setForm] = useState({
-    readingDate: new Date().toISOString().slice(0, 10),
+    readingDate: todayLocalISO(),
     readingTime: new Date().toTimeString().slice(0, 5),
     techName: "",
     dayNumber: 1,

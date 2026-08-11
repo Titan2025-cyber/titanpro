@@ -17,6 +17,7 @@ import {
   DollarSign, Calendar, Gauge, Edit2, Trash2
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDateShort } from "@/lib/dates";
 
 interface Vehicle {
   id: number; name: string; make: string; model: string; year: number;
@@ -73,7 +74,7 @@ function VehicleCard({ vehicle, onAddService, onEdit }: { vehicle: Vehicle; onAd
           {vehicle.licensePlate && <span>🔖 {vehicle.licensePlate}</span>}
           {vehicle.assignedTo && <span>👤 {vehicle.assignedTo}</span>}
           <span className="flex items-center gap-1"><Gauge className="w-3 h-3" />{vehicle.currentMileage?.toLocaleString()} mi</span>
-          {vehicle.lastService && <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />Last: {new Date(vehicle.lastService).toLocaleDateString()}</span>}
+          {vehicle.lastService && <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />Last: {fmtDateShort(vehicle.lastService)}</span>}
         </div>
 
         <div className="flex items-center gap-3 pt-1">
@@ -260,11 +261,11 @@ export default function FleetManager() {
                               </span>
                             </td>
                             <td className="px-4 py-3 text-muted-foreground max-w-xs truncate">{log.description}</td>
-                            <td className="px-4 py-3">{new Date(log.serviceDate).toLocaleDateString()}</td>
+                            <td className="px-4 py-3">{fmtDateShort(log.serviceDate)}</td>
                             <td className="px-4 py-3 text-right font-mono text-xs">{log.mileageAtService?.toLocaleString() || "—"}</td>
                             <td className="px-4 py-3 text-right text-green-700 dark:text-green-400 font-medium">${(log.cost || 0).toLocaleString()}</td>
                             <td className="px-4 py-3 text-xs text-muted-foreground">
-                              {log.nextServiceDate ? new Date(log.nextServiceDate).toLocaleDateString() : "—"}
+                              {log.nextServiceDate ? fmtDateShort(log.nextServiceDate) : "—"}
                               {log.nextServiceMileage ? ` / ${log.nextServiceMileage.toLocaleString()} mi` : ""}
                             </td>
                           </tr>

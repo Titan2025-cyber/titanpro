@@ -12,6 +12,7 @@ import { useState } from "react";
 import { GraduationCap, Plus, BookOpen, CheckCircle, Clock, Award, Video, FileText, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { fmtDateShort } from "@/lib/dates";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
@@ -234,7 +235,7 @@ export default function TechLMS() {
                         <p className="font-semibold text-sm">{enr.employee_name}</p>
                         <p className="text-xs text-muted-foreground">{course?.title || `Course #${enr.course_id}`}</p>
                         {enr.score !== null && <p className="text-xs text-blue-600">Score: {enr.score}%</p>}
-                        {enr.completed_at && <p className="text-xs text-green-600">Completed: {new Date(enr.completed_at).toLocaleDateString()}</p>}
+                        {enr.completed_at && <p className="text-xs text-green-600">Completed: {fmtDateShort(enr.completed_at)}</p>}
                       </div>
                       <div className="flex items-center gap-2">
                         <Badge className={`text-xs ${statusColor(enr.status)}`}>{enr.status}</Badge>

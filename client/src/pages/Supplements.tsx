@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDate, todayLocalISO } from "@/lib/dates";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -48,7 +49,7 @@ const fmt = (n?: number) =>
 
 const fmtDate = (s?: string) => {
   if (!s) return "—";
-  return new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return fmtDate(s, { month: "short", day: "numeric", year: "numeric" });
 };
 
 const isOverdue = (s?: string) => {
@@ -120,7 +121,7 @@ function NewSupplementDialog({ jobId, jobs, onSuccess, trigger }: NewSupplementD
     amountRequested: "",
     carrier: "",
     adjusterName: "",
-    submittedAt: new Date().toISOString().slice(0, 10),
+    submittedAt: todayLocalISO(),
     followUpDue: futureFollowUp(),
     status: "pending" as Supplement["status"],
     notes: "",

@@ -21,6 +21,7 @@ import {
   Heading, AlignLeft, LayoutGrid, Table as TableIcon, PenLine, ArrowUp, ArrowDown, Palette,
 } from "lucide-react";
 import type { DocConfig, DocBlock } from "@/lib/documentBuilder";
+import { fmtDateShort, todayLocalISO } from "@/lib/dates";
 
 const BLOCK_META: Record<string, { label: string; icon: any }> = {
   heading: { label: "Heading", icon: Heading },
@@ -105,7 +106,7 @@ export default function DocumentBuilder() {
     try {
       const { buildBrandedPDF, downloadDataUri, previewDataUri } = await import("@/lib/documentBuilder");
       const uri = buildBrandedPDF(cfg);
-      const fname = `${(cfg.title || "Titan_Document").replace(/[^\w-]+/g, "_")}_${new Date().toISOString().slice(0,10)}.pdf`;
+      const fname = `${(cfg.title || "Titan_Document").replace(/[^\w-]+/g, "_")}_${todayLocalISO()}.pdf`;
       if (preview) previewDataUri(uri); else downloadDataUri(uri, fname);
     } catch (e: any) { toast({ title: "PDF failed", description: e.message, variant: "destructive" }); }
     finally { setBusy(false); }
@@ -219,7 +220,7 @@ export default function DocumentBuilder() {
                 <div key={t.id} className="flex items-center justify-between border rounded p-2 text-xs" data-testid={`template-${t.id}`}>
                   <div className="min-w-0">
                     <p className="font-medium truncate">{t.name}</p>
-                    <p className="text-[10px] text-muted-foreground">{t.updated_at ? new Date(t.updated_at).toLocaleDateString() : ""}</p>
+                    <p className="text-[10px] text-muted-foreground">{t.updated_at ? fmtDateShort(t.updated_at) : ""}</p>
                   </div>
                   <div className="flex gap-1 shrink-0">
                     <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => { try { setCfg(JSON.parse(t.config)); toast({ title: `Loaded "${t.name}"` }); } catch {} }} data-testid={`load-template-${t.id}`}>Load</Button>

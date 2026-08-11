@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { Star, Send, ExternalLink, Plus, Trash2, MousePointerClick, MessageSquare, ThumbsUp, ShieldAlert } from "lucide-react";
+import { fmtDateShort } from "@/lib/dates";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
@@ -264,7 +265,7 @@ titanrestorationllc.com`;
                     <tr key={r.id} className="border-b hover:bg-muted/20" data-testid={`row-review-${r.id}`}>
                       <td className="px-4 py-3 font-medium">{job?.jobNumber || "—"}</td>
                       <td className="px-4 py-3 text-muted-foreground">{contact?.name || "—"}</td>
-                      <td className="px-4 py-3 text-muted-foreground text-xs">{r.sentAt ? new Date(r.sentAt).toLocaleDateString() : "—"}</td>
+                      <td className="px-4 py-3 text-muted-foreground text-xs">{r.sentAt ? fmtDateShort(r.sentAt) : "—"}</td>
                       <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-xs font-medium ${meta.color}`}>{meta.label}</span></td>
                       <td className="px-4 py-3 text-right">
                         <div className="flex justify-end gap-2">

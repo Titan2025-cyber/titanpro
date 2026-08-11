@@ -31,6 +31,7 @@ import { useToast } from "@/hooks/use-toast";
 const loadJsPDF = async () => (await import("jspdf")).default;
 type JsPDFDoc = Awaited<ReturnType<typeof loadJsPDF>> extends new (...args: any[]) => infer R ? R : any;
 import type { Job, Contact, JobDocument } from "@shared/schema";
+import { fmtDate, fmtDateShort, todayLocalISO } from "@/lib/dates";
 
 // ─── Brand constants (matches pdfEngine.ts) ──────────────────────────────────
 const RED    = [204, 0, 0]    as const;
@@ -248,7 +249,7 @@ async function generateCertPDF(data: CertPDFData): Promise<string> {
   const col2 = PW / 2 + 4;
 
   fieldRow("Job Number", data.jobNumber, col1, y, 80);
-  fieldRow("Completion Date", new Date(data.completionDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }), col2, y, 80);
+  fieldRow("Completion Date", fmtDate(data.completionDate, { year: "numeric", month: "long", day: "numeric" }), col2, y, 80);
   y += 9;
   fieldRow("Property Address", data.address || "—", col1, y, PW - M * 2 - 8);
   y += 12;
@@ -289,7 +290,7 @@ async function generateCertPDF(data: CertPDFData): Promise<string> {
 
   y += 9;
   if (data.returnInspectionDate) {
-    fieldRow("Follow-Up Inspection Scheduled", new Date(data.returnInspectionDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }), col1, y, 80);
+    fieldRow("Follow-Up Inspection Scheduled", fmtDate(data.returnInspectionDate, { year: "numeric", month: "long", day: "numeric" }), col1, y, 80);
   }
   y += 9;
 
@@ -346,7 +347,7 @@ async function generateCertPDF(data: CertPDFData): Promise<string> {
   }
 
   setFont("normal", 7.5, GRAY);
-  doc.text(`Signed: ${new Date(data.signedAt).toLocaleString()}`, M + 3, y + 30);
+  doc.text(`Signed: ${fmtDateShort(data.signedAt)}`, M + 3, y + 30);
 
   // Tech sig block (if present)
   if (data.techSigUrl || data.techName) {
@@ -369,7 +370,7 @@ async function generateCertPDF(data: CertPDFData): Promise<string> {
   hRule(y);
   y += 5;
   setFont("normal", 7, GRAY);
-  doc.text(`Document ID: ${data.documentId}  ·  Generated: ${new Date(data.signedAt).toLocaleString()}`, M, y);
+  doc.text(`Document ID: ${data.documentId}  ·  Generated: ${fmtDateShort(data.signedAt)}`, M, y);
   doc.text("Titan Restoration LLC  ·  Augusta, GA  ·  706-922-0154  ·  titanaugusta.pro", PW - M, y, { align: "right" });
 
   return doc.output("datauristring");
@@ -392,7 +393,7 @@ export function CertificateOfCompletion({
   onClose,
 }: CertificateOfCompletionProps) {
   const { toast } = useToast();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocalISO();
 
   const [homeownerSig, setHomeownerSig] = useState("");
   const [techSig, setTechSig] = useState("");
@@ -801,7 +802,7 @@ export function CertOfCompletionCard({ doc, onDownload }: CertOfCompletionCardPr
         <p className="text-xs text-muted-foreground mt-0.5">
           Signed by {doc.signerName || "—"} ·{" "}
           {doc.signedAt
-            ? new Date(doc.signedAt).toLocaleDateString()
+            ? fmtDateShort(doc.signedAt)
             : "—"}
         </p>
         <div className="flex flex-wrap gap-1.5 mt-1.5">

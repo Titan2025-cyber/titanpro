@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import type { Job } from "@shared/schema";
+import { fmtDateShort } from "@/lib/dates";
 
 export default function AdjusterPortal() {
   const { toast } = useToast();
@@ -125,8 +126,8 @@ export default function AdjusterPortal() {
                         </span>
                       </div>
                       <p className="text-xs text-muted-foreground mt-1">
-                        {jobIds.length} job(s) shared · Expires {new Date(s.expires_at).toLocaleDateString()}
-                        {s.last_accessed_at && ` · Last viewed ${new Date(s.last_accessed_at).toLocaleDateString()}`}
+                        {jobIds.length} job(s) shared · Expires {fmtDateShort(s.expires_at)}
+                        {s.last_accessed_at && ` · Last viewed ${fmtDateShort(s.last_accessed_at)}`}
                       </p>
                       <div className="flex items-center gap-2 mt-2">
                         <Button

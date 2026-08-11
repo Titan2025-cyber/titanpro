@@ -18,9 +18,10 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { fmtDate } from "@/lib/dates";
 
 const fmtDate = (s?: string | null) =>
-  s ? new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—";
+  s ? fmtDate(s, { month: "short", day: "numeric", year: "numeric" }) : "—";
 
 // ── Claim Stage Explainer content ─────────────────────────────────────────────
 const STAGE_EXPLAINER: Record<string, { headline: string; body: string; whatToExpect: string[] }> = {

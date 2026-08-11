@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Copy, Plus, Clock, AlertTriangle, CheckCircle2, Send, FileText, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDateShort } from "@/lib/dates";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
@@ -177,10 +178,10 @@ export default function SupplementTracker() {
                           <p className="text-xs text-muted-foreground">{t.carrier} {t.claimNumber && `· ${t.claimNumber}`}</p>
                         </td>
                         <td className="px-4 py-3"><span className="font-mono text-xs">{t.state}</span></td>
-                        <td className="px-4 py-3 text-muted-foreground">{new Date(t.submittedAt).toLocaleDateString()}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{fmtDateShort(t.submittedAt)}</td>
                         <td className="px-4 py-3">
                           <p className={isOverdue ? "text-red-600 font-bold" : isDueSoon ? "text-yellow-600 font-medium" : ""}>
-                            {new Date(t.deadlineDate).toLocaleDateString()}
+                            {fmtDateShort(t.deadlineDate)}
                           </p>
                           {t.status === "pending" && (
                             <p className="text-xs text-muted-foreground">

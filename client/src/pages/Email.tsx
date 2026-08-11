@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Email } from "@shared/schema";
+import { fmtDateShort } from "@/lib/dates";
 
 interface Employee {
   id: number;
@@ -508,7 +509,7 @@ export default function EmailPage() {
               </div>
               <p className="text-xs font-medium truncate mt-0.5">{m.subject}</p>
               <p className="text-xs text-muted-foreground truncate">{(m.snippet || "").slice(0, 60)}…</p>
-              <p className="text-xs text-muted-foreground mt-1">{m.date ? new Date(m.date).toLocaleDateString() : ""}</p>
+              <p className="text-xs text-muted-foreground mt-1">{m.date ? fmtDateShort(m.date) : ""}</p>
             </button>
           ))}
           {!gmailLoading && liveMessages.length === 0 && <p className="text-sm text-muted-foreground text-center p-8">No messages in {folder}.</p>}
@@ -530,7 +531,7 @@ export default function EmailPage() {
             </div>
             <p className="text-xs font-medium truncate mt-0.5">{email.subject}</p>
             <p className="text-xs text-muted-foreground truncate">{email.body.slice(0, 60)}…</p>
-            <p className="text-xs text-muted-foreground mt-1">{email.createdAt ? new Date(email.createdAt).toLocaleDateString() : ""}</p>
+            <p className="text-xs text-muted-foreground mt-1">{email.createdAt ? fmtDateShort(email.createdAt) : ""}</p>
           </button>
         ))}
         {emails.length === 0 && <p className="text-sm text-muted-foreground text-center p-8">No emails.</p>}
@@ -554,7 +555,7 @@ export default function EmailPage() {
                 <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground mb-4">
                   <span>From: {liveDetail.from}</span>
                   <span>To: {liveDetail.to}</span>
-                  <span>{liveDetail.date ? new Date(liveDetail.date).toLocaleString() : ""}</span>
+                  <span>{liveDetail.date ? fmtDateShort(liveDetail.date) : ""}</span>
                 </div>
                 <div className="border-t pt-4">
                   {/* Body may be plain text or HTML from Gmail. Render EITHER an
@@ -602,7 +603,7 @@ export default function EmailPage() {
             <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground mb-4">
               <span>From: {selected.from}</span>
               <span>To: {selected.to}</span>
-              <span>{selected.createdAt ? new Date(selected.createdAt).toLocaleString() : ""}</span>
+              <span>{selected.createdAt ? fmtDateShort(selected.createdAt) : ""}</span>
             </div>
             <div className="border-t pt-4">
               <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">{selected.body}</p>

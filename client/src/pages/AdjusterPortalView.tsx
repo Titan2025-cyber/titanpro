@@ -11,6 +11,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { fmtDate } from "@/lib/dates";
 
 const STATUS_COLORS: Record<string, string> = {
   new: "bg-blue-100 text-blue-800", mitigation: "bg-yellow-100 text-yellow-800",
@@ -29,7 +30,7 @@ const EQUIP_LABELS: Record<string, string> = {
 };
 
 const fmt$ = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
-const fmtDate = (s?: string | null) => s ? new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—";
+const fmtDate = (s?: string | null) => s ? fmtDate(s, { month: "short", day: "numeric", year: "numeric" }) : "—";
 
 function parseJSON<T>(v: any, fb: T): T {
   if (!v) return fb;

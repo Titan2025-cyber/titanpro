@@ -20,6 +20,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { Lock, FileText, HandshakeIcon, DollarSign, TrendingUp, TrendingDown, Wallet, X, Download, Printer, ChevronRight, ChevronDown, ExternalLink } from "lucide-react";
+import { todayLocalISO } from "@/lib/dates";
 
 function fmt(n: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
@@ -347,7 +348,7 @@ export default function WeeklyBilling() {
           creditMemos: p.creditMemos,
         })),
       });
-      const stamp = new Date().toISOString().slice(0, 10);
+      const stamp = todayLocalISO();
       downloadPDF(dataUri, `Titan_Division_Profitability_${stamp}.pdf`);
     } catch (err) {
       console.error("Failed to export division report PDF", err);

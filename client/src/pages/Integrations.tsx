@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDateShort } from "@/lib/dates";
 import {
   CreditCard, CheckCircle2, AlertCircle, ExternalLink, Save,
   RefreshCw, Eye, EyeOff, Lock, Building2, Zap,
@@ -99,7 +100,7 @@ function RampSection() {
             <p>API Key: <span className="font-mono">{cfg.apiKeyMasked || "configured"}</span></p>
             {cfg.entityId && <p>Entity ID: <span className="font-mono">{cfg.entityId}</span></p>}
             {cfg.bankAccountId && <p>Bank Account ID: <span className="font-mono">{cfg.bankAccountId}</span></p>}
-            <p className="text-[10px] text-muted-foreground/60">Last updated: {cfg.updatedAt ? new Date(cfg.updatedAt).toLocaleDateString() : "—"}</p>
+            <p className="text-[10px] text-muted-foreground/60">Last updated: {cfg.updatedAt ? fmtDateShort(cfg.updatedAt) : "—"}</p>
           </div>
         )}
 
@@ -159,7 +160,7 @@ function RampSection() {
                   <Badge className={p.status === "submitted" ? "bg-green-100 text-green-700" : p.status === "failed" ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-600"}>
                     {p.status}
                   </Badge>
-                  <span className="text-muted-foreground">{p.submitted_at ? new Date(p.submitted_at).toLocaleDateString() : "—"}</span>
+                  <span className="text-muted-foreground">{p.submitted_at ? fmtDateShort(p.submitted_at) : "—"}</span>
                 </div>
               ))}
             </div>
@@ -249,7 +250,7 @@ function QuickBooksSection() {
           <div className="text-xs text-muted-foreground bg-muted/40 rounded p-2 space-y-0.5">
             <p>Client ID: <span className="font-mono">{cfg.clientIdMasked || (cfg.configured ? "configured" : "—")}</span></p>
             {cfg.realmId && <p>Realm ID: <span className="font-mono">{cfg.realmId}</span></p>}
-            {cfg.connectedAt && <p className="text-green-600">Authorized: {new Date(cfg.connectedAt).toLocaleDateString()}</p>}
+            {cfg.connectedAt && <p className="text-green-600">Authorized: {fmtDateShort(cfg.connectedAt)}</p>}
           </div>
         )}
 

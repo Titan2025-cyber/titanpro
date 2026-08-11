@@ -9,6 +9,7 @@ import { useState } from "react";
 import { Shield, Plus, AlertTriangle, CheckCircle, Clock, X, Pencil } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { fmtDate } from "@/lib/dates";
 
 const DOC_TYPES = [
   { value: "coi", label: "Certificate of Insurance (COI)" },
@@ -159,7 +160,7 @@ export default function COITracker() {
                         {doc.issuer && <p className="text-xs text-muted-foreground">Issuer: {doc.issuer}</p>}
                         {contact && <p className="text-xs text-muted-foreground">Sub/Partner: {contact.name}</p>}
                         <p className="text-xs text-muted-foreground mt-1">
-                          Expires: <span className="font-medium">{new Date(doc.expires_at).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })}</span>
+                          Expires: <span className="font-medium">{fmtDate(doc.expires_at, { year: "numeric", month: "short", day: "numeric" })}</span>
                         </p>
                         {doc.notes && <p className="text-xs text-muted-foreground mt-1 italic">{doc.notes}</p>}
                         {doc.status.daysLeft < 0 && (

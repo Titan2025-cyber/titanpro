@@ -28,6 +28,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDateShort } from "@/lib/dates";
 
 interface HazmatFlag {
   id: number;
@@ -333,12 +334,12 @@ export default function HazmatFlags() {
                           {job
                             ? `${job.jobNumber} — ${job.address?.split(",")[0]}`
                             : `Job #${flag.jobId}`}{" "}
-                          · Detected {new Date(flag.detectedAt).toLocaleDateString()}
+                          · Detected {fmtDateShort(flag.detectedAt)}
                         </p>
                         {flag.acknowledgedBy && (
                           <p className="text-xs text-green-600 dark:text-green-400">
                             Acknowledged by {flag.acknowledgedBy} on{" "}
-                            {new Date(flag.acknowledgedAt!).toLocaleDateString()}
+                            {fmtDateShort(flag.acknowledgedAt!)}
                           </p>
                         )}
                       </div>

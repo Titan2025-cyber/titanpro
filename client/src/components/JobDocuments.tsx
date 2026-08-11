@@ -31,6 +31,7 @@ const loadPdfEngine = () => import("@/lib/pdfEngine");
 const loadDocumentPacket = () => import("@/lib/documentPacket");
 import { CertificateOfCompletion } from "@/components/CertificateOfCompletion";
 import type { JobDocument, Job, Contact } from "@shared/schema";
+import { fmtDateShort, todayLocalISO } from "@/lib/dates";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Signature Pad
@@ -155,7 +156,7 @@ function WorkAuthorizationForm({
     relationship: "Property Owner",
     propertyAddress: job.address || "",
     authorizationScope: "mitigation",
-    startDate: new Date().toISOString().slice(0, 10),
+    startDate: todayLocalISO(),
     specialInstructions: "",
     insuranceCarrier: job.insuranceCarrier || "",
     claimNumber: job.claimNumber || "",
@@ -871,7 +872,7 @@ function DocCard({
         doc.title,
         `${"-".repeat(60)}`,
         `Signed by: ${doc.signerName}`,
-        `Date: ${doc.signedAt ? new Date(doc.signedAt).toLocaleString() : "N/A"}`,
+        `Date: ${doc.signedAt ? fmtDateShort(doc.signedAt) : "N/A"}`,
         ``,
         ...(formData ? Object.entries(formData).map(([k, v]) => `${k}: ${v}`) : []),
         ``,
@@ -994,7 +995,7 @@ function DocCard({
             )}
             {doc.createdAt && (
               <span className="text-xs text-muted-foreground hidden md:block ml-1">
-                {new Date(doc.createdAt).toLocaleDateString()}
+                {fmtDateShort(doc.createdAt)}
               </span>
             )}
             {expanded ? <ChevronUp className="w-4 h-4 text-muted-foreground ml-1" /> : <ChevronDown className="w-4 h-4 text-muted-foreground ml-1" />}
@@ -1027,7 +1028,7 @@ function DocCard({
                 </div>
                 <p className="text-xs text-green-600 mt-1 flex items-center gap-1">
                   <CheckCircle2 className="w-3 h-3" />
-                  Signed by {doc.signerName} · {doc.signedAt ? new Date(doc.signedAt).toLocaleString() : ""}
+                  Signed by {doc.signerName} · {doc.signedAt ? fmtDateShort(doc.signedAt) : ""}
                 </p>
               </div>
             )}

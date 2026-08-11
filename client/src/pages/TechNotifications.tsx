@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDateShort } from "@/lib/dates";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
@@ -135,7 +136,7 @@ export default function TechNotifications() {
                     </div>
                     <p className="text-sm text-muted-foreground mt-0.5">{n.body}</p>
                     <p className="text-xs text-muted-foreground mt-1">
-                      {new Date(n.created_at).toLocaleString()}
+                      {fmtDateShort(n.created_at)}
                       {n.job_id && ` · Job #${n.job_id}`}
                     </p>
                   </div>

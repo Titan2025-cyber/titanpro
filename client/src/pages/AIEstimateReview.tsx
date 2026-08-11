@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import type { Estimate, Job } from "@shared/schema";
+import { fmtDateShort } from "@/lib/dates";
 
 export default function AIEstimateReview() {
   const { toast } = useToast();
@@ -206,7 +207,7 @@ export default function AIEstimateReview() {
 
           {/* Reviewed at */}
           <p className="text-xs text-muted-foreground text-right">
-            Reviewed {new Date(result.reviewedAt).toLocaleString()}
+            Reviewed {fmtDateShort(result.reviewedAt)}
           </p>
         </div>
       )}

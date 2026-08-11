@@ -28,6 +28,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Contact } from "@shared/schema";
+import { todayLocalISO } from "@/lib/dates";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface BdEvent {
@@ -81,7 +82,7 @@ function EventForm({
   const [form, setForm] = useState({
     title: event?.title || "",
     eventType: event?.eventType || "meeting",
-    date: event?.date || defaultDate || new Date().toISOString().slice(0, 10),
+    date: event?.date || defaultDate || todayLocalISO(),
     startTime: event?.startTime || "09:00",
     endTime: event?.endTime || "",
     location: event?.location || "",
@@ -343,7 +344,7 @@ function MonthView({
 }) {
   const firstDay = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocalISO();
 
   const cells: (number | null)[] = [
     ...Array(firstDay).fill(null),
@@ -414,7 +415,7 @@ function MonthView({
 
 // ── List / Agenda View ────────────────────────────────────────────────────────
 function ListView({ events, onEventClick }: { events: BdEvent[]; onEventClick: (e: BdEvent) => void }) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocalISO();
   const upcoming = events.filter(e => e.date >= today).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
   const past = events.filter(e => e.date < today).sort((a, b) => b.date.localeCompare(a.date));
 

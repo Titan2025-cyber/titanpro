@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDateShort } from "@/lib/dates";
 import {
   ArrowRightLeft, CheckCircle2, AlertCircle, Eye, EyeOff, Save, Plug, RefreshCw,
   MessageSquare, Camera, LayoutDashboard, Loader2, History, Users, Database,
@@ -183,7 +184,7 @@ function SourceCard({ src }: { src: SourceDef }) {
           <div className="text-xs text-muted-foreground bg-muted/40 rounded p-2 space-y-0.5">
             <p>API Token: <span className="font-mono">{cfg.apiKeyMasked || "configured"}</span></p>
             {cfg.baseUrl && <p>Base URL: <span className="font-mono">{cfg.baseUrl}</span></p>}
-            <p className="text-[10px] text-muted-foreground/60">Updated {cfg.updatedAt ? new Date(cfg.updatedAt).toLocaleDateString() : "—"}</p>
+            <p className="text-[10px] text-muted-foreground/60">Updated {cfg.updatedAt ? fmtDateShort(cfg.updatedAt) : "—"}</p>
           </div>
         )}
 

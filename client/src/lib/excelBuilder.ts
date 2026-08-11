@@ -7,6 +7,7 @@
 
 import * as XLSX from "xlsx";
 import type { DocConfig } from "./documentBuilder";
+import { todayLocalISO } from "@/lib/dates";
 
 export function buildBrandedExcel(cfg: DocConfig): void {
   const wb = XLSX.utils.book_new();
@@ -47,6 +48,6 @@ export function buildBrandedExcel(cfg: DocConfig): void {
   }
 
   const safeTitle = cfg.title.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "_") || "Titan_Document";
-  const date = new Date().toISOString().slice(0, 10);
+  const date = todayLocalISO();
   XLSX.writeFile(wb, `${safeTitle}_${date}.xlsx`);
 }

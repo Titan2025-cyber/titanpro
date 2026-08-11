@@ -16,6 +16,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Job } from "@shared/schema";
+import { fmtDate, todayLocalISO } from "@/lib/dates";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Stage definitions
@@ -126,7 +127,7 @@ export function daysAgo(dateStr: string | null | undefined): number | null {
 
 export function formatPipelineDate(dateStr: string | null | undefined): string {
   if (!dateStr) return "";
-  return new Date(dateStr).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return fmtDate(dateStr, { month: "short", day: "numeric", year: "numeric" });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -152,7 +153,7 @@ export function StageSelector({ job }: { job: Job }) {
   });
 
   const handleStageSelect = (stageKey: string) => {
-    const now = new Date().toISOString().slice(0, 10);
+    const now = todayLocalISO();
     const stage = PROGRESS_STAGES.find(s => s.key === stageKey)!;
     const updates: any = { progressStage: stageKey };
 

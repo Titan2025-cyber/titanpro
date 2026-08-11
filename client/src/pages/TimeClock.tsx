@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { Clock, MapPin, LogIn, LogOut, Users, Timer, Briefcase } from "lucide-react";
+import { fmtDateShort, todayLocalISO } from "@/lib/dates";
 
 
 export default function TimeClock() {
@@ -83,7 +84,7 @@ export default function TimeClock() {
   }
 
   const totalMinutesToday = entries
-    .filter((e: any) => e.clock_in_at?.startsWith(new Date().toISOString().slice(0, 10)))
+    .filter((e: any) => e.clock_in_at?.startsWith(todayLocalISO()))
     .reduce((s: number, e: any) => s + (e.duration_minutes || 0), 0);
 
   const recentEntries = entries.slice(0, 30);
@@ -182,7 +183,7 @@ export default function TimeClock() {
                         {job && <Badge variant="outline" className="text-xs">TP-{String(job.id).padStart(4, "0")}</Badge>}
                         {!e.clock_out_at && <Badge className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400 text-xs">Active</Badge>}
                       </div>
-                      <p className="text-xs text-muted-foreground">{new Date(e.clock_in_at).toLocaleString()}{e.clock_out_at ? ` → ${new Date(e.clock_out_at).toLocaleTimeString()}` : ""}</p>
+                      <p className="text-xs text-muted-foreground">{fmtDateShort(e.clock_in_at)}{e.clock_out_at ? ` → ${new Date(e.clock_out_at).toLocaleTimeString()}` : ""}</p>
                     </div>
                     <div className="text-right shrink-0">
                       {e.duration_minutes != null && <p className="font-semibold">{(e.duration_minutes / 60).toFixed(1)}h</p>}

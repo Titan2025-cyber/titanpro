@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { AlertCircle, Send, X, RefreshCw, Inbox, Filter } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDateShort } from "@/lib/dates";
 
 type DraftType = "all" | "adjuster_silence" | "ar_stalled" | "coi_expiring" | "cert_expiring" | "weekly_ar_digest";
 
@@ -141,7 +142,7 @@ export default function EscalationOutbox() {
                       <span className="truncate">{d.subject}</span>
                     </div>
                     <span className="text-xs font-normal text-muted-foreground whitespace-nowrap">
-                      {new Date(d.created_at).toLocaleString()}
+                      {fmtDateShort(d.created_at)}
                     </span>
                   </CardTitle>
                 </CardHeader>

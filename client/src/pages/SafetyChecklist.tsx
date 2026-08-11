@@ -21,6 +21,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { ShieldCheck, ShieldAlert, Plus, CheckCircle, XCircle, AlertTriangle, User, Trash2, Pencil } from "lucide-react";
 import type { Job } from "@shared/schema";
+import { todayLocalISO } from "@/lib/dates";
 
 
 interface CheckItem { key: string; label: string; description: string; failCritical?: boolean }
@@ -41,7 +42,7 @@ function EditSafetyChecklistDialog({ checklist, jobs, onDone }: { checklist: any
   const [form, setForm] = useState<Record<string, any>>({
     jobId: String(checklist.jobId ?? ""),
     techName: checklist.techName ?? "",
-    checklistDate: checklist.checklistDate ?? new Date().toISOString().slice(0, 10),
+    checklistDate: checklist.checklistDate ?? todayLocalISO(),
     ppeVerified: !!checklist.ppeVerified, electricalHazard: !!checklist.electricalHazard,
     airQualityCheck: !!checklist.airQualityCheck, moldFlag: !!checklist.moldFlag,
     asbestosFlag: !!checklist.asbestosFlag, confinedSpaceFlag: !!checklist.confinedSpaceFlag,
@@ -189,7 +190,7 @@ export default function SafetyChecklist() {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<Record<string, any>>({
-    jobId: "", techName: "", checklistDate: new Date().toISOString().slice(0, 10),
+    jobId: "", techName: "", checklistDate: todayLocalISO(),
     ppeVerified: false, electricalHazard: false, airQualityCheck: false, moldFlag: false,
     asbestosFlag: false, confinedSpaceFlag: false, slipHazard: false, biohazardFlag: false,
     electricalNotes: "", notes: "",

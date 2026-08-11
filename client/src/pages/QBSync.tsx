@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { RefreshCw, CheckCircle, AlertTriangle, Clock, BookOpen, TrendingUp, FileText, Trash2 } from "lucide-react";
+import { fmtDateShort } from "@/lib/dates";
 
 const STATUS_COLORS: Record<string, string> = {
   synced: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
@@ -109,7 +110,7 @@ export default function QBSync() {
       </div>
 
       {summary?.lastSync && (
-        <p className="text-xs text-muted-foreground">Last sync: {new Date(summary.lastSync).toLocaleString()}</p>
+        <p className="text-xs text-muted-foreground">Last sync: {fmtDateShort(summary.lastSync)}</p>
       )}
 
       {/* Connection Info */}
@@ -163,7 +164,7 @@ export default function QBSync() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <p className="text-xs text-muted-foreground">{entry.synced_at ? new Date(entry.synced_at).toLocaleString() : "Pending"}</p>
+                    <p className="text-xs text-muted-foreground">{entry.synced_at ? fmtDateShort(entry.synced_at) : "Pending"}</p>
                     <DeleteQbSyncLogBtn id={entry.id} label={`${entry.entity_type} #${entry.entity_id}`} onDone={() => queryClient.invalidateQueries({ queryKey: ["/api/qb-sync-log"] })} />
                   </div>
                 </div>

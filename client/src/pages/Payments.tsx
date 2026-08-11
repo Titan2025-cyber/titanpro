@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Payment, Contact, Job } from "@shared/schema";
+import { fmtDateShort } from "@/lib/dates";
 
 export default function Payments() {
   const { data: payments = [] } = useQuery<Payment[]>({ queryKey: ["/api/payments"] });
@@ -40,7 +41,7 @@ export default function Payments() {
       <div className="flex items-center justify-between py-2 border-b last:border-0 text-sm">
         <div>
           <p className="font-medium">{contact?.name || "—"}</p>
-          <p className="text-xs text-muted-foreground">{job?.jobNumber || ""} · {p.method} · {p.paidAt ? new Date(p.paidAt).toLocaleDateString() : ""}</p>
+          <p className="text-xs text-muted-foreground">{job?.jobNumber || ""} · {p.method} · {p.paidAt ? fmtDateShort(p.paidAt) : ""}</p>
         </div>
         <p className={`font-bold ${p.type === "received" ? "text-green-600" : "text-[hsl(var(--titan-red))]"}`}>
           {p.type === "received" ? "+" : "-"}${p.amount.toLocaleString()}

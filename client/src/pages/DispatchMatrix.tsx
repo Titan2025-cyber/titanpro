@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { Grid3X3, User, CheckCircle, XCircle, Clock, AlertTriangle, Plane } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { todayLocalISO } from "@/lib/dates";
 
 const HOURS = Array.from({ length: 13 }, (_, i) => i + 7); // 7am - 7pm
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -149,7 +150,7 @@ export default function DispatchMatrix() {
 
   // Counts for summary
   const getTodayStats = () => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayLocalISO();
     const avail = employees.filter((e: any) => getStatus(e.id, today) === "available").length;
     const onJob = employees.filter((e: any) => getStatus(e.id, today) === "on_job").length;
     const unavail = employees.filter((e: any) => ["unavailable","pto","training","off"].includes(getStatus(e.id, today))).length;
@@ -256,7 +257,7 @@ export default function DispatchMatrix() {
               <tr>
                 <th className="text-left p-2 bg-muted font-semibold text-xs w-32">Tech</th>
                 {weekDates.map(({ display, date }) => {
-                  const isToday = date === new Date().toISOString().slice(0, 10);
+                  const isToday = date === todayLocalISO();
                   return (
                     <th key={date} className={`p-2 text-center text-xs font-semibold ${isToday ? "bg-blue-100 text-blue-700" : "bg-muted"}`}>
                       {display}
@@ -282,7 +283,7 @@ export default function DispatchMatrix() {
                   {weekDates.map(({ date, label }) => {
                     const status = getStatus(emp.id, date);
                     const sc = STATUS_COLORS[status] || STATUS_COLORS.available;
-                    const isToday = date === new Date().toISOString().slice(0, 10);
+                    const isToday = date === todayLocalISO();
                     return (
                       <td key={date} className={`p-1 text-center ${isToday ? "bg-blue-50" : ""}`}>
                         <button

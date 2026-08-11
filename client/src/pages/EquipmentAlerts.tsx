@@ -9,6 +9,7 @@ import { AlertTriangle, Clock, Wrench, MapPin, User, CalendarCheck } from "lucid
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
+import { fmtDateShort } from "@/lib/dates";
 
 export default function EquipmentAlerts() {
   const { toast } = useToast();
@@ -128,13 +129,13 @@ export default function EquipmentAlerts() {
                         {alert.deployed_at && (
                           <span className="flex items-center gap-1">
                             <Clock className="w-3 h-3" />
-                            Deployed {new Date(alert.deployed_at).toLocaleDateString()}
+                            Deployed {fmtDateShort(alert.deployed_at)}
                           </span>
                         )}
                       </div>
                       {alert.expected_return_date && (
                         <p className="text-xs text-muted-foreground">
-                          Expected return: {new Date(alert.expected_return_date).toLocaleDateString()}
+                          Expected return: {fmtDateShort(alert.expected_return_date)}
                         </p>
                       )}
                     </div>

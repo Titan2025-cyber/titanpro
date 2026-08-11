@@ -42,6 +42,7 @@ function TabLoading() {
 }
 import { WarrantyCallPanel } from "@/components/WarrantyCallPanel";
 import { ReferralPayoutPanel } from "@/components/ReferralPayoutPanel";
+import { fmtDate, fmtDateShort } from "@/lib/dates";
 
 // ── Per-Job SMS Thread ───────────────────────────────────────────────────────
 function JobSMSThread({ jobId, contactPhone }: { jobId: number; contactPhone?: string }) {
@@ -336,7 +337,7 @@ function NotesTab({ jobId }: { jobId: number }) {
                         {note.isPublic ? <><Globe className="w-3 h-3" />Public</> : <><Lock className="w-3 h-3" />Private</>}
                       </span>
                       <span className="text-xs text-muted-foreground ml-auto">
-                        {note.createdAt ? new Date(note.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }) : ""}
+                        {note.createdAt ? fmtDate(note.createdAt, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }) : ""}
                         {note.editedAt && <span className="italic ml-1">(edited)</span>}
                       </span>
                     </div>
@@ -1289,7 +1290,7 @@ export default function JobDetail() {
               ].map(m => (
                 <div key={m.label}>
                   <p className="text-xs text-muted-foreground">{m.label}</p>
-                  <p className="text-sm font-medium">{m.value ? new Date(m.value).toLocaleDateString() : "—"}</p>
+                  <p className="text-sm font-medium">{m.value ? fmtDateShort(m.value) : "—"}</p>
                 </div>
               ))}
             </CardContent>
@@ -1311,7 +1312,7 @@ export default function JobDetail() {
                     <div className="flex items-center gap-2 mb-1">
                       <span className="text-xs font-semibold">{note.author}</span>
                       {note.tag && <span className="text-xs text-muted-foreground">@{note.tag}</span>}
-                      <span className="text-xs text-muted-foreground ml-auto">{note.createdAt ? new Date(note.createdAt).toLocaleDateString() : ""}</span>
+                      <span className="text-xs text-muted-foreground ml-auto">{note.createdAt ? fmtDateShort(note.createdAt) : ""}</span>
                     </div>
                     <p className="text-muted-foreground">{note.body}</p>
                   </div>
@@ -1333,7 +1334,7 @@ export default function JobDetail() {
                     <div className="flex items-center gap-2 mb-1">
                       <span className="font-semibold text-xs">{n.author || "Tech"}</span>
                       {n.tag && <span className="text-xs bg-[hsl(var(--titan-blue)/0.1)] text-[hsl(var(--titan-blue))] px-2 py-0.5 rounded-full">@{n.tag}</span>}
-                      <span className="text-xs text-muted-foreground ml-auto">{n.createdAt ? new Date(n.createdAt).toLocaleDateString() : ""}</span>
+                      <span className="text-xs text-muted-foreground ml-auto">{n.createdAt ? fmtDateShort(n.createdAt) : ""}</span>
                     </div>
                     <p>{n.text}</p>
                   </div>
@@ -1492,7 +1493,7 @@ export default function JobDetail() {
                           <p className={`text-sm font-medium ${isCurrent ? stage.textColor : isPast ? "text-green-700 dark:text-green-400" : "text-muted-foreground"}`}>{stage.label}</p>
                           {isCurrent && <Badge className={`text-xs border ${stage.color} ${stage.textColor} ${stage.borderColor}`}>Current</Badge>}
                         </div>
-                        {dateStr && <p className="text-xs text-muted-foreground mt-0.5">{stage.dateLabel}: {new Date(dateStr).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p>}
+                        {dateStr && <p className="text-xs text-muted-foreground mt-0.5">{stage.dateLabel}: {fmtDate(dateStr, { month: "short", day: "numeric", year: "numeric" })}</p>}
                       </div>
                     </div>
                   );

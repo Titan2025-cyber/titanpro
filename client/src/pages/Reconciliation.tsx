@@ -4,6 +4,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { fmtDateShort } from "@/lib/dates";
 import {
   Scale, CheckCircle2, AlertTriangle, CreditCard, BookMarked,
   ArrowRight, Link2, DollarSign, HelpCircle,
@@ -233,7 +234,7 @@ export default function Reconciliation() {
                     {p.reference && <span className="text-xs text-muted-foreground">· {p.reference}</span>}
                   </div>
                   <span className="text-xs text-muted-foreground">
-                    {p.contactName || "Unknown"} · {p.paidAt ? new Date(p.paidAt).toLocaleDateString() : ""}
+                    {p.contactName || "Unknown"} · {p.paidAt ? fmtDateShort(p.paidAt) : ""}
                   </span>
                 </div>
               ))}

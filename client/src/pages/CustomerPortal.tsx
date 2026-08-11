@@ -28,10 +28,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Job, Invoice, Contact } from "@shared/schema";
 import { StageExplainer, NextActionPanel, MoistureVisualization, EquipmentTracker, MessageThread, InsuranceAdvocacy } from "./CustomerPortalParts";
+import { fmtDate, fmtDateShort } from "@/lib/dates";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const fmt$ = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(n || 0);
-const fmtDate = (s?: string | null) => s ? new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—";
+const fmtDate = (s?: string | null) => s ? fmtDate(s, { month: "short", day: "numeric", year: "numeric" }) : "—";
 
 const STATUS_COLORS: Record<string, string> = {
   new: "bg-blue-100 text-blue-800",
@@ -266,7 +267,7 @@ function JobDetailTabs({ job, invoices, onPay, contactId, contactName }: { job: 
             )}
             {docusketch.completedAt && (
               <div className="px-4 py-2 bg-muted/40 text-xs text-muted-foreground border-t">
-                Scan completed {new Date(docusketch.completedAt).toLocaleDateString()}
+                Scan completed {fmtDateShort(docusketch.completedAt)}
               </div>
             )}
           </div>

@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDate } from "@/lib/dates";
 import {
   MapPin, Plus, Route, Calendar, ChevronRight, Trash2, Edit2, CheckCircle2,
   Circle, Navigation, Star, AlertCircle, Clock, Truck, Users, ArrowUp,
@@ -401,7 +402,7 @@ export default function RoutePlanner() {
                         {r.assigned_to && <span className="flex items-center gap-1"><Users className="h-3 w-3" />{r.assigned_to}</span>}
                         {r.estimated_miles && <span className="flex items-center gap-1"><Navigation className="h-3 w-3" />{r.estimated_miles} mi</span>}
                         {r.estimated_duration && <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{r.estimated_duration} min</span>}
-                        {r.lastTrip && <span>Last run: {new Date(r.lastTrip.scheduled_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>}
+                        {r.lastTrip && <span>Last run: {fmtDate(r.lastTrip.scheduled_date, { month: "short", day: "numeric" })}</span>}
                       </div>
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0">
@@ -439,7 +440,7 @@ export default function RoutePlanner() {
                   {f.due_date && (
                     <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
                       <AlertCircle className="h-3 w-3" />
-                      Due {new Date(f.due_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      Due {fmtDate(f.due_date, { month: "short", day: "numeric" })}
                     </p>
                   )}
                 </CardContent>
@@ -606,7 +607,7 @@ export default function RoutePlanner() {
                         {trip.route_type && <TypeBadge type={trip.route_type} />}
                       </td>
                       <td className="p-3 text-foreground whitespace-nowrap">
-                        {new Date(trip.scheduled_date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                        {fmtDate(trip.scheduled_date, { weekday: "short", month: "short", day: "numeric" })}
                       </td>
                       <td className="p-3 text-foreground">{trip.assigned_to || "—"}</td>
                       <td className="p-3"><StatusBadge status={trip.status} /></td>

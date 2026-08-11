@@ -27,6 +27,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { fmtDateShort } from "@/lib/dates";
 
 // Types
 interface Equipment {
@@ -407,10 +408,10 @@ function DeploymentHistory() {
               <TableRow key={d.id} data-testid={`deployment-row-${d.id}`}>
                 <TableCell className="font-medium">{d.equipmentName}</TableCell>
                 <TableCell>{d.jobNumber}</TableCell>
-                <TableCell>{d.deployedAt ? new Date(d.deployedAt).toLocaleDateString() : "—"}</TableCell>
+                <TableCell>{d.deployedAt ? fmtDateShort(d.deployedAt) : "—"}</TableCell>
                 <TableCell>
                   {d.returnedAt
-                    ? new Date(d.returnedAt).toLocaleDateString()
+                    ? fmtDateShort(d.returnedAt)
                     : <Badge className="bg-orange-100 text-orange-800 border-orange-200 border text-xs">Active</Badge>}
                 </TableCell>
                 <TableCell className="text-right">{daysOut}</TableCell>

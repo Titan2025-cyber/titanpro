@@ -22,6 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import type { Job, Contact } from "@shared/schema";
 import { PROGRESS_STAGES, StageSelector, DateManager, getStageForJob, daysAgo, formatPipelineDate } from "@/components/JobPipeline";
 import { LeadSourceSelect, type LeadSource } from "@/pages/LeadAttribution";
+import { todayLocalISO } from "@/lib/dates";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -588,7 +589,7 @@ export default function Jobs() {
     assignedTech: "",
     insuranceCarrier: "",
     claimNumber: "",
-    salesDate: new Date().toISOString().slice(0, 10),
+    salesDate: todayLocalISO(),
     leadSource: "" as LeadSource | "",
     leadSourceDetail: "",
     // Property details — auto-prefilled from OpenStreetMap when the address
@@ -650,7 +651,7 @@ export default function Jobs() {
       assignedTech: "",
       insuranceCarrier: "",
       claimNumber: "",
-      salesDate: new Date().toISOString().slice(0, 10),
+      salesDate: todayLocalISO(),
       leadSource: "",
       leadSourceDetail: "",
       yearBuilt: "",

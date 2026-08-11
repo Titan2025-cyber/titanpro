@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { HandCoins, CheckCircle2, Lightbulb, Lock, Users, Banknote, Clock } from "lucide-react";
 import type { Job, Estimate, Invoice, Contact, Payment } from "@shared/schema";
+import { fmtDate } from "@/lib/dates";
 
 // ── Payout amounts (Titan referral program) ──────────────────────────────────
 // $100  — inspection only (referred, inspected, not yet sold)
@@ -32,7 +33,7 @@ const PAYMENT_METHODS = [
 ] as const;
 
 const fmt = (n: number) => n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-const fmtDate = (s: string) => new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+const fmtDate = (s: string) => fmtDate(s, { month: "short", day: "numeric", year: "numeric" });
 
 // Roles allowed to select/apply/pay a payout. Everyone else sees read-only.
 const CAN_SELECT_ROLES = ["owner", "admin", "sales"];
