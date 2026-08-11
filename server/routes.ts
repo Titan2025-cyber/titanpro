@@ -3981,19 +3981,63 @@ cody@titanrestorationllc.com`;
   registerAuthRoutes(app, sqlite);
 
   // ── Job Notes Routes ────────────────────────────────────────────────────────
-  // Ensure table exists on startup (safe migration)
+  // Ensure table exists on startup (safe migration).
+  //
+  // Historical schema had is_public default 0 (private). Cody's rule is
+  // now 'every employee sees every note' — so we treat public as the
+  // default going forward. New DBs created here get DEFAULT 1; existing
+  // DBs keep whatever default they had, but the POST route now forces
+  // isPublic=true unless the client explicitly opts out.
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS job_notes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       job_id INTEGER NOT NULL,
       author TEXT NOT NULL DEFAULT 'Titan Team',
       body TEXT NOT NULL,
-      is_public INTEGER NOT NULL DEFAULT 0,
+      is_public INTEGER NOT NULL DEFAULT 1,
       tag TEXT,
       edited_at TEXT,
       created_at TEXT NOT NULL DEFAULT ''
     )
   `);
+
+  // One-time backfill: flip every existing private note to public so
+  // notes typed before the visibility rule change are visible to the
+  // whole crew. Gated by a marker in app_meta so it only runs once,
+  // no matter how many times the server restarts. Owner can still turn
+  // an individual note private later via the Notes tab edit UI.
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS app_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TEXT
+      )
+    `);
+    const marker = sqlite
+      .prepare("SELECT value FROM app_meta WHERE key = 'job_notes_public_backfill_v1'")
+      .get() as { value?: string } | undefined;
+    if (!marker) {
+      const before = sqlite
+        .prepare("SELECT COUNT(*) AS n FROM job_notes WHERE is_public = 0")
+        .get() as { n: number };
+      const flipped = sqlite
+        .prepare("UPDATE job_notes SET is_public = 1 WHERE is_public = 0")
+        .run();
+      sqlite
+        .prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?)")
+        .run(
+          "job_notes_public_backfill_v1",
+          JSON.stringify({ flipped: flipped.changes, previouslyPrivate: before.n }),
+          new Date().toISOString(),
+        );
+      if (flipped.changes > 0) {
+        console.log(`[migration] job_notes: flipped ${flipped.changes} private note(s) to public`);
+      }
+    }
+  } catch (e: any) {
+    console.warn("[migration] job_notes public backfill failed:", e?.message || e);
+  }
 
   // Map a raw job_notes DB row (snake_case) to the camelCase shape the client expects
   const mapJobNote = (r: any) => r == null ? r : ({
