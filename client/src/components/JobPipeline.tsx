@@ -42,7 +42,7 @@ export const PROGRESS_STAGES: ProgressStage[] = [
     shortLabel: "Pending",
     description: "Lead received — awaiting signed auth or approval to proceed",
     dateField: "salesDate",
-    dateLabel: "Sale Date",
+    dateLabel: "Date Received",
     color: "bg-slate-100 dark:bg-slate-800",
     textColor: "text-slate-700 dark:text-slate-300",
     borderColor: "border-slate-300 dark:border-slate-600",
@@ -313,7 +313,7 @@ export function DateManager({ job }: { job: Job }) {
   });
 
   const DATE_FIELDS = [
-    { key: "salesDate", label: "Sale Date", stage: PROGRESS_STAGES[0] },
+    { key: "salesDate", label: "Date Received", stage: PROGRESS_STAGES[0] },
     { key: "preProductionDate", label: "Pre-Production Start", stage: PROGRESS_STAGES[1] },
     { key: "wipDate", label: "WIP Start", stage: PROGRESS_STAGES[2] },
     { key: "invoiceSentDate", label: "Invoice Sent", stage: PROGRESS_STAGES[3] },

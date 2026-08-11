@@ -517,7 +517,7 @@ function InlineMilestoneDates({ job }: { job: any }) {
   });
 
   const DATE_ROWS = [
-    { key: "salesDate", label: "Sale Date", stage: PROGRESS_STAGES[0] },
+    { key: "salesDate", label: "Date Received", stage: PROGRESS_STAGES[0] },
     { key: "preProductionDate", label: "Pre-Production Start", stage: PROGRESS_STAGES[1] },
     { key: "wipDate", label: "WIP Start", stage: PROGRESS_STAGES[2] },
     { key: "invoiceSentDate", label: "Invoice Sent", stage: PROGRESS_STAGES[3] },

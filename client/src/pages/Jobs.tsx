@@ -976,7 +976,7 @@ export default function Jobs() {
                 </div>
 
                 <div>
-                  <Label>Sale Date</Label>
+                  <Label>Date Received</Label>
                   <Input type="date" value={form.salesDate} onChange={e => setForm(f => ({ ...f, salesDate: e.target.value }))} />
                 </div>
 
