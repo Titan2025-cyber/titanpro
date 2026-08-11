@@ -951,15 +951,23 @@ function dataUriToBlob(dataUri: string): Blob {
 }
 
 export function previewPDF(dataUri: string) {
-  // Build a Blob URL and open it directly. This works inside sandboxed iframes
-  // (e.g. the published pplx.app build) where window.open() + document.write is
-  // blocked, and is not subject to data: URI popup/navigation restrictions.
+  // Accept three shapes:
+  //   • data: URI  (legacy / just-generated PDFs)
+  //   • https:// signed URL (S3-hydrated bucket read URL)
+  //   • plain base64 (very old rows) — handled by dataUriToBlob's fallback
+  // For remote URLs we just open them directly so the browser streams from S3.
   let url: string;
-  try {
-    url = URL.createObjectURL(dataUriToBlob(dataUri));
-  } catch (e) {
-    console.error("previewPDF: failed to build blob", e);
-    return;
+  let revoke = false;
+  if (/^https?:\/\//i.test(dataUri)) {
+    url = dataUri;
+  } else {
+    try {
+      url = URL.createObjectURL(dataUriToBlob(dataUri));
+      revoke = true;
+    } catch (e) {
+      console.error("previewPDF: failed to build blob", e);
+      return;
+    }
   }
   const win = window.open(url, "_blank");
   if (!win) {
@@ -974,7 +982,7 @@ export function previewPDF(dataUri: string) {
     document.body.removeChild(a);
   }
   // Revoke after a delay so the browser has time to load the document.
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  if (revoke) setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -982,17 +990,22 @@ export function previewPDF(dataUri: string) {
 // ─────────────────────────────────────────────────────────────────────────────
 export function downloadPDF(dataUri: string, filename: string) {
   const name = filename.endsWith(".pdf") ? filename : filename + ".pdf";
-  // Use a Blob URL rather than assigning the raw data: URI to href. Chrome and
-  // other browsers block/truncate large data: URI downloads, and data: URIs do
-  // not work reliably inside sandboxed iframes (the published pplx.app build).
+  // Handle both inline data URIs and remote https URLs (S3-hydrated).
+  // For remote URLs we still trigger the <a download> attribute; browsers will
+  // honor it as long as the URL is same-origin OR the server sends the right
+  // Content-Disposition (S3 signed URLs do).
   let url: string;
   let isBlob = false;
-  try {
-    url = URL.createObjectURL(dataUriToBlob(dataUri));
-    isBlob = true;
-  } catch (e) {
-    console.error("downloadPDF: blob build failed, falling back to data URI", e);
+  if (/^https?:\/\//i.test(dataUri)) {
     url = dataUri;
+  } else {
+    try {
+      url = URL.createObjectURL(dataUriToBlob(dataUri));
+      isBlob = true;
+    } catch (e) {
+      console.error("downloadPDF: blob build failed, falling back to data URI", e);
+      url = dataUri;
+    }
   }
   const link = document.createElement("a");
   link.href = url;

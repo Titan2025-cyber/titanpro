@@ -75,9 +75,13 @@ function SignaturePad({ onSign, onClear }: { onSign: (dataUrl: string) => void; 
     if (!canvas) return;
     const ctx = canvas.getContext("2d")!;
     const pos = getPos(e, canvas);
-    ctx.lineWidth = 2.5;
+    // Thicker stroke + solid black on a solid-white canvas so the signature
+    // is always visible — regardless of dark mode. The canvas is explicitly
+    // filled white in the mount effect below.
+    ctx.lineWidth = 3;
+    ctx.lineJoin = "round";
     ctx.lineCap = "round";
-    ctx.strokeStyle = "#1a1a1a";
+    ctx.strokeStyle = "#000000";
     ctx.lineTo(pos.x, pos.y);
     ctx.stroke();
     setHasSig(true);
@@ -94,7 +98,10 @@ function SignaturePad({ onSign, onClear }: { onSign: (dataUrl: string) => void; 
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d")!;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Repaint white so the signature area doesn't flash back to transparent
+    // (which reveals the dark background in dark mode).
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     setHasSig(false);
     onClear();
   }, [onClear]);
@@ -102,6 +109,15 @@ function SignaturePad({ onSign, onClear }: { onSign: (dataUrl: string) => void; 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    // Prime the canvas with a solid white fill so the black signature is always
+    // visible even when the container is in dark mode. Otherwise the canvas is
+    // transparent and inherits the dark bg — people were drawing black on
+    // black and thinking the pad was broken.
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     canvas.addEventListener("mousedown", startDraw);
     canvas.addEventListener("mousemove", draw);
     canvas.addEventListener("mouseup", endDraw);
@@ -122,7 +138,7 @@ function SignaturePad({ onSign, onClear }: { onSign: (dataUrl: string) => void; 
 
   return (
     <div className="space-y-2">
-      <div className="border-2 border-dashed border-muted-foreground/30 rounded-lg bg-white dark:bg-gray-900 overflow-hidden cursor-crosshair">
+      <div className="border-2 border-dashed border-muted-foreground/30 rounded-lg bg-white overflow-hidden cursor-crosshair">
         <canvas
           ref={canvasRef}
           width={600}
@@ -218,13 +234,21 @@ function WorkAuthorizationForm({
       // (today, if missing) so the pipeline age counters start counting
       // from the moment the customer signed rather than from job
       // creation.
+      // Advance from ANY earlier stage (pending_sale, blank, or any legacy /
+      // never-set value like 'new' or 'lead'). Only *later* stages are
+      // considered locked in.
       const wasSigned = !!sigData;
-      const preSaleStages = new Set(["pending_sale", ""]);
+      const lockedStages = new Set([
+        "wip", "invoice_pending", "accounts_receivable", "complete",
+      ]);
       const shouldAdvance =
-        wasSigned && (!job.progressStage || preSaleStages.has(job.progressStage));
+        wasSigned && !lockedStages.has((job.progressStage || "").toString());
 
       if (shouldAdvance) {
-        const todayISO = new Date().toISOString();
+        // salesDate and preProductionDate are 'YYYY-MM-DD' date-only fields,
+        // not timestamps — use the local-timezone helper so a late-night sign
+        // doesn't stamp tomorrow's UTC date.
+        const todayISO = todayLocalISO();
         const patch: Record<string, any> = {
           progressStage: "pre_production",
           preProductionDate: (job as any).preProductionDate || todayISO,

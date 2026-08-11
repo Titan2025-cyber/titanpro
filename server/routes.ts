@@ -2179,9 +2179,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ── Job Documents (e-sign forms + PDF uploads) ─────────────────────────
-  app.get("/api/jobs/:id/documents", (req, res) => {
-    res.json(storage.getJobDocuments(Number(req.params.id)));
-  });
+  // On the list route we now hydrate any bucket-backed fields with signed read
+  // URLs so the client's View/Download buttons work for docs whose file_data
+  // has been offloaded to S3. Legacy inline data-URIs pass through untouched.
+  app.get("/api/jobs/:id/documents", wrapAsync(async (req, res) => {
+    const docs = storage.getJobDocuments(Number(req.params.id)) as any[];
+    if (objectStorage.isConfigured()) {
+      await Promise.all(docs.map(async (doc) => {
+        if (doc.storageKey && !doc.fileData) {
+          try { doc.fileData = await objectStorage.getReadUrl(doc.storageKey); } catch {}
+        }
+        if (doc.signatureStorageKey && !doc.signatureData) {
+          try { doc.signatureData = await objectStorage.getReadUrl(doc.signatureStorageKey); } catch {}
+        }
+      }));
+    }
+    res.json(docs);
+  }));
 
   // Hoists file_data (PDF upload) and signature_data (e-sign PNG) into the
   // bucket before insert so signed forms don't bloat SQLite. Legacy rows keep
