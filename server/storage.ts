@@ -1098,16 +1098,39 @@ class SqliteStorage implements IStorage {
   deleteContact(id: number) { db.delete(schema.contacts).where(eq(schema.contacts.id, id)).run(); }
 
   // Jobs
+  // Enrich a job row with the contact's name/phone/email so every screen that
+  // reads /api/jobs (Scheduling dropdown, Jobs list, Dashboard KPIs, etc.)
+  // gets the customer's name without having to fan out N extra requests to
+  // /api/contacts/:id. `customerName` is the canonical field — aliased as
+  // `customer` for legacy code paths that still expect that shape.
+  private _hydrateJobCustomer(job: any): any {
+    if (!job) return job;
+    let contact: any = null;
+    if (job.contactId != null) {
+      contact = db.select().from(schema.contacts).where(eq(schema.contacts.id, job.contactId)).get();
+    }
+    return {
+      ...job,
+      customerName: contact?.name ?? null,
+      customerPhone: contact?.phone ?? null,
+      customerEmail: contact?.email ?? null,
+      customer: contact?.name ?? null,
+    };
+  }
   getJobs(includeClosed = false) {
     const rows = db.select().from(schema.jobs).orderBy(desc(schema.jobs.id)).all();
-    if (includeClosed) return rows;
-    return rows.filter((j: any) => j.status !== "closed");
+    const hydrated = rows.map(r => this._hydrateJobCustomer(r));
+    if (includeClosed) return hydrated;
+    return hydrated.filter((j: any) => j.status !== "closed");
   }
   getClosedJobs() {
     const rows = db.select().from(schema.jobs).orderBy(desc(schema.jobs.id)).all();
-    return rows.filter((j: any) => j.status === "closed");
+    return rows.filter((j: any) => j.status === "closed").map(r => this._hydrateJobCustomer(r));
   }
-  getJob(id: number) { return db.select().from(schema.jobs).where(eq(schema.jobs.id, id)).get(); }
+  getJob(id: number) {
+    const row = db.select().from(schema.jobs).where(eq(schema.jobs.id, id)).get();
+    return this._hydrateJobCustomer(row);
+  }
   closeJob(id: number, closedBy: string, reason?: string) {
     const job = this.getJob(id);
     if (!job) return undefined;
