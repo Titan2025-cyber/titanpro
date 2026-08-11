@@ -1,6 +1,7 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { UserSelect } from "@/components/UserSelect";
 import { useState } from "react";
+import { useAuth } from "@/lib/auth";
 import { Phone, MapPin, FileText, ChevronDown, ChevronUp, CheckCircle2, Search } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -33,10 +34,14 @@ interface MilestoneDates {
 }
 
 function JobCard({ job, contacts }: { job: Job; contacts: Contact[] }) {
+  const { user } = useAuth();
   const [expanded, setExpanded] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [noteTag, setNoteTag] = useState("");
-  const [noteAuthor, setNoteAuthor] = useState("Tech");
+  // Author defaults to the signed-in user's real name so the audit trail
+  // shows who actually typed the note, not a generic 'Tech'. Field stays
+  // editable in case a tech is logging something on someone else's behalf.
+  const [noteAuthor, setNoteAuthor] = useState(user?.name || "Tech");
   const [milestones, setMilestones] = useState<MilestoneDates>({
     mitigationStart: job.mitigationStart || "",
     dryOutComplete: job.dryOutComplete || "",

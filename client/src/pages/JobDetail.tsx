@@ -179,8 +179,17 @@ interface JobNote {
 
 // ── Notes Tab Component ──────────────────────────────────────────────────────
 function NotesTab({ jobId }: { jobId: number }) {
+  // Author defaults to the currently signed-in user. Keeping the field
+  // editable so a manager can still attribute a note to someone else if
+  // needed (e.g. logging a phone call from a tech in the field), but the
+  // default is always 'me' so the audit trail is accurate.
+  const { user } = useAuth();
+  const defaultAuthor = user?.name || "Titan Team";
   const [newBody, setNewBody] = useState("");
-  const [newAuthor, setNewAuthor] = useState("Titan Team");
+  const [newAuthor, setNewAuthor] = useState(defaultAuthor);
+  // Re-sync the author input if the signed-in user changes (rare, but
+  // avoids a stale 'Titan Team' default sticking around after a login).
+  useEffect(() => { setNewAuthor(defaultAuthor); }, [defaultAuthor]);
   const [newTag, setNewTag] = useState("");
   // Default to public so every note is visible to every employee. Cody's
   // rule: 'all employees see all notes'. The Private toggle stays available
