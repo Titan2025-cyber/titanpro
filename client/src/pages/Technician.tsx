@@ -48,8 +48,16 @@ function JobCard({ job, contacts }: { job: Job; contacts: Contact[] }) {
   const contact = contacts.find(c => c.id === job.contactId);
 
   const addNote = useMutation({
-    mutationFn: () => apiRequest("POST", `/api/jobs/${job.id}/notes`, { text: noteText, author: noteAuthor, tag: noteTag }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/jobs"] }); setNoteText(""); setNoteTag(""); },
+    // Canonical field is 'body' (server expected 'body' — the old 'text'
+    // payload was silently rejected as 'body is required' and the note never
+    // saved). Also mark tech-entered notes as public so the whole crew sees
+    // them, and invalidate the per-job notes query so JobDetail refreshes.
+    mutationFn: () => apiRequest("POST", `/api/jobs/${job.id}/notes`, { body: noteText, author: noteAuthor, tag: noteTag, isPublic: true }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id, "notes"] });
+      setNoteText(""); setNoteTag("");
+    },
   });
 
   const saveMilestones = useMutation({
@@ -66,7 +74,20 @@ function JobCard({ job, contacts }: { job: Job; contacts: Contact[] }) {
     ? `https://maps.apple.com/?daddr=${encodeURIComponent(job.address)}`
     : null;
 
-  const notes = JSON.parse(job.notes || "[]") as any[];
+  // Fetch shared notes from the job_notes table so every crew member sees
+  // everything, not just whatever legacy JSON blob is still in job.notes.
+  // Fall back to the legacy blob if the API returns nothing (early jobs).
+  const { data: apiNotes = [] } = useQuery<any[]>({
+    queryKey: ["/api/jobs", job.id, "notes"],
+    queryFn: () => apiRequest("GET", `/api/jobs/${job.id}/notes`).then(r => r.json()),
+    enabled: expanded,
+  });
+  const legacyNotes = (() => {
+    try { return JSON.parse(job.notes || "[]") as any[]; } catch { return []; }
+  })();
+  const notes = apiNotes.length > 0
+    ? apiNotes.map(n => ({ id: n.id, author: n.author, tag: n.tag, createdAt: n.createdAt, text: n.body }))
+    : legacyNotes;
 
   return (
     <Card className="overflow-hidden" data-testid={`tech-job-${job.id}`}>

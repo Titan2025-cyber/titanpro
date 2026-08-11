@@ -4022,13 +4022,22 @@ cody@titanrestorationllc.com`;
   // POST — create new note
   app.post("/api/jobs/:jobId/notes", (req, res) => {
     const jobId = Number(req.params.jobId);
-    const { author, body, isPublic, tag } = req.body;
-    if (!body?.trim()) return res.status(400).json({ error: "body is required" });
+    // Accept both { body } (canonical) and { text } (legacy from the mobile
+    // Technician surface). Without this fallback, notes typed on the mobile
+    // tech screen posted with 'text' were rejected as 'body is required' and
+    // silently dropped — the user saw the field clear and assumed it saved.
+    const { author, body, text, isPublic, tag } = req.body || {};
+    const noteBody = (body ?? text ?? "").toString();
+    if (!noteBody.trim()) return res.status(400).json({ error: "body is required" });
     try {
       const now = new Date().toISOString();
       const result = sqlite.prepare(
         "INSERT INTO job_notes (job_id, author, body, is_public, tag, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-      ).run(jobId, author || "Titan Team", body.trim(), isPublic ? 1 : 0, tag || null, now);
+        // Default isPublic to true so every note is visible to every employee.
+        // The old default (false = private) meant a note typed by one tech was
+        // invisible to everyone else, which broke the 'shared job history' UX
+        // the team expects.
+      ).run(jobId, author || "Titan Team", noteBody.trim(), isPublic === false ? 0 : 1, tag || null, now);
       const note = sqlite.prepare("SELECT * FROM job_notes WHERE id = ?").get(result.lastInsertRowid);
       res.status(201).json(mapJobNote(note));
     } catch (e: any) { res.status(500).json({ error: e.message }); }

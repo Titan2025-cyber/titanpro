@@ -301,12 +301,26 @@ export default function Scheduling() {
                       <p className="font-semibold truncate">{s.techName}</p>
                       {s.title && <p className="truncate opacity-80">{s.title}</p>}
                       {s.startTime && <p className="opacity-70">{s.startTime}{s.endTime ? `–${s.endTime}` : ""}</p>}
-                      {job && (
-                        <span className="flex items-center gap-0.5 mt-0.5">
-                          <Briefcase className="w-2.5 h-2.5" />
-                          <span className="truncate font-medium">{job.jobNumber}</span>
-                        </span>
-                      )}
+                      {job && (() => {
+                        // Show 'JOB# — Customer' on the calendar tile so a
+                        // glance tells you both the job identifier and whose
+                        // job it is. Fall back to address/loss type when the
+                        // customer contact isn't hydrated yet.
+                        const who =
+                          (job as any).customerName ||
+                          (job as any).customer ||
+                          (job.address ? String(job.address).split(",")[0] : "") ||
+                          job.lossType ||
+                          "";
+                        return (
+                          <span className="flex items-center gap-0.5 mt-0.5">
+                            <Briefcase className="w-2.5 h-2.5 shrink-0" />
+                            <span className="truncate font-medium">
+                              {job.jobNumber}{who ? ` — ${who}` : ""}
+                            </span>
+                          </span>
+                        );
+                      })()}
                     </div>
                   );
                 })}

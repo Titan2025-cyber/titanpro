@@ -182,7 +182,10 @@ function NotesTab({ jobId }: { jobId: number }) {
   const [newBody, setNewBody] = useState("");
   const [newAuthor, setNewAuthor] = useState("Titan Team");
   const [newTag, setNewTag] = useState("");
-  const [newPublic, setNewPublic] = useState(false);
+  // Default to public so every note is visible to every employee. Cody's
+  // rule: 'all employees see all notes'. The Private toggle stays available
+  // for the rare owner-only comment.
+  const [newPublic, setNewPublic] = useState(true);
   const [filter, setFilter] = useState<"all" | "public" | "private">("all");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editBody, setEditBody] = useState("");
@@ -206,7 +209,7 @@ function NotesTab({ jobId }: { jobId: number }) {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "notes"] });
       setNewBody("");
       setNewTag("");
-      setNewPublic(false);
+      setNewPublic(true);
     },
   });
 
