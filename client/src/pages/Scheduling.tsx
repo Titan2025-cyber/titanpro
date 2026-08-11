@@ -174,14 +174,17 @@ export default function Scheduling() {
                 <Label>Assign Job (optional)</Label>
                 <Select value={form.jobId} onValueChange={v => {
                   const job = jobs.find(j => j.id === Number(v));
-                  setForm(f => ({ ...f, jobId: v, title: job ? `${job.jobNumber} — ${job.lossType}` : f.title }));
+                  // Auto-fill the shift title with "<jobNumber> — <customer name>" when a job is chosen,
+                  // matching what the tech will see in the schedule dropdown itself.
+                  const label = job ? `${job.jobNumber} — ${job.customerName || job.lossType || "Untitled"}` : "";
+                  setForm(f => ({ ...f, jobId: v, title: label || f.title }));
                 }}>
                   <SelectTrigger><SelectValue placeholder="Link to a job" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="">No job</SelectItem>
                     {jobs.filter(j => j.status !== "closed").map(j => (
                       <SelectItem key={j.id} value={String(j.id)}>
-                        {j.jobNumber} — {j.address?.split(",")[0] || j.lossType}
+                        {j.jobNumber} — {j.customerName || j.address?.split(",")[0] || j.lossType || "Untitled"}
                       </SelectItem>
                     ))}
                   </SelectContent>
