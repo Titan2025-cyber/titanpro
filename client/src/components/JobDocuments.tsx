@@ -205,9 +205,52 @@ function WorkAuthorizationForm({
         fileMimeType: "application/pdf",
       });
     },
-    onSuccess: (_savedDoc: any, _vars, _ctx) => {
+    onSuccess: async (_savedDoc: any, _vars, _ctx) => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "documents"] });
-      toast({ title: "✅ Work Authorization signed & PDF generated" });
+
+      // Signed work auth = the job is sold. Advance the pipeline to
+      // pre-production automatically so the operator doesn't have to
+      // manually drag it. Only nudge forward from the pre-sale stages;
+      // never regress a job that's already in WIP/invoicing/AR/complete.
+      //
+      // Also stamp salesDate (today, if missing) and preProductionDate
+      // (today, if missing) so the pipeline age counters start counting
+      // from the moment the customer signed rather than from job
+      // creation.
+      const wasSigned = !!sigData;
+      const preSaleStages = new Set(["pending_sale", ""]);
+      const shouldAdvance =
+        wasSigned && (!job.progressStage || preSaleStages.has(job.progressStage));
+
+      if (shouldAdvance) {
+        const todayISO = new Date().toISOString();
+        const patch: Record<string, any> = {
+          progressStage: "pre_production",
+          preProductionDate: (job as any).preProductionDate || todayISO,
+          salesDate: (job as any).salesDate || todayISO,
+        };
+        try {
+          await apiRequest("PATCH", `/api/jobs/${jobId}`, patch);
+          // Refresh anything that reads job state or pipeline buckets.
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId)] });
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs/pipeline"] });
+          toast({ title: "✅ Work Auth signed — job moved to Pre-Production" });
+        } catch (err: any) {
+          // Don't block the save flow — the doc is already stored. Surface
+          // the stage-advance failure separately so the operator knows to
+          // move it manually.
+          console.warn("[work-auth] failed to auto-advance stage:", err?.message || err);
+          toast({
+            title: "Work Auth saved, but stage didn't update",
+            description: "Move the job to Pre-Production from the pipeline manually.",
+            variant: "destructive",
+          });
+        }
+      } else {
+        toast({ title: "✅ Work Authorization signed & PDF generated" });
+      }
+
       onClose();
     },
   });
