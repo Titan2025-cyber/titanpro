@@ -401,6 +401,29 @@ export function ServiceAreaMap() {
               : "No jobs have coordinates yet. Click \u201cMap missing\u201d to geocode existing addresses."}
           </div>
         )}
+        {/* Diagnostic: shows exactly what the map sees. Only rendered when
+            withAddress.length === 0 but the server reports total > 0 — that's
+            the state where the map looks empty despite jobs existing, and
+            the operator needs raw data to figure out what's wrong. */}
+        {withAddress.length === 0 && (geocoderDiag?.summary?.total ?? 0) > 0 && (
+          <div className="mt-3 text-xs rounded border border-red-300 bg-red-50 dark:bg-red-950/20 dark:border-red-800 text-red-900 dark:text-red-300 px-3 py-2">
+            <div className="font-semibold">Data mismatch — raw server counts:</div>
+            <div className="mt-1 font-mono">
+              total: {geocoderDiag?.summary?.total ?? "?"}<br />
+              withAddress: {geocoderDiag?.summary?.withAddress ?? "?"}<br />
+              geocoded: {geocoderDiag?.summary?.geocoded ?? "?"}<br />
+              missingCoords: {geocoderDiag?.summary?.missingCoords ?? "?"}
+            </div>
+            {jobs.length > 0 && (
+              <details className="mt-2">
+                <summary className="cursor-pointer font-semibold">Client sees {jobs.length} job(s) — click to inspect</summary>
+                <div className="mt-1 font-mono text-[10px] whitespace-pre-wrap max-h-64 overflow-auto">
+                  {JSON.stringify(jobs.map(j => ({ id: j.id, jobNumber: j.jobNumber, status: j.status, address: j.address, lat: j.latitude, lng: j.longitude })), null, 2)}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
         {/* Diagnostic banner: only shown when the geocoder last errored. */}
         {geocoderDiag?.geocoder?.lastError && (
           <div className="mt-3 text-xs rounded border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 text-amber-800 dark:text-amber-300 px-3 py-2">
