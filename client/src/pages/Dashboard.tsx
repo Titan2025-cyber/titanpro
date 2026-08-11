@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import titanLogo from "@/assets/titan-logo.png";
 import { apiRequest } from "@/lib/queryClient";
+import { useAuth } from "@/lib/auth";
 import { Link } from "wouter";
 import {
   Briefcase, FileText, DollarSign, AlertCircle, Plus, Phone, TrendingUp,
@@ -73,6 +74,11 @@ function fmtMoney(n: number) {
 }
 
 export default function Dashboard() {
+  // Owner-only sections (KPI bucket row, revenue/AR panels) branch off
+  // this. Techs/sales/admin still see everything else on the dashboard.
+  const { user } = useAuth();
+  const isOwner = user?.role === "owner";
+
   const { data: jobs = [] } = useQuery<Job[]>({ queryKey: ["/api/jobs"] });
   const { data: invoices = [] } = useQuery<Invoice[]>({ queryKey: ["/api/invoices"] });
   const { data: payments = [] } = useQuery<Payment[]>({ queryKey: ["/api/payments"] });
@@ -443,7 +449,10 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {/* KPI Cards */}
+      {/* KPI Cards — owner-only. These expose revenue, A/R, payouts and
+          overall pipeline value; non-owner staff (admin/sales/tech) don't
+          need to see the full financial picture on their landing page. */}
+      {isOwner && (
       <Stagger className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <StaggerChild>
         <Card role="button" tabIndex={0} onClick={() => openBucketPanel("active")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openBucketPanel("active"); } }} data-testid="bucket-active-jobs" className="titan-card-lit border-l-4 border-l-[hsl(var(--titan-blue))] cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-2 focus:ring-[hsl(var(--titan-blue))]">
@@ -535,6 +544,7 @@ export default function Dashboard() {
         </Card>
         </StaggerChild>
       </Stagger>
+      )}
 
       {/* Service Area map — live pins for every active job, updates on
           create/close/reopen because it reads from the shared jobs query. */}
