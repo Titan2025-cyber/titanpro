@@ -57,6 +57,15 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
     queryFn: () => apiRequest("GET", `/api/jobs/${jobId}/photos`).then(r => r.json()),
   });
 
+  // Full job record for the PDF cover page — pulls customer name, address,
+  // claim info, adjuster, loss type, etc. so the report reflects real job
+  // context instead of filler like "Job #123". Cheap: hits the same cache
+  // the parent JobDetail page already warms.
+  const { data: job } = useQuery<any>({
+    queryKey: [`/api/jobs/${jobId}`],
+    queryFn: () => apiRequest("GET", `/api/jobs/${jobId}`).then(r => r.json()),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/photos/${id}`),
     onSuccess: () => {
@@ -237,22 +246,129 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
       const captionH = halfH - imgH;
       const imgW = pageW - margin * 2;
 
-      // Cover page
+      // ── Cover page ───────────────────────────────────────────────────────
+      // Titan-branded header + real job info pulled from /api/jobs/:id so the
+      // customer, adjuster, carrier, and loss context appear on the first page.
+      const HDR_BLUE = [0, 82, 158] as [number, number, number];
+      const HDR_RED = [204, 0, 0] as [number, number, number];
+      const TEXT = [24, 32, 48] as [number, number, number];
+      const MUTED = [110, 116, 128] as [number, number, number];
+
+      // Header band
+      doc.setFillColor(...HDR_BLUE);
+      doc.rect(0, 0, pageW, 22, "F");
+      doc.setFillColor(...HDR_RED);
+      doc.rect(0, 22, pageW, 1.5, "F");
+      doc.setTextColor(255, 255, 255);
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(20);
-      doc.text("Photo Report", pageW / 2, 40, { align: "center" });
+      doc.setFontSize(18);
+      doc.text("TITAN RESTORATION", margin, 14);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.text("Photo Documentation Report", pageW - margin, 14, { align: "right" });
+
+      // Title
+      doc.setTextColor(...TEXT);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(22);
+      const customerName = job?.customerName || job?.customer || "";
+      const heading = customerName ? customerName : `Job ${job?.jobNumber || jobId}`;
+      doc.text(heading, margin, 40);
+
       doc.setFont("helvetica", "normal");
       doc.setFontSize(11);
-      doc.text(`Job #${jobId}`, pageW / 2, 50, { align: "center" });
-      doc.setFontSize(10);
-      doc.text(`${chosen.length} photo${chosen.length === 1 ? "" : "s"} — generated ${new Date().toLocaleString()}`, pageW / 2, 58, { align: "center" });
+      doc.setTextColor(...MUTED);
+      const subline = job?.address
+        ? job.address
+        : `Job report — ${new Date().toLocaleDateString()}`;
+      doc.text(subline, margin, 47);
+
+      // Job details — two-column key/value list
+      const startY = 62;
+      const colGap = 4;
+      const colW = (pageW - margin * 2 - colGap) / 2;
+      const rows: Array<[string, string]> = [];
+      const push = (label: string, value: any) => {
+        const s = value == null || value === "" ? "" : String(value).trim();
+        if (s) rows.push([label, s]);
+      };
+      push("Job Number", job?.jobNumber);
+      push("Loss Type", job?.lossType);
+      push("Status", job?.status);
+      push("Stage", job?.progressStage);
+      push("Customer", job?.customerName || job?.customer);
+      push("Phone", job?.customerPhone);
+      push("Email", job?.customerEmail);
+      push("Address", job?.address);
+      push("Insurance Carrier", job?.insuranceCarrier);
+      push("Claim #", job?.claimNumber);
+      push("Policy #", job?.policyNumber);
+      push("Adjuster", job?.adjusterName);
+      push("Adjuster Phone", job?.adjusterPhone);
+      push("Adjuster Email", job?.adjusterEmail);
+      push("Assigned Tech", job?.assignedTech);
+
+      doc.setFontSize(9);
+      let y = startY;
+      const lineH = 5.2;
+      for (let i = 0; i < rows.length; i += 2) {
+        const left = rows[i];
+        const right = rows[i + 1];
+        // Left column
+        doc.setTextColor(...MUTED);
+        doc.setFont("helvetica", "normal");
+        doc.text(left[0].toUpperCase(), margin, y);
+        doc.setTextColor(...TEXT);
+        doc.setFont("helvetica", "bold");
+        doc.text(doc.splitTextToSize(left[1], colW - 2), margin, y + lineH);
+        // Right column
+        if (right) {
+          doc.setTextColor(...MUTED);
+          doc.setFont("helvetica", "normal");
+          doc.text(right[0].toUpperCase(), margin + colW + colGap, y);
+          doc.setTextColor(...TEXT);
+          doc.setFont("helvetica", "bold");
+          doc.text(doc.splitTextToSize(right[1], colW - 2), margin + colW + colGap, y + lineH);
+        }
+        y += lineH * 2 + 3;
+        if (y > pageH - 40) break;   // don't overflow onto photo section
+      }
+
+      // Bottom meta — photo count + generation timestamp
+      doc.setFontSize(9);
+      doc.setTextColor(...MUTED);
+      doc.setFont("helvetica", "normal");
+      doc.text(
+        `${chosen.length} photo${chosen.length === 1 ? "" : "s"} included • Generated ${new Date().toLocaleString()}`,
+        pageW / 2,
+        pageH - 12,
+        { align: "center" }
+      );
 
       // Photo pages
+      const pageHeaderText = [
+        customerName || `Job ${job?.jobNumber || jobId}`,
+        job?.jobNumber && customerName ? `Job ${job.jobNumber}` : null,
+        job?.address || null,
+      ].filter(Boolean).join("  •  ");
+
       for (let i = 0; i < chosen.length; i++) {
         const photo = chosen[i];
         const slot = i % 2;
-        if (slot === 0) doc.addPage();
-        const y0 = margin + slot * (halfH + gap);
+        if (slot === 0) {
+          doc.addPage();
+          // Slim header bar with customer + job on every photo page.
+          doc.setFillColor(...HDR_BLUE);
+          doc.rect(0, 0, pageW, 8, "F");
+          doc.setTextColor(255, 255, 255);
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(8);
+          doc.text(pageHeaderText, margin, 5.5);
+          doc.setFont("helvetica", "normal");
+          doc.text(`Page ${doc.getNumberOfPages() - 1}`, pageW - margin, 5.5, { align: "right" });
+          doc.setTextColor(...TEXT);
+        }
+        const y0 = margin + 4 + slot * (halfH + gap);
 
         // Image — jsPDF accepts data URIs directly for JPEG/PNG.
         try {
@@ -282,7 +398,10 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
         if (parts.length) doc.text(parts.join(" • "), margin, capY + 5);
       }
 
-      const filename = `Photo_Report_Job_${jobId}_${new Date().toISOString().slice(0, 10)}.pdf`;
+      // Build a human-friendly filename from real job info.
+      const safe = (s: string) => s.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+      const nameSlug = customerName ? safe(customerName) : (job?.jobNumber ? safe(String(job.jobNumber)) : `Job_${jobId}`);
+      const filename = `Photo_Report_${nameSlug}_${new Date().toISOString().slice(0, 10)}.pdf`;
       doc.save(filename);
       toast({ title: "Report generated", description: `${chosen.length} photo${chosen.length === 1 ? "" : "s"} exported as PDF.` });
       // Exit select mode after successful export.
