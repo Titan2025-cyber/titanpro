@@ -250,7 +250,15 @@ function NotesTab({ jobId }: { jobId: number }) {
   // controls whether the homeowner sees the note in the customer portal.
   // We drop the public/private filter buttons entirely so the crew can't
   // accidentally hide notes from themselves.
-  const filtered = notes;
+  // Display order: NEWEST at the top, OLDEST at the bottom. Server returns
+  // notes in insertion order (id ASC), so we sort by createdAt (falling
+  // back to id) descending on the client. Missing timestamps sort last.
+  const filtered = [...notes].sort((a, b) => {
+    const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    if (tb !== ta) return tb - ta;
+    return (b.id || 0) - (a.id || 0);
+  });
   const homeownerVisible = notes.filter(n => n.isPublic).length;
 
   return (
