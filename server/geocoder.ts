@@ -23,6 +23,70 @@ const cache = new Map<string, CacheEntry>();
 let lastCallAt = 0;
 let queue: Promise<void> = Promise.resolve();
 
+// Last-error diagnostic surface. The /api/jobs/geocode-status route reads this
+// so the operator can tell whether pins are missing because of a network
+// egress problem, an empty result set, or a bad API key. Populated by every
+// call; overwritten on success so it never lies about the current state.
+export const geocoderStatus: {
+  lastError: string | null;
+  lastErrorAt: string | null;
+  lastSuccessAt: string | null;
+  provider: "google" | "nominatim" | null;
+} = {
+  lastError: null,
+  lastErrorAt: null,
+  lastSuccessAt: null,
+  provider: null,
+};
+
+function recordError(msg: string) {
+  geocoderStatus.lastError = msg;
+  geocoderStatus.lastErrorAt = new Date().toISOString();
+  console.warn(`[geocoder] ${msg}`);
+}
+function recordSuccess(provider: "google" | "nominatim") {
+  geocoderStatus.lastError = null;
+  geocoderStatus.lastSuccessAt = new Date().toISOString();
+  geocoderStatus.provider = provider;
+}
+
+// Google Maps geocoding — tried first when GOOGLE_MAPS_API_KEY is set.
+// No rate limiting on the free tier (40k/mo), high-quality US results, and
+// unlike Nominatim, Google will resolve strip-of-highway addresses that
+// OSM has never seen.
+async function geocodeViaGoogle(query: string): Promise<{ lat: number; lng: number } | null> {
+  const key = process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_GEOCODING_API_KEY;
+  if (!key) return null;
+  const url = new URL("https://maps.googleapis.com/maps/api/geocode/json");
+  url.searchParams.set("address", query);
+  url.searchParams.set("key", key);
+  url.searchParams.set("region", "us");
+  try {
+    const res = await fetch(url.toString());
+    if (!res.ok) {
+      recordError(`Google Maps HTTP ${res.status} for "${query}"`);
+      return null;
+    }
+    const data: any = await res.json();
+    if (data.status === "REQUEST_DENIED" || data.status === "INVALID_REQUEST") {
+      recordError(`Google Maps: ${data.status} — ${data.error_message || "(no message)"}`);
+      return null;
+    }
+    if (data.status === "ZERO_RESULTS") return null;
+    if (data.status !== "OK") {
+      recordError(`Google Maps status ${data.status} for "${query}"`);
+      return null;
+    }
+    const loc = data.results?.[0]?.geometry?.location;
+    if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng)) return null;
+    console.log(`[geocoder] google resolved "${query}" → ${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}`);
+    return { lat: loc.lat, lng: loc.lng };
+  } catch (err: any) {
+    recordError(`Google Maps fetch failed for "${query}": ${err?.message || err}`);
+    return null;
+  }
+}
+
 function normalize(addr: string): string {
   return addr.replace(/\s+/g, " ").trim().toLowerCase();
 }
@@ -42,12 +106,23 @@ async function throttle(): Promise<void> {
  */
 export async function geocodeAddress(rawAddress: string | null | undefined): Promise<{ lat: number; lng: number } | null> {
   if (!rawAddress) return null;
-  const key = normalize(rawAddress);
-  if (!key) return null;
-  const hit = cache.get(key);
+  const cacheKey = normalize(rawAddress);
+  if (!cacheKey) return null;
+  const hit = cache.get(cacheKey);
   if (hit) return { lat: hit.lat, lng: hit.lng };
 
-  // Chain onto the shared queue so only one HTTP call happens at a time.
+  // Try Google Maps first when GOOGLE_MAPS_API_KEY is set. Google isn't
+  // subject to Nominatim's 1 req/sec throttle, so it's the fast path when
+  // many jobs are entered back-to-back. Falls back to Nominatim on miss.
+  const google = await geocodeViaGoogle(rawAddress);
+  if (google) {
+    cache.set(cacheKey, { lat: google.lat, lng: google.lng, at: Date.now() });
+    recordSuccess("google");
+    return google;
+  }
+
+  // Chain onto the shared queue so only one Nominatim HTTP call happens at
+  // a time (their TOS requires <=1 req/sec).
   let resolve!: () => void;
   const gate = new Promise<void>(r => { resolve = r; });
   const prev = queue;
@@ -76,11 +151,11 @@ export async function geocodeAddress(rawAddress: string | null | undefined): Pro
           headers: { "User-Agent": USER_AGENT, "Accept-Language": "en" },
         });
       } catch (fetchErr: any) {
-        console.warn(`[geocoder] fetch failed for "${query}":`, fetchErr?.message || fetchErr);
+        recordError(`Nominatim fetch failed for "${query}": ${fetchErr?.message || fetchErr}`);
         continue;
       }
       if (!res.ok) {
-        console.warn(`[geocoder] Nominatim ${res.status} for "${query}"`);
+        recordError(`Nominatim HTTP ${res.status} for "${query}"`);
         continue;
       }
       let arr: Array<{ lat: string; lon: string }>;
@@ -94,14 +169,15 @@ export async function geocodeAddress(rawAddress: string | null | undefined): Pro
       const lat = parseFloat(arr[0].lat);
       const lng = parseFloat(arr[0].lon);
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-      cache.set(key, { lat, lng, at: Date.now() });
-      console.log(`[geocoder] resolved "${rawAddress}" → ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+      cache.set(cacheKey, { lat, lng, at: Date.now() });
+      recordSuccess("nominatim");
+      console.log(`[geocoder] nominatim resolved "${rawAddress}" → ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
       return { lat, lng };
     }
-    console.warn(`[geocoder] no results for "${rawAddress}" after ${attempts.length} attempt(s)`);
+    recordError(`no results for "${rawAddress}" after ${attempts.length} attempt(s)`);
     return null;
   } catch (err: any) {
-    console.warn(`[geocoder] unexpected error for "${rawAddress}":`, err?.message || err);
+    recordError(`unexpected error for "${rawAddress}": ${err?.message || err}`);
     return null;
   } finally {
     resolve();

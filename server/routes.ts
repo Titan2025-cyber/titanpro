@@ -17,7 +17,7 @@ import { registerHRRoutes } from "./routes_hr";
 import { registerGmailRoutes } from "./routes_gmail";
 import { registerPresenceRoutes } from "./routes_presence";
 import { sendEmail, sendSms, getNotifySettings, saveNotifySettings, providerStatus } from "./notify";
-import { geocodeJobInBackground } from "./geocoder";
+import { geocodeJobInBackground, geocoderStatus } from "./geocoder";
 import { lookupProperty } from "./property_lookup";
 import { startScheduler, runSchedulerNow } from "./scheduler";
 import { registerMegaBuildRoutes } from "./routes_megabuild";
@@ -1236,7 +1236,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       missingCoords: rows.filter(r => (r.address || "").trim().length > 0 && !(Number.isFinite(r.latitude) && Number.isFinite(r.longitude))).length,
       noAddress: rows.filter(r => !(r.address || "").trim()).length,
     };
-    res.json({ summary, jobs: rows });
+    // Include the live geocoder status so the operator can see WHY pins
+    // are missing (network error vs empty result vs bad API key). Also
+    // report whether Google Maps is wired — no key = Nominatim only, which
+    // is much slower and 1-req/sec limited.
+    res.json({
+      summary,
+      geocoder: {
+        ...geocoderStatus,
+        googleKeyConfigured: !!(process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_GEOCODING_API_KEY),
+      },
+      jobs: rows,
+    });
+  });
+
+  // Force-refresh every active job's coordinates: clear the cached lat/lng
+  // and re-run the geocoder. Useful when pins have gone stale after an
+  // address edit, or when the operator has just added a GOOGLE_MAPS_API_KEY
+  // and wants Google-quality coords for jobs that were previously resolved
+  // by Nominatim (or not resolved at all).
+  app.post("/api/jobs/geocode-refresh-all", requireRole("owner", "admin"), (req, res) => {
+    const rows: any[] = sqlite.prepare(
+      "SELECT id, address FROM jobs WHERE address IS NOT NULL AND TRIM(address) <> '' AND (status IS NULL OR status <> 'closed')"
+    ).all();
+    try { sqlite.prepare("UPDATE jobs SET latitude=NULL, longitude=NULL, geocoded_at=NULL WHERE status IS NULL OR status <> 'closed'").run(); } catch {}
+    for (const r of rows) geocodeJobInBackground(sqlite, r.id, r.address);
+    res.json({ queued: rows.length });
   });
   app.delete("/api/jobs/:id", requireRole("owner", "admin"), (req, res) => {
     const jobId = Number(req.params.id);

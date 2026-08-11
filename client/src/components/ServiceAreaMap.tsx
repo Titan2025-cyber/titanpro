@@ -281,19 +281,25 @@ export function ServiceAreaMap() {
     }
   }, [canSeeTechs, techLocations, setLocation]);
 
-  const runBackfill = async () => {
+  const runBackfill = async (mode: "missing" | "all" = "missing") => {
     setBackfilling(true);
     try {
-      const res = await apiRequest("POST", "/api/jobs/geocode-missing");
+      const endpoint = mode === "all"
+        ? "/api/jobs/geocode-refresh-all"
+        : "/api/jobs/geocode-missing";
+      const res = await apiRequest("POST", endpoint);
       const data = await res.json();
       toast({
-        title: data.queued > 0 ? `Geocoding ${data.queued} address${data.queued === 1 ? "" : "es"}…` : "All addresses already mapped",
+        title: data.queued > 0
+          ? `Geocoding ${data.queued} address${data.queued === 1 ? "" : "es"}…`
+          : "All addresses already mapped",
         description: data.queued > 0 ? "Pins will appear as each address is resolved." : undefined,
       });
       // Refetch every 3s for 30s to pick up the coords as they land.
       let ticks = 0;
       const iv = window.setInterval(() => {
         queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/jobs/geocode-status"] });
         if (++ticks >= 10) window.clearInterval(iv);
       }, 3_000);
     } catch (e: any) {
@@ -302,6 +308,17 @@ export function ServiceAreaMap() {
       setBackfilling(false);
     }
   };
+
+  // Diagnostic: fetch geocoder health so we can tell the operator WHY pins
+  // aren't dropping. Populated on demand — doesn't poll.
+  const { data: geocoderDiag } = useQuery<{
+    summary: { total: number; withAddress: number; geocoded: number; missingCoords: number };
+    geocoder: { lastError: string | null; lastErrorAt: string | null; lastSuccessAt: string | null; provider: string | null; googleKeyConfigured: boolean };
+  }>({
+    queryKey: ["/api/jobs/geocode-status"],
+    queryFn: () => apiRequest("GET", "/api/jobs/geocode-status").then(r => r.json()),
+    refetchInterval: 60_000,
+  });
 
   const missing = withAddress.length - geocoded.length;
 
@@ -336,18 +353,34 @@ export function ServiceAreaMap() {
               )}
             </span>
           </CardTitle>
-          {missing > 0 && (
+          <div className="flex items-center gap-2">
+            {missing > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => runBackfill("missing")}
+                disabled={backfilling}
+                data-testid="button-geocode-missing"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${backfilling ? "animate-spin" : ""}`} />
+                Map {missing} missing
+              </Button>
+            )}
+            {/* Always-visible force refresh — clears cached coords and
+                re-runs the geocoder for every active job. Handy after an
+                address edit or when pins look stuck. */}
             <Button
               size="sm"
-              variant="outline"
-              onClick={runBackfill}
-              disabled={backfilling}
-              data-testid="button-geocode-missing"
+              variant="ghost"
+              onClick={() => runBackfill("all")}
+              disabled={backfilling || withAddress.length === 0}
+              title="Re-geocode every active job from scratch"
+              data-testid="button-geocode-refresh-all"
             >
               <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${backfilling ? "animate-spin" : ""}`} />
-              Map {missing} missing
+              Refresh all
             </Button>
-          )}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="pt-0">
@@ -366,6 +399,21 @@ export function ServiceAreaMap() {
             {withAddress.length === 0
               ? "Add addresses to your jobs to see them here."
               : "No jobs have coordinates yet. Click \u201cMap missing\u201d to geocode existing addresses."}
+          </div>
+        )}
+        {/* Diagnostic banner: only shown when the geocoder last errored. */}
+        {geocoderDiag?.geocoder?.lastError && (
+          <div className="mt-3 text-xs rounded border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 text-amber-800 dark:text-amber-300 px-3 py-2">
+            <div className="font-semibold flex items-center gap-1">
+              <MapPin className="w-3 h-3" />
+              Geocoder needs attention
+            </div>
+            <div className="mt-0.5">{geocoderDiag.geocoder.lastError}</div>
+            {!geocoderDiag.geocoder.googleKeyConfigured && (
+              <div className="mt-1 opacity-80">
+                Tip: set <code className="font-mono">GOOGLE_MAPS_API_KEY</code> in Railway to enable the faster, more reliable Google geocoder as the primary source.
+              </div>
+            )}
           </div>
         )}
         {/* Legend */}
