@@ -7,6 +7,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { registerCrudGapRoutes } from "./routes_crud_gaps";
 import { registerSuite4Routes } from "./routes_suite4";
 import { registerAuthRoutes, makeAuthMiddleware } from "./routes_auth";
+import { makeNotifier } from "./notify_bell";
 import { registerRampRoutes } from "./routes_ramp";
 import { registerRoutePlannerRoutes } from "./routes_routeplanner";
 import { registerSuite5Routes } from "./routes_suite5";
@@ -629,6 +630,64 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ── Weekly Billing Report (OWNER ONLY) ────────────────────────────────────
   // Billed vs Settled vs Collected, bucketed by ISO week (Mon–Sun).
   const { requireRole, requireStaffAuth } = makeAuthMiddleware(sqlite);
+  // In-app notification bell helper. Shared with every event site below
+  // (new job, WIP start, note add, estimate & invoice writes…).
+  const notifier = makeNotifier(sqlite);
+
+  // ── In-app notification bell (per-user) ──────────────────────────────────
+  // Every endpoint is scoped to the authenticated employee — no name picker
+  // required. Also merges legacy rows targeted at this employee's tech_name.
+  app.get("/api/notifications/me", requireStaffAuth, (req: any, res) => {
+    const emp = req.employee;
+    const rows = sqlite.prepare(
+      `SELECT * FROM tech_notifications
+         WHERE employee_id = ? OR (employee_id IS NULL AND tech_name = ?)
+         ORDER BY created_at DESC
+         LIMIT 50`
+    ).all(emp.id, emp.name);
+    res.json(rows.map((r: any) => ({
+      id: r.id, type: r.type, title: r.title, body: r.body,
+      jobId: r.job_id, link: r.link, read: !!r.read, createdAt: r.created_at,
+    })));
+  });
+  app.get("/api/notifications/me/unread-count", requireStaffAuth, (req: any, res) => {
+    const emp = req.employee;
+    const row: any = sqlite.prepare(
+      `SELECT COUNT(*) AS count FROM tech_notifications
+         WHERE read = 0 AND (employee_id = ? OR (employee_id IS NULL AND tech_name = ?))`
+    ).get(emp.id, emp.name);
+    res.json({ count: row?.count || 0 });
+  });
+  app.patch("/api/notifications/:id/read", requireStaffAuth, (req: any, res) => {
+    const emp = req.employee;
+    // Only allow marking read on notifications targeted at this employee.
+    const info = sqlite.prepare(
+      `UPDATE tech_notifications SET read = 1
+         WHERE id = ? AND (employee_id = ? OR (employee_id IS NULL AND tech_name = ?))`
+    ).run(Number(req.params.id), emp.id, emp.name);
+    res.json({ ok: true, changed: info.changes });
+  });
+  app.patch("/api/notifications/me/read-all", requireStaffAuth, (req: any, res) => {
+    const emp = req.employee;
+    const info = sqlite.prepare(
+      `UPDATE tech_notifications SET read = 1
+         WHERE read = 0 AND (employee_id = ? OR (employee_id IS NULL AND tech_name = ?))`
+    ).run(emp.id, emp.name);
+    res.json({ ok: true, changed: info.changes });
+  });
+  app.delete("/api/notifications/:id", requireStaffAuth, (req: any, res) => {
+    const emp = req.employee;
+    const info = sqlite.prepare(
+      `DELETE FROM tech_notifications
+         WHERE id = ? AND (employee_id = ? OR (employee_id IS NULL AND tech_name = ?))`
+    ).run(Number(req.params.id), emp.id, emp.name);
+    res.json({ ok: true, changed: info.changes });
+  });
+  // Roster used by @-mention pickers. Same shape the notifier uses to resolve
+  // mentions server-side, so the UI can stay in sync.
+  app.get("/api/notifications/mentionable", requireStaffAuth, (_req, res) => {
+    res.json(notifier.activeEmployeeRoster());
+  });
 
   // Recompute line-item totals + subtotal + total on the server so the client
   // can never dictate a money amount that doesn't match the line items. Accepts
@@ -690,17 +749,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         storage.createMessage({ channelId: generalChannel.id, author: "Titan Pro Bot", body: chanMsg });
       }
 
-      // 2) Per-employee notification for every active employee
+      // 2) Per-employee notification for every active employee — now also
+      // records employee_id + link so the header bell can filter reliably
+      // and deep-link to the job on click.
       const insertNote = sqlite.prepare(
-        `INSERT INTO tech_notifications (tech_name, type, title, body, job_id, created_at) VALUES (?, 'new_job', ?, ?, ?, ?)`
+        `INSERT INTO tech_notifications
+           (tech_name, type, title, body, job_id, employee_id, link, created_at)
+         VALUES (?, 'new_job', ?, ?, ?, ?, ?, ?)`
       );
       const employees = storage.getEmployees().filter((e: any) => {
         const active = (e.isActive ?? e.is_active);
         return active === undefined || active === true || active === 1;
       });
+      const link = `/jobs/${job.id}`;
       for (const emp of employees) {
-        if (!emp?.name) continue;
-        insertNote.run(emp.name, title, body, job.id, nowIso);
+        if (!emp?.name || !emp?.id) continue;
+        insertNote.run(emp.name, title, body, job.id, emp.id, link, nowIso);
       }
     } catch (e) {
       console.error("[jobs] new-job notification failed:", (e as any)?.message || e);
@@ -4127,6 +4191,44 @@ cody@titanrestorationllc.com`;
         // the team expects.
       ).run(jobId, author || "Titan Team", noteBody.trim(), isPublic === false ? 0 : 1, tag || null, now);
       const note = sqlite.prepare("SELECT * FROM job_notes WHERE id = ?").get(result.lastInsertRowid);
+
+      // ── In-app notification bell fan-out ────────────────────────────────
+      // Best-effort: any failure here must NOT break note creation.
+      try {
+        const job: any = storage.getJob(jobId);
+        const jobNum = job?.jobNumber ? `Job ${job.jobNumber}` : `Job #${jobId}`;
+        const link = `/jobs/${jobId}`;
+        const roster = notifier.activeEmployeeRoster();
+        // 1) @-mentions in the note body — always fire.
+        const mentionedIds = notifier.extractMentions(noteBody, roster);
+        if (mentionedIds.length > 0) {
+          notifier.notifyMany(mentionedIds, {
+            type: "note_mentioned",
+            title: `${author || "Someone"} mentioned you on ${jobNum}`,
+            body: noteBody.trim().slice(0, 240),
+            jobId,
+            link,
+          });
+        }
+        // 2) Assigned tech on the job — skip if they authored it themselves.
+        const assignedName: string | undefined = job?.assignedTech || undefined;
+        if (assignedName && assignedName !== author) {
+          const assigned = roster.find(e => e.name === assignedName);
+          if (assigned && !mentionedIds.includes(assigned.id)) {
+            notifier.notify({
+              employeeId: assigned.id,
+              type: "note_added",
+              title: `New note on ${jobNum}`,
+              body: noteBody.trim().slice(0, 240),
+              jobId,
+              link,
+            });
+          }
+        }
+      } catch (e: any) {
+        console.error("[notes] notification fan-out failed:", e?.message || e);
+      }
+
       res.status(201).json(mapJobNote(note));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });

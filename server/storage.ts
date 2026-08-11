@@ -766,6 +766,19 @@ const photoCols2 = (sqlite.prepare("PRAGMA table_info(photos)").all() as any[]).
 if (!photoCols2.includes("storage_key")) {
   sqlite.exec(`ALTER TABLE photos ADD COLUMN storage_key TEXT`);
 }
+
+// Notification bell: employee_id + link columns on tech_notifications so we
+// can target any user by ID (not just tech_name) and deep-link the alert to
+// a job / estimate / invoice page.
+const techNotifCols = (sqlite.prepare("PRAGMA table_info(tech_notifications)").all() as any[]).map((c: any) => c.name);
+if (!techNotifCols.includes("employee_id")) {
+  sqlite.exec(`ALTER TABLE tech_notifications ADD COLUMN employee_id INTEGER`);
+}
+if (!techNotifCols.includes("link")) {
+  sqlite.exec(`ALTER TABLE tech_notifications ADD COLUMN link TEXT`);
+}
+// Index for the hot query on the bell (unread for a specific employee).
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_tech_notif_emp_read ON tech_notifications(employee_id, read)`);
 // data_url on photos was declared NOT NULL originally; SQLite can't drop that
 // constraint in place, so we simply write empty string when the file lives in
 // the bucket and the existing NOT NULL check passes.
@@ -1573,7 +1586,13 @@ sqlite.exec(`
     body TEXT NOT NULL,
     job_id INTEGER,
     read INTEGER DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT ''
+    created_at TEXT NOT NULL DEFAULT '',
+    -- Added for the app-wide notification bell: if set, this notification is
+    -- targeted at a specific employee (by id) instead of / in addition to a
+    -- named tech. Legacy tech-only notifications keep tech_name populated and
+    -- leave employee_id NULL.
+    employee_id INTEGER,
+    link TEXT
   );
 
   CREATE TABLE IF NOT EXISTS consumables (
