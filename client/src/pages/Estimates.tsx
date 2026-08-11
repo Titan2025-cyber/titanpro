@@ -1,7 +1,7 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "wouter";
-import { Plus, FileText } from "lucide-react";
+import { Plus, FileText, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -9,6 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth";
 import type { Estimate, Job } from "@shared/schema";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -23,9 +25,32 @@ export default function Estimates() {
   const { data: estimates = [], isLoading } = useQuery<Estimate[]>({ queryKey: ["/api/estimates"] });
   const { data: jobs = [] } = useQuery<Job[]>({ queryKey: ["/api/jobs"] });
 
+  const { toast } = useToast();
+  const { user } = useAuth();
+  const canDelete = !!user && (["owner", "admin", "general_manager"] as string[]).includes(user.role);
+
   const createMutation = useMutation({
     mutationFn: (data: any) => apiRequest("POST", "/api/estimates", data),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/estimates"] }); setOpen(false); },
+    onError: (e: any) => toast({
+      title: "Create failed",
+      description: e?.message || "Estimate could not be created. Check your role and try again.",
+      variant: "destructive",
+    }),
+  });
+
+  // Inline row-level delete on the Estimates list. Confirms before firing.
+  const deleteMutation = useMutation({
+    mutationFn: (estId: number) => apiRequest("DELETE", `/api/estimates/${estId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/estimates"] });
+      toast({ title: "Estimate deleted" });
+    },
+    onError: (e: any) => toast({
+      title: "Delete failed",
+      description: e?.message || "Estimate could not be deleted.",
+      variant: "destructive",
+    }),
   });
 
   return (
@@ -73,25 +98,42 @@ export default function Estimates() {
           {estimates.map(est => {
             const job = jobs.find(j => j.id === est.jobId);
             return (
-              <Link key={est.id} href={`/estimates/${est.id}`}>
-                <Card className="hover:shadow-md transition-shadow cursor-pointer" data-testid={`estimate-card-${est.id}`}>
-                  <CardContent className="p-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <FileText className="w-4 h-4 text-muted-foreground" />
-                        <div>
-                          <p className="font-semibold text-sm">{est.title}</p>
-                          <p className="text-xs text-muted-foreground">{job?.jobNumber || `Job #${est.jobId}`}</p>
-                        </div>
+              <Card key={est.id} className="hover:shadow-md transition-shadow" data-testid={`estimate-card-${est.id}`}>
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <Link href={`/estimates/${est.id}`} className="flex-1 flex items-center gap-3 cursor-pointer min-w-0">
+                      <FileText className="w-4 h-4 text-muted-foreground shrink-0" />
+                      <div className="min-w-0">
+                        <p className="font-semibold text-sm truncate">{est.title}</p>
+                        <p className="text-xs text-muted-foreground">{job?.jobNumber || `Job #${est.jobId}`}</p>
                       </div>
-                      <div className="text-right">
-                        <p className="font-bold text-[hsl(var(--titan-blue))]">${(est.total || 0).toLocaleString()}</p>
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_COLORS[est.status]}`}>{est.status}</span>
-                      </div>
+                    </Link>
+                    <div className="text-right shrink-0">
+                      <p className="font-bold text-[hsl(var(--titan-blue))]">${(est.total || 0).toLocaleString()}</p>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_COLORS[est.status]}`}>{est.status}</span>
                     </div>
-                  </CardContent>
-                </Card>
-              </Link>
+                    {canDelete && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-destructive hover:bg-destructive/10 shrink-0"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (window.confirm(`Delete estimate "${est.title}"? This cannot be undone.`)) {
+                            deleteMutation.mutate(est.id);
+                          }
+                        }}
+                        disabled={deleteMutation.isPending}
+                        data-testid={`button-delete-estimate-${est.id}`}
+                        title="Delete estimate"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
             );
           })}
           {estimates.length === 0 && <p className="text-sm text-muted-foreground text-center py-8">No estimates yet.</p>}

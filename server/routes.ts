@@ -1373,6 +1373,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!e) return res.status(404).json({ error: "Not found" });
     res.json(e);
   });
+  // Full row removal. Restricted to owner/admin/general_manager — sales can
+  // create/edit but shouldn't be able to nuke another rep's estimate.
+  app.delete("/api/estimates/:id", requireRole("owner", "admin", "general_manager"), (req, res) => {
+    const id = Number(req.params.id);
+    const existing = storage.getEstimate(id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    storage.deleteEstimate(id);
+    res.json({ ok: true, id });
+  });
 
   // Auto-generate rebuttal — now returns state + statutes used
   app.post("/api/estimates/:id/rebuttal", (req, res) => {
@@ -1466,6 +1475,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const inv = storage.updateInvoice(id, updates);
     if (!inv) return res.status(404).json({ error: "Not found" });
     res.json(inv);
+  });
+  // Full removal. Owner/admin/general_manager only — sales can create+edit
+  // but not delete. Also removes any payments referencing this invoice so we
+  // don't leave orphan rows in the payments table.
+  app.delete("/api/invoices/:id", requireRole("owner", "admin", "general_manager"), (req, res) => {
+    const id = Number(req.params.id);
+    const existing = storage.getInvoice(id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    storage.deleteInvoice(id);
+    res.json({ ok: true, id });
   });
 
   // ── Payments ──────────────────────────────────────────────────────────────

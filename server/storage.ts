@@ -985,6 +985,7 @@ export interface IStorage {
   getEstimatesByJob(jobId: number): schema.Estimate[];
   createEstimate(data: schema.InsertEstimate): schema.Estimate;
   updateEstimate(id: number, data: Partial<schema.InsertEstimate>): schema.Estimate | undefined;
+  deleteEstimate(id: number): void;
 
   // Invoices
   getInvoices(): schema.Invoice[];
@@ -992,6 +993,7 @@ export interface IStorage {
   getInvoicesByJob(jobId: number): schema.Invoice[];
   createInvoice(data: schema.InsertInvoice): schema.Invoice;
   updateInvoice(id: number, data: Partial<schema.InsertInvoice>): schema.Invoice | undefined;
+  deleteInvoice(id: number): void;
 
   // Payments
   getPayments(): schema.Payment[];
@@ -1201,6 +1203,12 @@ class SqliteStorage implements IStorage {
   updateEstimate(id: number, data: Partial<schema.InsertEstimate>) {
     return db.update(schema.estimates).set(data).where(eq(schema.estimates.id, id)).returning().get();
   }
+  // Hard delete: estimates are a working document, not a compliance record,
+  // so a full row removal is fine. Any downstream AI review / rebuttal state
+  // lives on the row itself and is cleaned up automatically.
+  deleteEstimate(id: number) {
+    return db.delete(schema.estimates).where(eq(schema.estimates.id, id)).run();
+  }
 
   // Invoices
   getInvoices() { return db.select().from(schema.invoices).orderBy(desc(schema.invoices.id)).all(); }
@@ -1225,6 +1233,12 @@ class SqliteStorage implements IStorage {
   }
   updateInvoice(id: number, data: Partial<schema.InsertInvoice>) {
     return db.update(schema.invoices).set(data).where(eq(schema.invoices.id, id)).returning().get();
+  }
+  // Full removal. Payments referencing this invoice are cleared out first so
+  // the payments table doesn't hold dangling invoiceId references.
+  deleteInvoice(id: number) {
+    db.delete(schema.payments).where(eq(schema.payments.invoiceId, id)).run();
+    return db.delete(schema.invoices).where(eq(schema.invoices.id, id)).run();
   }
 
   // Payments

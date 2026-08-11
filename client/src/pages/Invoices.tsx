@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth";
 import { generateInvoicePDF, downloadPDF } from "@/lib/pdfEngine";
 import type { Invoice, Job, Contact } from "@shared/schema";
 import { fmtDate, fmtDateShort } from "@/lib/dates";
@@ -103,6 +104,7 @@ export default function Invoices() {
   }
 
   const { toast } = useToast();
+  const { user } = useAuth();
   const { data: invoices = [], isLoading } = useQuery<Invoice[]>({ queryKey: ["/api/invoices"] });
   const { data: jobs = [] } = useQuery<Job[]>({ queryKey: ["/api/jobs"] });
   const { data: contacts = [] } = useQuery<Contact[]>({ queryKey: ["/api/contacts"] });
@@ -136,6 +138,29 @@ export default function Invoices() {
   const updateInvoice = useMutation({
     mutationFn: ({ id, data }: { id: number; data: any }) => apiRequest("PATCH", `/api/invoices/${id}`, data),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/invoices"] }); setEditId(null); },
+    // Surface save failures instead of the previous silent no-op.
+    onError: (e: any) => toast({
+      title: "Couldn't update invoice",
+      description: e?.message || "Please try again.",
+      variant: "destructive",
+    }),
+  });
+
+  // Owner/admin/general_manager can permanently delete an invoice (and any
+  // linked payments). Sales/tech/office see no delete button.
+  const canDeleteInvoice = !!user && (["owner", "admin", "general_manager"] as string[]).includes(user.role);
+  const deleteInvoice = useMutation({
+    mutationFn: (invId: number) => apiRequest("DELETE", `/api/invoices/${invId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+      toast({ title: "Invoice deleted" });
+    },
+    onError: (e: any) => toast({
+      title: "Delete failed",
+      description: e?.message || "Invoice could not be deleted.",
+      variant: "destructive",
+    }),
   });
 
   function openEdit(inv: Invoice) {
@@ -379,6 +404,22 @@ export default function Invoices() {
                       <Button size="sm" variant="outline" data-testid={`button-edit-invoice-${inv.id}`} onClick={() => openEdit(inv)}>
                         <Pencil className="w-3 h-3 mr-1" />Edit
                       </Button>
+                      {canDeleteInvoice && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-destructive border-destructive/40 hover:bg-destructive/10"
+                          data-testid={`button-delete-invoice-${inv.id}`}
+                          disabled={deleteInvoice.isPending}
+                          onClick={() => {
+                            if (window.confirm(`Delete invoice ${inv.invoiceNumber || `#${inv.id}`}? Any linked payments will also be removed.`)) {
+                              deleteInvoice.mutate(inv.id);
+                            }
+                          }}
+                        >
+                          <Trash2 className="w-3 h-3 mr-1" />Delete
+                        </Button>
+                      )}
                       {inv.status !== "paid" && (
                         <Button size="sm" variant="outline" onClick={() => { setPayOpen(inv.id); setPayAmount(String(inv.total || "")); }}>
                           <DollarSign className="w-3 h-3 mr-1" />Record Payment

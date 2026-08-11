@@ -1,7 +1,9 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useParams, Link } from "wouter";
+import { useParams, Link, useLocation } from "wouter";
 import { useState } from "react";
 import { ArrowLeft, Plus, Trash2, Zap, Shield, FileText, Sparkles, AlertTriangle, CheckCircle2, ChevronRight } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -78,9 +80,39 @@ export default function EstimateDetail() {
   const [scopeResult, setScopeResult] = useState<ScopeResult | null>(null);
   const [selectedScopeItems, setSelectedScopeItems] = useState<Set<number>>(new Set());
 
+  const { toast } = useToast();
+  const { user } = useAuth();
+  const [, setLocation] = useLocation();
+  // Owner/admin/general_manager can delete an entire estimate; sales can
+  // still edit line items but can't nuke another rep's work.
+  const canDelete = !!user && (["owner", "admin", "general_manager"] as string[]).includes(user.role);
+
   const updateMutation = useMutation({
     mutationFn: (data: any) => apiRequest("PATCH", `/api/estimates/${id}`, data),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/estimates"] }),
+    // Surface save failures instead of silently swallowing them — previously
+    // a 403 or network error looked identical to a successful save.
+    onError: (e: any) => toast({
+      title: "Save failed",
+      description: e?.message || "Estimate did not save. Check your role and try again.",
+      variant: "destructive",
+    }),
+  });
+
+  // Full-estimate delete. Confirms first, then navigates back to the parent
+  // Estimates list on success.
+  const deleteMutation = useMutation({
+    mutationFn: () => apiRequest("DELETE", `/api/estimates/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/estimates"] });
+      toast({ title: "Estimate deleted" });
+      setLocation("/estimates");
+    },
+    onError: (e: any) => toast({
+      title: "Delete failed",
+      description: e?.message || "Estimate could not be deleted.",
+      variant: "destructive",
+    }),
   });
 
   const rebuttalMutation = useMutation({
@@ -190,6 +222,23 @@ export default function EstimateDetail() {
             {["draft","sent","approved","rejected"].map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
           </SelectContent>
         </Select>
+        {canDelete && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-destructive border-destructive/40 hover:bg-destructive/10"
+            onClick={() => {
+              if (window.confirm(`Delete estimate "${estimate.title}"? This cannot be undone.`)) {
+                deleteMutation.mutate();
+              }
+            }}
+            disabled={deleteMutation.isPending}
+            data-testid="button-delete-estimate"
+          >
+            <Trash2 className="w-4 h-4 mr-1" />
+            {deleteMutation.isPending ? "Deleting…" : "Delete"}
+          </Button>
+        )}
       </div>
 
       <Tabs defaultValue="lineitems">
