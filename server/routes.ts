@@ -1150,11 +1150,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Runs in the background and returns the queued count immediately;
   // callers can poll /api/jobs to watch coordinates fill in.
   app.post("/api/jobs/geocode-missing", (req, res) => {
+    // ── Address backfill first ────────────────────────────────────────────────
+    // Some legacy jobs were created with the address only on the linked
+    // contact record. Copy the contact address onto the job row so the
+    // geocoder + map + route planner all agree on a single source of truth.
+    // Safe: only touches rows whose job address is blank.
+    const backfill: any[] = sqlite.prepare(`
+      SELECT j.id AS id, c.address AS c_addr
+      FROM jobs j LEFT JOIN contacts c ON c.id = j.contact_id
+      WHERE (j.address IS NULL OR TRIM(j.address) = '')
+        AND c.address IS NOT NULL AND TRIM(c.address) <> ''
+        AND (j.status IS NULL OR j.status <> 'closed')
+    `).all();
+    let backfilled = 0;
+    for (const b of backfill) {
+      sqlite.prepare("UPDATE jobs SET address = ? WHERE id = ?").run(b.c_addr, b.id);
+      backfilled++;
+    }
     const rows: any[] = sqlite.prepare(
       "SELECT id, address FROM jobs WHERE address IS NOT NULL AND TRIM(address) <> '' AND (latitude IS NULL OR longitude IS NULL) AND (status IS NULL OR status <> 'closed')"
     ).all();
     for (const r of rows) geocodeJobInBackground(sqlite, r.id, r.address);
-    res.json({ queued: rows.length });
+    res.json({ queued: rows.length, backfilled });
   });
 
   // ── Backup rescue ─────────────────────────────────────────────
@@ -1290,9 +1307,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // pins aren't dropping to see whether the row has an address, has been
   // geocoded, or has a numeric-but-invalid lat/lng from a bad import.
   app.get("/api/jobs/geocode-status", (req, res) => {
-    const rows: any[] = sqlite.prepare(
-      "SELECT id, job_number, address, latitude, longitude, geocoded_at, status FROM jobs WHERE status IS NULL OR status <> 'closed' ORDER BY id DESC"
-    ).all();
+    // Include the contact's address as a fallback so the diagnostic reflects
+    // the same effective address the map now shows post-hydration.
+    const rows: any[] = sqlite.prepare(`
+      SELECT j.id AS id, j.job_number AS job_number,
+             COALESCE(NULLIF(TRIM(j.address), ''), NULLIF(TRIM(c.address), '')) AS address,
+             j.address AS raw_job_address, c.address AS raw_contact_address,
+             j.latitude AS latitude, j.longitude AS longitude,
+             j.geocoded_at AS geocoded_at, j.status AS status
+      FROM jobs j LEFT JOIN contacts c ON c.id = j.contact_id
+      WHERE j.status IS NULL OR j.status <> 'closed'
+      ORDER BY j.id DESC
+    `).all();
     const summary = {
       total: rows.length,
       withAddress: rows.filter(r => (r.address || "").trim().length > 0).length,

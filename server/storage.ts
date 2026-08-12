@@ -1188,12 +1188,24 @@ class SqliteStorage implements IStorage {
     if (job.contactId != null) {
       contact = db.select().from(schema.contacts).where(eq(schema.contacts.id, job.contactId)).get();
     }
+    // Address resilience: if the job row has no address of its own but the
+    // linked contact does, surface the contact's address so the map,
+    // geocoder, and route planner can all find the pin. We never mutate the
+    // DB from a read — this is a pure view-layer fallback. The addressSource
+    // field lets the UI show a badge when the address was inherited.
+    const jobAddr = (job.address ?? "").trim();
+    const contactAddr = (contact?.address ?? "").trim();
+    const effectiveAddress = jobAddr || contactAddr;
+    const addressSource = jobAddr ? "job" : (contactAddr ? "contact" : "none");
     return {
       ...job,
+      address: effectiveAddress,
+      addressSource,
       customerName: contact?.name ?? null,
       customerPhone: contact?.phone ?? null,
       customerEmail: contact?.email ?? null,
       customer: contact?.name ?? null,
+      customerAddress: contact?.address ?? null,
     };
   }
   getJobs(includeClosed = false) {
