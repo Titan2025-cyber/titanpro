@@ -178,6 +178,7 @@ const navGroups: NavGroup[] = [
       { href: "/route-planner", label: "Route Planner", icon: RouteIcon, permission: "route-planner" },
       { href: "/bd-calendar", label: "BD Calendar", icon: CalendarDays, permission: "business-dev" },
       { href: "/coi-tracker", label: "COI & License Tracker", icon: Shield, permission: "business-dev" },
+      { href: "/subcontractors", label: "Subcontractors", icon: HardHat, permission: "business-dev" },
       { href: "/bid-intel", label: "Competitive Bid Intel", icon: Target, permission: "business-dev" },
       // — Builder, Migration & Reports —
       { href: "/document-builder", label: "Document Builder", icon: FileSpreadsheet, permission: "reports" },

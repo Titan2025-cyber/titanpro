@@ -146,6 +146,7 @@ const CarrierEscalationAI = lazy(() => import("@/pages/CarrierEscalationAI"));
 const PredictiveModel = lazy(() => import("@/pages/PredictiveModel"));
 const IICRCDeviationLog = lazy(() => import("@/pages/IICRCDeviationLog"));
 const COITracker = lazy(() => import("@/pages/COITracker"));
+const Subcontractors = lazy(() => import("@/pages/Subcontractors"));
 const TechLMS = lazy(() => import("@/pages/TechLMS"));
 const DispatchMatrix = lazy(() => import("@/pages/DispatchMatrix"));
 const GlobalSearch = lazy(() => import("@/pages/GlobalSearch"));
@@ -435,6 +436,7 @@ function AuthenticatedRoutes() {
         <Route path="/predictive-model" component={() => <Page component={PredictiveModel} name="PredictiveModel" />} />
         <Route path="/iicrc-deviations"><Redirect to="/drying-hub?tab=deviations" /></Route>
         <Route path="/coi-tracker" component={() => <Page component={COITracker} name="COITracker" />} />
+        <Route path="/subcontractors" component={() => <Page component={Subcontractors} name="Subcontractors" />} />
         <Route path="/tech-lms"><Redirect to="/technician-hub?tab=lms" /></Route>
         <Route path="/dispatch-matrix"><Redirect to="/scheduling-hub?tab=dispatch" /></Route>
         <Route path="/global-search" component={() => <Page component={GlobalSearch} name="GlobalSearch" />} />

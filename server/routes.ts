@@ -10,6 +10,7 @@ import { registerAuthRoutes, makeAuthMiddleware } from "./routes_auth";
 import { makeNotifier } from "./notify_bell";
 import { initAuditAndTrash } from "./auditAndTrash";
 import { registerAnalyticsRoutes } from "./routes_analytics";
+import { registerSubcontractorRoutes } from "./routes_subcontractors";
 import { registerRampRoutes } from "./routes_ramp";
 import { registerRoutePlannerRoutes } from "./routes_routeplanner";
 import { registerSuite5Routes } from "./routes_suite5";
@@ -645,6 +646,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Cycle time, estimate variance, supplement win rate, tech productivity,
   // aging AR, lead conversion, and margin distribution in one payload.
   registerAnalyticsRoutes(app, sqlite as any, requireStaffAuth);
+  registerSubcontractorRoutes(app, sqlite as any, requireStaffAuth);
 
   // ── In-app notification bell (per-user) ──────────────────────────────────
   // Every endpoint is scoped to the authenticated employee — no name picker
