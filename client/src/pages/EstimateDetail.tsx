@@ -1,6 +1,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useParams, Link, useLocation } from "wouter";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Plus, Trash2, Zap, Shield, FileText, Sparkles, AlertTriangle, CheckCircle2, ChevronRight } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
@@ -89,7 +89,13 @@ export default function EstimateDetail() {
 
   const updateMutation = useMutation({
     mutationFn: (data: any) => apiRequest("PATCH", `/api/estimates/${id}`, data),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/estimates"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/estimates"] });
+      // Financial Summary on the Job → Activity tab reads from
+      // /api/jobs/financials which sums estimate totals. Refresh it
+      // whenever the estimate changes so the card updates immediately.
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
+    },
     // Surface save failures instead of silently swallowing them — previously
     // a 403 or network error looked identical to a successful save.
     onError: (e: any) => toast({
@@ -105,6 +111,7 @@ export default function EstimateDetail() {
     mutationFn: () => apiRequest("DELETE", `/api/estimates/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/estimates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
       toast({ title: "Estimate deleted" });
       setLocation("/estimates");
     },
@@ -165,15 +172,68 @@ export default function EstimateDetail() {
     });
   };
 
+  // ── Line items: LOCAL-STATE-FIRST editing ──
+  //
+  // Previously, every keystroke in a line-item input called saveItems(),
+  // which fired a PATCH and (on success) invalidated the /api/estimates
+  // query — which re-rendered the whole table from server data mid-type.
+  // Users experienced typing lag and "lost" characters when server
+  // responses arrived out of order.
+  //
+  // Now: line items live in local state. Edits mutate local state
+  // synchronously (input feels instant) and a 500ms debounced save syncs
+  // to the server in the background. We only overwrite local state from
+  // the server payload when (a) the estimate id changes, or (b) we're
+  // NOT currently in the middle of editing (no pending save).
+  const [localItems, setLocalItems] = useState<LineItem[] | null>(null);
+  const saveTimerRef = useRef<number | null>(null);
+  const pendingSaveRef = useRef(false);
+
+  // Hydrate/refresh from server. Runs when the estimate id changes or
+  // when a server refetch delivers new data AND no save is currently in
+  // flight (so we don't clobber the user's in-progress typing).
+  useEffect(() => {
+    if (!estimate) return;
+    if (pendingSaveRef.current) return;
+    try {
+      const parsed: LineItem[] = JSON.parse(estimate.lineItems || "[]");
+      setLocalItems(parsed);
+    } catch {
+      setLocalItems([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, estimate?.lineItems]);
+
   if (isLoading) return <div className="p-6 text-muted-foreground">Loading…</div>;
   if (!estimate) return <div className="p-6 text-destructive">Estimate not found.</div>;
 
-  const lineItems: LineItem[] = JSON.parse(estimate.lineItems || "[]");
+  const lineItems: LineItem[] = localItems ?? JSON.parse(estimate.lineItems || "[]");
   const job = jobs.find(j => j.id === estimate.jobId);
 
-  const saveItems = (items: LineItem[]) => {
-    const subtotal = items.reduce((s, i) => s + i.total, 0);
-    updateMutation.mutate({ lineItems: JSON.stringify(items), subtotal, total: subtotal });
+  // Debounced save. Immediate=true skips the timer and PATCHes now — used
+  // for structural changes (add/remove row) that should hit the server
+  // right away so the totals and item ids don't drift.
+  const saveItems = (items: LineItem[], immediate = false) => {
+    setLocalItems(items);
+    pendingSaveRef.current = true;
+    if (saveTimerRef.current != null) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    const doSave = () => {
+      const subtotal = items.reduce((s, i) => s + i.total, 0);
+      updateMutation.mutate(
+        { lineItems: JSON.stringify(items), subtotal, total: subtotal },
+        {
+          onSettled: () => { pendingSaveRef.current = false; },
+        },
+      );
+    };
+    if (immediate) {
+      doSave();
+    } else {
+      saveTimerRef.current = window.setTimeout(doSave, 500);
+    }
   };
 
   const addItem = (template?: Partial<LineItem>) => {
@@ -181,7 +241,8 @@ export default function EstimateDetail() {
       id: Date.now(), description: template?.description || "", category: template?.category || "general",
       qty: 1, unit: template?.unit || "EA", unitPrice: template?.unitPrice || 0, total: template?.unitPrice || 0,
     };
-    saveItems([...lineItems, newItem]);
+    // Structural change — save immediately.
+    saveItems([...lineItems, newItem], true);
   };
 
   const updateItem = (idx: number, field: keyof LineItem, val: any) => {
@@ -191,10 +252,12 @@ export default function EstimateDetail() {
       updated.total = updated.qty * updated.unitPrice;
       return updated;
     });
-    saveItems(items);
+    // Keystroke change — debounce the save.
+    saveItems(items, false);
   };
 
-  const removeItem = (idx: number) => saveItems(lineItems.filter((_, i) => i !== idx));
+  // Structural change — save immediately.
+  const removeItem = (idx: number) => saveItems(lineItems.filter((_, i) => i !== idx), true);
 
   const displayRebuttal = rebuttal || estimate.rebuttalText || "";
 

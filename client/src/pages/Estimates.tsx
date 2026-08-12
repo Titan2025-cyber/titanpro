@@ -31,7 +31,15 @@ export default function Estimates() {
 
   const createMutation = useMutation({
     mutationFn: (data: any) => apiRequest("POST", "/api/estimates", data),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/estimates"] }); setOpen(false); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/estimates"] });
+      // Also refresh the per-job financials so the Job → Activity →
+      // Financial Summary card picks up the new estimate total. Without
+      // this the card stays stuck on the value that was cached at page
+      // load and won't reflect the estimate just created.
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
+      setOpen(false);
+    },
     onError: (e: any) => toast({
       title: "Create failed",
       description: e?.message || "Estimate could not be created. Check your role and try again.",
@@ -44,6 +52,7 @@ export default function Estimates() {
     mutationFn: (estId: number) => apiRequest("DELETE", `/api/estimates/${estId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/estimates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
       toast({ title: "Estimate deleted" });
     },
     onError: (e: any) => toast({
