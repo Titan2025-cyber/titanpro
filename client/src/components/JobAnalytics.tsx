@@ -11,6 +11,7 @@
  * not another dashboard tab.
  */
 import { useQuery } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -59,14 +60,20 @@ const days = (n: number | null | undefined) =>
   n == null ? "—" : `${n}d`;
 
 export function JobAnalytics({ jobId }: { jobId: number }) {
-  const { data, isLoading } = useQuery<JobAnalytics>({
+  const { data, isLoading, error } = useQuery<JobAnalytics>({
     queryKey: [`/api/jobs/${jobId}/analytics`],
     queryFn: async () => {
-      const r = await fetch(`/api/jobs/${jobId}/analytics`, { credentials: "include" });
-      if (!r.ok) throw new Error("Failed to load job analytics");
+      // apiRequest attaches the staff Authorization: Bearer token from
+      // window.__titanToken__. Plain fetch() would 401 on protected routes.
+      const r = await apiRequest(`/api/jobs/${jobId}/analytics`);
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        throw new Error(`HTTP ${r.status}${body ? " — " + body.slice(0, 200) : ""}`);
+      }
       return r.json();
     },
     refetchInterval: 60_000,
+    retry: 1,
   });
 
   return (
@@ -83,10 +90,16 @@ export function JobAnalytics({ jobId }: { jobId: number }) {
         </CardTitle>
       </CardHeader>
       <CardContent className="pt-0">
-        {isLoading || !data ? (
+        {isLoading ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
             {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-16" />)}
           </div>
+        ) : error ? (
+          <div className="text-sm text-red-500 py-2">
+            Couldn't load job analytics. {(error as any)?.message || ""}
+          </div>
+        ) : !data ? (
+          <div className="text-sm text-muted-foreground py-2">No analytics available for this job yet.</div>
         ) : (
           <>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-6 gap-y-4">

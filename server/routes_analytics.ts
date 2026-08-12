@@ -72,11 +72,14 @@ export function registerAnalyticsRoutes(app: Express, sqlite: Sqlite, requireSta
     };
 
     // ── AR aging for this job's invoices ─────────────────────────────
+    // Note: `payments` has no created_at/credit_memo columns — payments
+    // are dated via paid_at and credit-memo entries are represented by
+    // type='credit_memo' rows rather than a flag column.
     const arRows = safeAll(sqlite, `
       SELECT id, invoice_number, total, COALESCE(created_at, '') as issued_at,
              (SELECT COALESCE(SUM(p.amount), 0) FROM payments p
                WHERE (p.invoice_id = invoices.id OR p.job_id = invoices.job_id)
-                 AND p.type = 'received' AND (p.credit_memo IS NULL OR p.credit_memo = 0)) as paid
+                 AND p.type = 'received') as paid
         FROM invoices
        WHERE job_id = ? AND deleted_at IS NULL
     `, [id]);
@@ -98,10 +101,12 @@ export function registerAnalyticsRoutes(app: Express, sqlite: Sqlite, requireSta
     }
 
     // ── Margin for this job (collected − costs) ──────────────────────
+    // Collected = received payments minus credit_memo entries against
+    // this job's invoices.
     const collected = safeGet(sqlite, `
       SELECT COALESCE(SUM(p.amount), 0) as v
         FROM payments p JOIN invoices i ON i.id = p.invoice_id
-       WHERE i.job_id = ? AND p.type = 'received' AND (p.credit_memo IS NULL OR p.credit_memo = 0)
+       WHERE i.job_id = ? AND p.type = 'received'
     `, [id])?.v || 0;
     const costs = safeGet(sqlite, `
       SELECT COALESCE(SUM(total), 0) as v FROM job_costs WHERE job_id = ?
@@ -119,8 +124,9 @@ export function registerAnalyticsRoutes(app: Express, sqlite: Sqlite, requireSta
     const lastNote = safeGet(sqlite, `
       SELECT MAX(created_at) as at FROM job_notes WHERE job_id = ?
     `, [id])?.at || null;
+    // photos.taken_at is the canonical timestamp — there is no created_at column.
     const lastPhoto = safeGet(sqlite, `
-      SELECT MAX(created_at) as at FROM photos
+      SELECT MAX(taken_at) as at FROM photos
        WHERE job_id = ? AND deleted_at IS NULL
     `, [id])?.at || null;
     const lastTouchMs = [lastNote, lastPhoto].filter(Boolean)
