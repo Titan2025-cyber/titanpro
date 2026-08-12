@@ -6,7 +6,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Camera, Upload, Trash2, FolderOpen, X, ZoomIn, CloudUpload, AlertTriangle, RefreshCw, FileText, CheckSquare, Square, MapPin, Sparkles, Pencil, Share2, Mic, MicOff } from "lucide-react";
-import jsPDF from "jspdf";
 import { extractExif, fileToDataUrl } from "@/lib/photoExif";
 import { generatePhotoReport } from "@/lib/photoReport";
 import PhotoAnnotator from "@/components/PhotoAnnotator";
@@ -76,6 +75,29 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
     queryKey: [`/api/jobs/${jobId}`],
     queryFn: () => apiRequest("GET", `/api/jobs/${jobId}`).then(r => r.json()),
   });
+
+  // Floor plan for this job — used to populate the room dropdown in the
+  // photo lightbox so a tech can link an existing photo to a floor-plan
+  // room and see the pin count go up in the sketcher.
+  const { data: floorPlan } = useQuery<any>({
+    queryKey: [`/api/jobs/${jobId}/floor-plan`],
+    queryFn: () => apiRequest("GET", `/api/jobs/${jobId}/floor-plan`).then(r => r.json()).catch(() => null),
+  });
+  const floorPlanRooms: { id: string; name: string }[] = Array.isArray(floorPlan?.planJson?.rooms)
+    ? floorPlan.planJson.rooms.map((r: any) => ({ id: r.id, name: r.name || r.id }))
+    : (() => {
+        try {
+          const j = typeof floorPlan?.planJson === "string" ? JSON.parse(floorPlan.planJson) : floorPlan?.planJson;
+          return Array.isArray(j?.rooms) ? j.rooms.map((r: any) => ({ id: r.id, name: r.name || r.id })) : [];
+        } catch { return []; }
+      })();
+
+  // Patch a single photo row — used by the lightbox controls for room /
+  // floor-plan link / annotation save.
+  const patchPhoto = async (photoId: number, body: Record<string, any>) => {
+    await apiRequest("PATCH", `/api/photos/${photoId}`, body);
+    queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "photos"] });
+  };
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/photos/${id}`),
@@ -268,6 +290,11 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
   };
   const clearSelection = () => setSelectedIds(new Set());
 
+  // Photo report launcher — swaps in the full three-template PDF engine
+  // (adjuster / customer / internal), with optional annotation burn-in,
+  // watermark, and share-link creation. The old inline jsPDF layout is
+  // preserved as a fallback path when no template is chosen; here we always
+  // route through the engine because the toolbar now exposes the template.
   const generateReport = async () => {
     const chosen = filtered.filter(p => selectedIds.has(p.id));
     if (chosen.length === 0) {
@@ -276,183 +303,54 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
     }
     setGeneratingReport(true);
     try {
-      const doc = new jsPDF({ unit: "mm", format: "letter" });
-      const pageW = doc.internal.pageSize.getWidth();
-      const pageH = doc.internal.pageSize.getHeight();
-      const margin = 12;
-      const gap = 8;
-      // 2-up layout: two photos per page, stacked vertically. Each half gets
-      // ~40% of page height for the image and ~10% for the caption block.
-      const halfH = (pageH - margin * 2 - gap) / 2;
-      const imgH = halfH * 0.72;
-      const captionH = halfH - imgH;
-      const imgW = pageW - margin * 2;
-
-      // ── Cover page ───────────────────────────────────────────────────────
-      // Titan-branded header + real job info pulled from /api/jobs/:id so the
-      // customer, adjuster, carrier, and loss context appear on the first page.
-      const HDR_BLUE = [0, 82, 158] as [number, number, number];
-      const HDR_RED = [204, 0, 0] as [number, number, number];
-      const TEXT = [24, 32, 48] as [number, number, number];
-      const MUTED = [110, 116, 128] as [number, number, number];
-
-      // Header band
-      doc.setFillColor(...HDR_BLUE);
-      doc.rect(0, 0, pageW, 22, "F");
-      doc.setFillColor(...HDR_RED);
-      doc.rect(0, 22, pageW, 1.5, "F");
-      doc.setTextColor(255, 255, 255);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(18);
-      doc.text("TITAN RESTORATION", margin, 14);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
-      doc.text("Photo Documentation Report", pageW - margin, 14, { align: "right" });
-
-      // Title
-      doc.setTextColor(...TEXT);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(22);
+      const blob = await generatePhotoReport({
+        jobNumber: String(job?.jobNumber || jobId),
+        jobAddress: job?.address || undefined,
+        customerName: job?.customerName || job?.customer || undefined,
+        template: reportTemplate,
+        photos: chosen,
+        burnAnnotations: true,
+        watermark: reportTemplate === "adjuster" ? "TITAN RESTORATION" : undefined,
+      });
+      const safe = (s: string) => s.replace(/[^a-zA-Z0-9-_]+/g, "_").slice(0, 60);
       const customerName = job?.customerName || job?.customer || "";
-      const heading = customerName ? customerName : `Job ${job?.jobNumber || jobId}`;
-      doc.text(heading, margin, 40);
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(11);
-      doc.setTextColor(...MUTED);
-      const subline = job?.address
-        ? job.address
-        : `Job report — ${new Date().toLocaleDateString()}`;
-      doc.text(subline, margin, 47);
-
-      // Job details — two-column key/value list
-      const startY = 62;
-      const colGap = 4;
-      const colW = (pageW - margin * 2 - colGap) / 2;
-      const rows: Array<[string, string]> = [];
-      const push = (label: string, value: any) => {
-        const s = value == null || value === "" ? "" : String(value).trim();
-        if (s) rows.push([label, s]);
-      };
-      push("Job Number", job?.jobNumber);
-      push("Loss Type", job?.lossType);
-      push("Status", job?.status);
-      push("Stage", job?.progressStage);
-      push("Customer", job?.customerName || job?.customer);
-      push("Phone", job?.customerPhone);
-      push("Email", job?.customerEmail);
-      push("Address", job?.address);
-      push("Insurance Carrier", job?.insuranceCarrier);
-      push("Claim #", job?.claimNumber);
-      push("Policy #", job?.policyNumber);
-      push("Adjuster", job?.adjusterName);
-      push("Adjuster Phone", job?.adjusterPhone);
-      push("Adjuster Email", job?.adjusterEmail);
-      push("Assigned Tech", job?.assignedTech);
-
-      doc.setFontSize(9);
-      let y = startY;
-      const lineH = 5.2;
-      for (let i = 0; i < rows.length; i += 2) {
-        const left = rows[i];
-        const right = rows[i + 1];
-        // Left column
-        doc.setTextColor(...MUTED);
-        doc.setFont("helvetica", "normal");
-        doc.text(left[0].toUpperCase(), margin, y);
-        doc.setTextColor(...TEXT);
-        doc.setFont("helvetica", "bold");
-        doc.text(doc.splitTextToSize(left[1], colW - 2), margin, y + lineH);
-        // Right column
-        if (right) {
-          doc.setTextColor(...MUTED);
-          doc.setFont("helvetica", "normal");
-          doc.text(right[0].toUpperCase(), margin + colW + colGap, y);
-          doc.setTextColor(...TEXT);
-          doc.setFont("helvetica", "bold");
-          doc.text(doc.splitTextToSize(right[1], colW - 2), margin + colW + colGap, y + lineH);
-        }
-        y += lineH * 2 + 3;
-        if (y > pageH - 40) break;   // don't overflow onto photo section
-      }
-
-      // Bottom meta — photo count + generation timestamp
-      doc.setFontSize(9);
-      doc.setTextColor(...MUTED);
-      doc.setFont("helvetica", "normal");
-      doc.text(
-        `${chosen.length} photo${chosen.length === 1 ? "" : "s"} included • Generated ${new Date().toLocaleString()}`,
-        pageW / 2,
-        pageH - 12,
-        { align: "center" }
-      );
-
-      // Photo pages
-      const pageHeaderText = [
-        customerName || `Job ${job?.jobNumber || jobId}`,
-        job?.jobNumber && customerName ? `Job ${job.jobNumber}` : null,
-        job?.address || null,
-      ].filter(Boolean).join("  •  ");
-
-      for (let i = 0; i < chosen.length; i++) {
-        const photo = chosen[i];
-        const slot = i % 2;
-        if (slot === 0) {
-          doc.addPage();
-          // Slim header bar with customer + job on every photo page.
-          doc.setFillColor(...HDR_BLUE);
-          doc.rect(0, 0, pageW, 8, "F");
-          doc.setTextColor(255, 255, 255);
-          doc.setFont("helvetica", "bold");
-          doc.setFontSize(8);
-          doc.text(pageHeaderText, margin, 5.5);
-          doc.setFont("helvetica", "normal");
-          doc.text(`Page ${doc.getNumberOfPages() - 1}`, pageW - margin, 5.5, { align: "right" });
-          doc.setTextColor(...TEXT);
-        }
-        const y0 = margin + 4 + slot * (halfH + gap);
-
-        // Image — jsPDF accepts data URIs directly for JPEG/PNG.
-        try {
-          const dataUrl = photo.dataUrl;
-          const fmt = dataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
-          // Preserve aspect ratio by fitting into the imgW x imgH box.
-          doc.addImage(dataUrl, fmt, margin, y0, imgW, imgH, undefined, "FAST");
-        } catch (e) {
-          doc.setFontSize(9);
-          doc.text(`[image failed to load: ${photo.filename || photo.id}]`, margin + 2, y0 + 10);
-        }
-
-        // Caption block
-        const capY = y0 + imgH + 5;
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(10);
-        const line1 = photo.caption?.trim() || photo.filename || `Photo ${photo.id}`;
-        doc.text(doc.splitTextToSize(line1, imgW), margin, capY);
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(8);
-        const parts: string[] = [];
-        if (photo.category) parts.push(photo.category.charAt(0).toUpperCase() + photo.category.slice(1));
-        if (photo.takenAt) {
-          const t = new Date(photo.takenAt);
-          if (!isNaN(t.getTime())) parts.push(t.toLocaleString());
-        }
-        if (parts.length) doc.text(parts.join(" • "), margin, capY + 5);
-      }
-
-      // Build a human-friendly filename from real job info.
-      const safe = (s: string) => s.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
       const nameSlug = customerName ? safe(customerName) : (job?.jobNumber ? safe(String(job.jobNumber)) : `Job_${jobId}`);
-      const filename = `Photo_Report_${nameSlug}_${new Date().toISOString().slice(0, 10)}.pdf`;
-      doc.save(filename);
-      toast({ title: "Report generated", description: `${chosen.length} photo${chosen.length === 1 ? "" : "s"} exported as PDF.` });
-      // Exit select mode after successful export.
+      const filename = `Photo_Report_${nameSlug}_${reportTemplate}_${new Date().toISOString().slice(0, 10)}.pdf`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toast({ title: "Report generated", description: `${chosen.length} photo${chosen.length === 1 ? "" : "s"} exported (${reportTemplate}).` });
       setSelectMode(false);
       setSelectedIds(new Set());
     } catch (e: any) {
       toast({ title: "Report failed", description: e?.message || "Try again.", variant: "destructive" });
     } finally {
       setGeneratingReport(false);
+    }
+  };
+
+  // Create a public share link (share token) for the selected photos and
+  // copy it to the clipboard so the tech can paste it to a customer or
+  // adjuster right from the field. Server tracks views + last-viewed-at.
+  const createShareLink = async () => {
+    const chosen = filtered.filter(p => selectedIds.has(p.id));
+    if (chosen.length === 0) {
+      toast({ title: "No photos selected", description: "Select at least one photo first.", variant: "destructive" });
+      return;
+    }
+    try {
+      const res = await apiRequest("POST", `/api/jobs/${jobId}/share-tokens`, {
+        template: reportTemplate,
+        photoIds: chosen.map(p => p.id),
+      });
+      const body = await res.json();
+      const link = `${window.location.origin}/public/reports/${body.token}`;
+      try { await navigator.clipboard.writeText(link); } catch {}
+      toast({ title: "Share link copied", description: link });
+    } catch (e: any) {
+      toast({ title: "Share failed", description: e?.message || "Try again.", variant: "destructive" });
     }
   };
 
@@ -642,7 +540,20 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
                   Clear
                 </Button>
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {/* Template selector — controls which PDF layout + which
+                    metadata gets included in the export. Also drives
+                    watermark defaults (adjuster reports get one). */}
+                <Select value={reportTemplate} onValueChange={v => setReportTemplate(v as any)}>
+                  <SelectTrigger className="h-7 text-xs w-[130px]" data-testid="select-report-template">
+                    <SelectValue placeholder="Template"/>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="adjuster">Adjuster</SelectItem>
+                    <SelectItem value="customer">Customer</SelectItem>
+                    <SelectItem value="internal">Internal</SelectItem>
+                  </SelectContent>
+                </Select>
                 <Button
                   size="sm"
                   variant="outline"
@@ -651,6 +562,17 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
                   data-testid="button-photos-cancel-select"
                 >
                   Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={createShareLink}
+                  disabled={selectedIds.size === 0}
+                  data-testid="button-photos-share-link"
+                >
+                  <Share2 className="w-3.5 h-3.5 mr-1" />
+                  Share link
                 </Button>
                 <Button
                   size="sm"
@@ -855,18 +777,79 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
                 </div>
               </div>
               {!readOnly && (
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  onClick={() => { if (confirm("Delete this photo?")) deleteMutation.mutate(lightbox.id); }}
-                  data-testid={`button-delete-photo-${lightbox.id}`}
-                >
-                  <Trash2 className="w-3.5 h-3.5 mr-1" />Delete
-                </Button>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs bg-white/90"
+                    onClick={() => { setAnnotatingPhoto(lightbox); }}
+                    data-testid={`button-annotate-photo-${lightbox.id}`}
+                  >
+                    <Pencil className="w-3.5 h-3.5 mr-1"/> Annotate
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => { if (confirm("Delete this photo?")) deleteMutation.mutate(lightbox.id); }}
+                    data-testid={`button-delete-photo-${lightbox.id}`}
+                  >
+                    <Trash2 className="w-3.5 h-3.5 mr-1" />Delete
+                  </Button>
+                </div>
               )}
             </div>
+
+            {/* Editable metadata: room label + floor-plan room link.
+                Techs can adjust in the field if AI misclassified or if a
+                new room was added to the plan after upload. */}
+            {!readOnly && (
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-white/70 mb-1">Room label</div>
+                  <Input
+                    defaultValue={(lightbox as any).room || ""}
+                    onBlur={e => {
+                      const v = e.target.value.trim();
+                      if (v !== ((lightbox as any).room || "")) patchPhoto(lightbox.id, { room: v || null });
+                    }}
+                    placeholder="e.g. Kitchen"
+                    className="h-8 text-xs"
+                    data-testid={`input-photo-room-${lightbox.id}`}
+                  />
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-white/70 mb-1">Link to floor-plan room</div>
+                  <Select
+                    value={((lightbox as any).floorPlanRoomId as string) || "none"}
+                    onValueChange={v => patchPhoto(lightbox.id, { floorPlanRoomId: v === "none" ? null : v })}
+                  >
+                    <SelectTrigger className="h-8 text-xs" data-testid={`select-photo-plan-room-${lightbox.id}`}>
+                      <SelectValue placeholder="No link"/>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No link</SelectItem>
+                      {floorPlanRooms.map(r => (
+                        <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            )}
           </div>
         </div>
+      )}
+
+      {/* Annotation overlay */}
+      {annotatingPhoto && (
+        <PhotoAnnotator
+          photo={annotatingPhoto}
+          onClose={() => setAnnotatingPhoto(null)}
+          onSave={async (json) => {
+            await patchPhoto(annotatingPhoto.id, { annotationsJson: json });
+            toast({ title: "Annotations saved" });
+          }}
+        />
       )}
     </div>
   );

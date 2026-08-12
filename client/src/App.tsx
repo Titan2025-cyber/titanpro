@@ -50,6 +50,7 @@ const Contacts = lazy(() => import("@/pages/Contacts"));
 const PartnerPortal = lazy(() => import("@/pages/PartnerPortal"));
 const PartnerPortalSetup = lazy(() => import("@/pages/PartnerPortalSetup"));
 const CustomerPortal = lazy(() => import("@/pages/CustomerPortal"));
+const PublicReport = lazy(() => import("@/pages/PublicReport"));
 const PortalQR = lazy(() => import("@/pages/PortalQR"));
 const Equipment = lazy(() => import("@/pages/Equipment"));
 const JobCosting = lazy(() => import("@/pages/JobCosting"));
@@ -244,6 +245,12 @@ function AppRoutes() {
         <Suspense fallback={<PageLoader />}>
           <ErrorBoundary name="PartnerPortalPublic"><PartnerPortal partnerOnly /></ErrorBoundary>
         </Suspense>
+      )} />
+      {/* Public photo report viewer — no staff login required. The share
+         token gates access on the server; the client just renders whatever
+         the token endpoint returns. */}
+      <Route path="/public/reports/:token" component={() => (
+        <Suspense fallback={<PageLoader />}><Page component={PublicReport} name="PublicReport" /></Suspense>
       )} />
       <Route>
         <AuthenticatedRoutes />

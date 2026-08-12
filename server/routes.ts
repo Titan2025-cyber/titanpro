@@ -1804,10 +1804,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     const plan = storage.getFloorPlan(row.jobId) || null;
     const job: any = (storage as any).getJob?.(row.jobId) || null;
+    // Flat shape for the public viewer (PublicReport.tsx expects these
+    // fields at the top level). We also keep the nested `job` object for
+    // compatibility with any other consumers.
     res.json({
+      token,
       template: row.template,
       expiresAt: row.expiresAt,
       viewCount: row.viewCount,
+      revoked: !!row.revoked,
+      createdAt: row.createdAt,
+      jobNumber: job?.jobNumber ?? null,
+      jobAddress: job?.address ?? null,
+      customerName: job?.customer ?? job?.customerName ?? null,
       job: job ? {
         jobNumber: job.jobNumber, customer: job.customer, address: job.address,
         city: job.city, state: job.state, zip: job.zip, causeOfLoss: job.causeOfLoss,
