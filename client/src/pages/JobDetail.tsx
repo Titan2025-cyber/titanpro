@@ -3,6 +3,7 @@ import { useParams, Link } from "wouter";
 import { useState, lazy, Suspense, useEffect, useRef } from "react";
 import { ArrowLeft, MapPin, Phone, Mail, Shield, FileText, Receipt, Droplets, Camera, FolderOpen, TrendingUp, StickyNote, Lock, Globe, Pencil, Trash2, Plus, Check, X, Wrench, MessageSquare, Star, Send, KeyRound, Copy, RefreshCw, ExternalLink, ShieldCheck, HandCoins } from "lucide-react";
 import { StageSelector, DateManager, PROGRESS_STAGES } from "@/components/JobPipeline";
+import { JobAnalytics } from "@/components/JobAnalytics";
 import { JobCostingPanel } from "@/pages/JobCosting";
 import { SupplementPanel } from "@/pages/Supplements";
 import { SafetyPanel } from "@/pages/Safety";
@@ -1193,6 +1194,11 @@ export default function JobDetail() {
               </p>
             </CardContent>
           </Card>
+
+          {/* ── Per-job Analytics ── */}
+          {/* Cycle time, estimate variance, supplement win rate, AR aging,
+              margin, activity, and a carrier benchmark scoped to THIS job. */}
+          <JobAnalytics jobId={job.id} />
 
           {contact && (
             <EditableCustomerCard

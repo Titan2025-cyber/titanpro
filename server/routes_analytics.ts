@@ -14,6 +14,176 @@ import type Database from "better-sqlite3";
 type Sqlite = Database.Database;
 
 export function registerAnalyticsRoutes(app: Express, sqlite: Sqlite, requireStaffAuth: any) {
+  // ── Per-job analytics — GET /api/jobs/:id/analytics ────────────────
+  // Everything the Analytics tab shows, scoped to a single job. Powers
+  // the Job Analytics card on the JobDetail page (under Financial
+  // Summary). Cheap: one job at a time so no aggregation over history.
+  app.get("/api/jobs/:id/analytics", requireStaffAuth, (req, res) => {
+    const id = Number(req.params.id);
+    if (!id || !Number.isFinite(id)) return res.status(400).json({ error: "Invalid id" });
+    const job = safeGet(sqlite, `SELECT * FROM jobs WHERE id = ?`, [id]);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+
+    const nowMs = Date.now();
+    const createdMs = job.created_at ? new Date(job.created_at).getTime() : nowMs;
+    const closedMs = job.closed_at ? new Date(job.closed_at).getTime() : null;
+    const daysOpen = Math.max(0, Math.round(((closedMs ?? nowMs) - createdMs) / 86400000));
+
+    // ── Cycle time: created → first invoice ──────────────────────────
+    const firstInvoice = safeGet(sqlite, `
+      SELECT MIN(created_at) as at FROM invoices
+       WHERE job_id = ? AND deleted_at IS NULL
+    `, [id])?.at;
+    const daysToFirstInvoice = firstInvoice
+      ? Math.max(0, Math.round((new Date(firstInvoice).getTime() - createdMs) / 86400000))
+      : null;
+
+    // ── Estimate → settled variance ──────────────────────────────────
+    const estimateTotal = safeGet(sqlite, `
+      SELECT COALESCE(SUM(total), 0) as v FROM estimates
+       WHERE job_id = ? AND deleted_at IS NULL AND status != 'rejected'
+    `, [id])?.v || 0;
+    const settledTotal = safeGet(sqlite, `
+      SELECT COALESCE(SUM(amount_approved), 0) as v FROM supplements
+       WHERE job_id = ? AND status IN ('approved','partial')
+    `, [id])?.v || 0;
+    const variancePct = estimateTotal > 0
+      ? ((settledTotal - estimateTotal) / estimateTotal) * 100
+      : 0;
+
+    // ── Supplements filed for this job ───────────────────────────────
+    const suppRows = safeAll(sqlite, `
+      SELECT amount_requested, amount_approved, status
+        FROM supplements WHERE job_id = ?
+    `, [id]);
+    let sReq = 0, sApp = 0, sApproved = 0;
+    for (const r of suppRows as any[]) {
+      sReq += Number(r.amount_requested || 0);
+      sApp += Number(r.amount_approved || 0);
+      if (r.status === "approved" || r.status === "partial") sApproved += 1;
+    }
+    const supplements = {
+      filed: suppRows.length,
+      approvedCount: sApproved,
+      approvalRate: suppRows.length > 0 ? (sApproved / suppRows.length) * 100 : 0,
+      requested: sReq,
+      approved: sApp,
+      winRateAmount: sReq > 0 ? (sApp / sReq) * 100 : 0,
+    };
+
+    // ── AR aging for this job's invoices ─────────────────────────────
+    const arRows = safeAll(sqlite, `
+      SELECT id, invoice_number, total, COALESCE(created_at, '') as issued_at,
+             (SELECT COALESCE(SUM(p.amount), 0) FROM payments p
+               WHERE (p.invoice_id = invoices.id OR p.job_id = invoices.job_id)
+                 AND p.type = 'received' AND (p.credit_memo IS NULL OR p.credit_memo = 0)) as paid
+        FROM invoices
+       WHERE job_id = ? AND deleted_at IS NULL
+    `, [id]);
+    const buckets = { d0_30: 0, d31_60: 0, d61_90: 0, d90plus: 0, totalOutstanding: 0 };
+    let oldestDays = 0;
+    for (const r of arRows as any[]) {
+      const outstanding = Number(r.total || 0) - Number(r.paid || 0);
+      if (outstanding <= 0.01) continue;
+      const issued = r.issued_at ? new Date(r.issued_at).getTime() : nowMs;
+      const age = Math.max(0, Math.floor((nowMs - issued) / 86400000));
+      oldestDays = Math.max(oldestDays, age);
+      let b: keyof typeof buckets;
+      if (age <= 30) b = "d0_30";
+      else if (age <= 60) b = "d31_60";
+      else if (age <= 90) b = "d61_90";
+      else b = "d90plus";
+      buckets[b] += outstanding;
+      buckets.totalOutstanding += outstanding;
+    }
+
+    // ── Margin for this job (collected − costs) ──────────────────────
+    const collected = safeGet(sqlite, `
+      SELECT COALESCE(SUM(p.amount), 0) as v
+        FROM payments p JOIN invoices i ON i.id = p.invoice_id
+       WHERE i.job_id = ? AND p.type = 'received' AND (p.credit_memo IS NULL OR p.credit_memo = 0)
+    `, [id])?.v || 0;
+    const costs = safeGet(sqlite, `
+      SELECT COALESCE(SUM(total), 0) as v FROM job_costs WHERE job_id = ?
+    `, [id])?.v || 0;
+    const grossProfit = collected - costs;
+    const marginPct = collected > 0 ? (grossProfit / collected) * 100 : 0;
+
+    // ── Activity: photos + notes + last touch ────────────────────────
+    const photosCount = safeGet(sqlite, `
+      SELECT COUNT(*) as c FROM photos WHERE job_id = ? AND deleted_at IS NULL
+    `, [id])?.c || 0;
+    const notesCount = safeGet(sqlite, `
+      SELECT COUNT(*) as c FROM job_notes WHERE job_id = ?
+    `, [id])?.c || 0;
+    const lastNote = safeGet(sqlite, `
+      SELECT MAX(created_at) as at FROM job_notes WHERE job_id = ?
+    `, [id])?.at || null;
+    const lastPhoto = safeGet(sqlite, `
+      SELECT MAX(created_at) as at FROM photos
+       WHERE job_id = ? AND deleted_at IS NULL
+    `, [id])?.at || null;
+    const lastTouchMs = [lastNote, lastPhoto].filter(Boolean)
+      .map(s => new Date(s!).getTime())
+      .reduce((a, b) => Math.max(a, b), 0);
+    const daysSinceTouch = lastTouchMs > 0
+      ? Math.max(0, Math.floor((nowMs - lastTouchMs) / 86400000))
+      : null;
+
+    // ── Carrier benchmarks (same carrier, closed jobs, same phase) ───
+    // Compare this job's variance + cycle time to peers on the same
+    // carrier. Only computed when we have a carrier + at least a few
+    // peers so the numbers are meaningful.
+    let carrierBenchmark: any = null;
+    if (job.insurance_carrier) {
+      const peerRows = safeAll(sqlite, `
+        SELECT j.id, j.created_at, j.closed_at,
+               (SELECT COALESCE(SUM(total), 0) FROM estimates e WHERE e.job_id = j.id AND e.deleted_at IS NULL AND e.status != 'rejected') as est,
+               (SELECT COALESCE(SUM(amount_approved), 0) FROM supplements s WHERE s.job_id = j.id AND s.status IN ('approved','partial')) as settled
+          FROM jobs j
+         WHERE j.insurance_carrier = ? AND j.id != ? AND j.deleted_at IS NULL
+         LIMIT 200
+      `, [job.insurance_carrier, id]);
+      const variances: number[] = [];
+      const cycles: number[] = [];
+      for (const p of peerRows as any[]) {
+        if (p.est > 0 && p.settled > 0) variances.push(((p.settled - p.est) / p.est) * 100);
+        if (p.created_at && p.closed_at) {
+          const d = Math.max(0, Math.round((new Date(p.closed_at).getTime() - new Date(p.created_at).getTime()) / 86400000));
+          cycles.push(d);
+        }
+      }
+      if (variances.length >= 3 || cycles.length >= 3) {
+        carrierBenchmark = {
+          carrier: job.insurance_carrier,
+          peers: peerRows.length,
+          medianVariancePct: variances.length ? median(variances) : null,
+          medianCycleDays: cycles.length ? median(cycles) : null,
+        };
+      }
+    }
+
+    res.json({
+      jobId: id,
+      generatedAt: new Date().toISOString(),
+      timeline: {
+        createdAt: job.created_at,
+        closedAt: job.closed_at,
+        daysOpen,
+        daysToFirstInvoice,
+        daysSinceTouch,
+        lastNoteAt: lastNote,
+        lastPhotoAt: lastPhoto,
+      },
+      variance: { estimateTotal, settledTotal, variancePct },
+      supplements,
+      agingAR: { buckets, oldestDays, invoiceCount: (arRows as any[]).length },
+      margin: { collected, costs, grossProfit, marginPct },
+      activity: { photos: photosCount, notes: notesCount },
+      carrierBenchmark,
+    });
+  });
+
   app.get("/api/analytics/overview", requireStaffAuth, (req, res) => {
     const days = clampDays(Number(req.query.days) || 90);
     const from = new Date(Date.now() - days * 86400 * 1000).toISOString();
