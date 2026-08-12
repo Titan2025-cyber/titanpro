@@ -19,6 +19,7 @@ import {
   Droplets, Mic, FileSearch, UserRound, Trophy, UserCog, KeyRound,
   FileSpreadsheet, ArrowRightLeft, QrCode, Handshake, ArrowLeft, LayoutDashboard as DashIcon,
   Package, Lock, Inbox,
+  Trash2,
 } from "lucide-react";
 import { useState, useEffect, type ReactNode } from "react";
 import GlobalSearch from "@/components/GlobalSearch";
@@ -182,6 +183,8 @@ const navGroups: NavGroup[] = [
       { href: "/document-builder", label: "Document Builder", icon: FileSpreadsheet, permission: "reports" },
       { href: "/migration-center", label: "Migration Center", icon: ArrowRightLeft, permission: "finance" },
       { href: "/reports", label: "Reports", icon: BarChart3, permission: "reports" },
+      { href: "/analytics", label: "Analytics", icon: BarChart3, permission: "reports" },
+      { href: "/trash", label: "Trash", icon: Trash2, permission: "admin", adminOnly: true },
     ],
   },
 

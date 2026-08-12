@@ -8,6 +8,8 @@ import { registerCrudGapRoutes } from "./routes_crud_gaps";
 import { registerSuite4Routes } from "./routes_suite4";
 import { registerAuthRoutes, makeAuthMiddleware } from "./routes_auth";
 import { makeNotifier } from "./notify_bell";
+import { initAuditAndTrash } from "./auditAndTrash";
+import { registerAnalyticsRoutes } from "./routes_analytics";
 import { registerRampRoutes } from "./routes_ramp";
 import { registerRoutePlannerRoutes } from "./routes_routeplanner";
 import { registerSuite5Routes } from "./routes_suite5";
@@ -633,6 +635,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // In-app notification bell helper. Shared with every event site below
   // (new job, WIP start, note add, estimate & invoice writes…).
   const notifier = makeNotifier(sqlite);
+
+  // Audit log + soft-delete trash. Adds /api/audit-log, /api/trash,
+  // /api/trash/:table/:id/restore, DELETE /api/trash/:table/:id, plus a
+  // 30-day retention sweep. See server/auditAndTrash.ts.
+  const { logAudit, softDelete } = initAuditAndTrash(app, sqlite, requireStaffAuth);
+
+  // Analytics overview — GET /api/analytics/overview?days=90.
+  // Cycle time, estimate variance, supplement win rate, tech productivity,
+  // aging AR, lead conversion, and margin distribution in one payload.
+  registerAnalyticsRoutes(app, sqlite as any, requireStaffAuth);
 
   // ── In-app notification bell (per-user) ──────────────────────────────────
   // Every endpoint is scoped to the authenticated employee — no name picker
@@ -1454,22 +1466,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/estimates", requireRole("owner", "admin", "sales", "general_manager"), (req, res) => {
     try {
       const body = recomputeDocTotals(whitelistEstimate(req.body));
-      res.json(storage.createEstimate(body));
+      const created = storage.createEstimate(body);
+      logAudit(req as any, "create", "estimates", (created as any)?.id ?? null, { after: created });
+      res.json(created);
     } catch (err: any) { res.status(400).json({ error: err?.message || "Unable to create estimate" }); }
   });
   app.patch("/api/estimates/:id", requireRole("owner", "admin", "sales", "general_manager"), (req, res) => {
     const body = recomputeDocTotals(whitelistEstimate(req.body));
-    const e = storage.updateEstimate(Number(req.params.id), body);
+    const id = Number(req.params.id);
+    const before = storage.getEstimate(id);
+    const e = storage.updateEstimate(id, body);
     if (!e) return res.status(404).json({ error: "Not found" });
+    // Skip audit rows for keystroke-noise fields (lineItems is a big blob
+    // that changes on every debounced save). Only log meaningful diffs.
+    logAudit(req as any, "update", "estimates", id, { patch: body, before });
     res.json(e);
   });
-  // Full row removal. Restricted to owner/admin/general_manager — sales can
-  // create/edit but shouldn't be able to nuke another rep's estimate.
+  // Soft-delete only — the row is hidden from lists but recoverable from
+  // /trash for 30 days. Restricted to owner/admin/general_manager: sales
+  // can create/edit but shouldn't be able to nuke another rep's estimate.
   app.delete("/api/estimates/:id", requireRole("owner", "admin", "general_manager"), (req, res) => {
     const id = Number(req.params.id);
     const existing = storage.getEstimate(id);
     if (!existing) return res.status(404).json({ error: "Not found" });
-    storage.deleteEstimate(id);
+    softDelete("estimates", id, req as any);
     res.json({ ok: true, id });
   });
 

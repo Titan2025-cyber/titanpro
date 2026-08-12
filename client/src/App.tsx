@@ -42,6 +42,8 @@ const Invoices = lazy(() => import("@/pages/Invoices"));
 const Payments = lazy(() => import("@/pages/Payments"));
 const Photos = lazy(() => import("@/pages/Photos"));
 const PhotoSearch = lazy(() => import("@/pages/PhotoSearch"));
+const Analytics = lazy(() => import("@/pages/Analytics"));
+const TrashPage = lazy(() => import("@/pages/Trash"));
 const Scheduling = lazy(() => import("@/pages/Scheduling"));
 const Technician = lazy(() => import("@/pages/Technician"));
 const Messaging = lazy(() => import("@/pages/Messaging"));
@@ -283,6 +285,8 @@ function AuthenticatedRoutes() {
             matches the more-specific /photos/search first. */}
         <Route path="/photos/search" component={() => <Page component={PhotoSearch} name="PhotoSearch" />} />
         <Route path="/photos" component={() => <Page component={Photos} name="Photos" />} />
+        <Route path="/analytics" component={() => <Page component={Analytics} name="Analytics" />} />
+        <Route path="/trash" component={() => <Page component={TrashPage} name="Trash" />} />
         <Route path="/scheduling"><Redirect to="/scheduling-hub?tab=schedule" /></Route>
         <Route path="/technician"><Redirect to="/technician-hub?tab=technician" /></Route>
         <Route path="/equipment"><Redirect to="/equipment-hub?tab=inventory" /></Route>

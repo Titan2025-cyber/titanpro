@@ -1,7 +1,27 @@
 import { createRoot } from "react-dom/client";
+import * as Sentry from "@sentry/react";
 import App from "./App";
 import "./index.css";
 import { installCopyDeterrent } from "./lib/copyDeterrent";
+
+// Sentry — opt-in via VITE_SENTRY_DSN. Set in Railway env to enable.
+// When unset, this is a no-op and adds ~0 KB runtime cost (dead code
+// eliminated by Vite in production builds).
+const SENTRY_DSN = (import.meta as any).env?.VITE_SENTRY_DSN as string | undefined;
+if (SENTRY_DSN) {
+  Sentry.init({
+    dsn: SENTRY_DSN,
+    environment: (import.meta as any).env?.MODE || "production",
+    // Session replay + traces are off by default — flip on when needed.
+    tracesSampleRate: 0.1,
+    // Trim noisy errors from third-party embeds (Maps, DocuSketch iframes).
+    ignoreErrors: [
+      "ResizeObserver loop limit exceeded",
+      "ResizeObserver loop completed with undelivered notifications",
+      "Non-Error promise rejection captured",
+    ],
+  });
+}
 
 if (!window.location.hash) {
   window.location.hash = "#/";

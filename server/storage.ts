@@ -2,7 +2,7 @@ import { encryptField, decryptField, maskField } from "./encryption";
 import { Database } from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import BetterSqlite3 from "better-sqlite3";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, sql } from "drizzle-orm";
 import * as schema from "@shared/schema";
 import fs from "fs";
 import path from "path";
@@ -1209,17 +1209,24 @@ class SqliteStorage implements IStorage {
     };
   }
   getJobs(includeClosed = false) {
-    const rows = db.select().from(schema.jobs).orderBy(desc(schema.jobs.id)).all();
+    // Soft-deleted jobs never appear in normal lists — recover from /trash.
+    const rows = db.select().from(schema.jobs)
+      .where(sql`deleted_at IS NULL`)
+      .orderBy(desc(schema.jobs.id)).all();
     const hydrated = rows.map(r => this._hydrateJobCustomer(r));
     if (includeClosed) return hydrated;
     return hydrated.filter((j: any) => j.status !== "closed");
   }
   getClosedJobs() {
-    const rows = db.select().from(schema.jobs).orderBy(desc(schema.jobs.id)).all();
+    const rows = db.select().from(schema.jobs)
+      .where(sql`deleted_at IS NULL`)
+      .orderBy(desc(schema.jobs.id)).all();
     return rows.filter((j: any) => j.status === "closed").map(r => this._hydrateJobCustomer(r));
   }
   getJob(id: number) {
-    const row = db.select().from(schema.jobs).where(eq(schema.jobs.id, id)).get();
+    const row = db.select().from(schema.jobs)
+      .where(sql`id = ${id} AND deleted_at IS NULL`)
+      .get();
     return this._hydrateJobCustomer(row);
   }
   closeJob(id: number, closedBy: string, reason?: string) {
@@ -1279,9 +1286,24 @@ class SqliteStorage implements IStorage {
   deleteJob(id: number) { db.delete(schema.jobs).where(eq(schema.jobs.id, id)).run(); }
 
   // Estimates
-  getEstimates() { return db.select().from(schema.estimates).orderBy(desc(schema.estimates.id)).all(); }
-  getEstimate(id: number) { return db.select().from(schema.estimates).where(eq(schema.estimates.id, id)).get(); }
-  getEstimatesByJob(jobId: number) { return db.select().from(schema.estimates).where(eq(schema.estimates.jobId, jobId)).all(); }
+  // Soft-deleted rows (deleted_at IS NOT NULL) are filtered out of every
+  // list/read path. The trash endpoint (server/auditAndTrash.ts) is the
+  // only place that returns them.
+  getEstimates() {
+    return db.select().from(schema.estimates)
+      .where(sql`deleted_at IS NULL`)
+      .orderBy(desc(schema.estimates.id)).all();
+  }
+  getEstimate(id: number) {
+    return db.select().from(schema.estimates)
+      .where(sql`id = ${id} AND deleted_at IS NULL`)
+      .get();
+  }
+  getEstimatesByJob(jobId: number) {
+    return db.select().from(schema.estimates)
+      .where(sql`job_id = ${jobId} AND deleted_at IS NULL`)
+      .orderBy(desc(schema.estimates.id)).all();
+  }
   createEstimate(data: schema.InsertEstimate) {
     const d: any = { ...data, createdAt: new Date().toISOString() };
     // Provide a sensible default title if one wasn't supplied, so a blank field
@@ -1300,9 +1322,21 @@ class SqliteStorage implements IStorage {
   }
 
   // Invoices
-  getInvoices() { return db.select().from(schema.invoices).orderBy(desc(schema.invoices.id)).all(); }
-  getInvoice(id: number) { return db.select().from(schema.invoices).where(eq(schema.invoices.id, id)).get(); }
-  getInvoicesByJob(jobId: number) { return db.select().from(schema.invoices).where(eq(schema.invoices.jobId, jobId)).all(); }
+  getInvoices() {
+    return db.select().from(schema.invoices)
+      .where(sql`deleted_at IS NULL`)
+      .orderBy(desc(schema.invoices.id)).all();
+  }
+  getInvoice(id: number) {
+    return db.select().from(schema.invoices)
+      .where(sql`id = ${id} AND deleted_at IS NULL`)
+      .get();
+  }
+  getInvoicesByJob(jobId: number) {
+    return db.select().from(schema.invoices)
+      .where(sql`job_id = ${jobId} AND deleted_at IS NULL`)
+      .all();
+  }
   createInvoice(data: schema.InsertInvoice) {
     const d: any = { ...data, createdAt: new Date().toISOString() };
     // Auto-generate an invoice number when one isn't supplied (blank/partial),
@@ -1338,8 +1372,16 @@ class SqliteStorage implements IStorage {
   }
 
   // Photos
-  getPhotos() { return db.select().from(schema.photos).orderBy(desc(schema.photos.id)).all(); }
-  getPhotosByJob(jobId: number) { return db.select().from(schema.photos).where(eq(schema.photos.jobId, jobId)).all(); }
+  getPhotos() {
+    return db.select().from(schema.photos)
+      .where(sql`deleted_at IS NULL`)
+      .orderBy(desc(schema.photos.id)).all();
+  }
+  getPhotosByJob(jobId: number) {
+    return db.select().from(schema.photos)
+      .where(sql`job_id = ${jobId} AND deleted_at IS NULL`)
+      .all();
+  }
   createPhoto(data: schema.InsertPhoto) {
     // Preserve the client-supplied shutter timestamp when it is a valid ISO
     // date. This matters for offline-queued photos: a photo taken at 8:15 AM
@@ -1354,7 +1396,11 @@ class SqliteStorage implements IStorage {
     return db.insert(schema.photos).values(d).returning().get();
   }
   deletePhoto(id: number) { db.delete(schema.photos).where(eq(schema.photos.id, id)).run(); }
-  getPhoto(id: number) { return db.select().from(schema.photos).where(eq(schema.photos.id, id)).get(); }
+  getPhoto(id: number) {
+    return db.select().from(schema.photos)
+      .where(sql`id = ${id} AND deleted_at IS NULL`)
+      .get();
+  }
   updatePhoto(id: number, patch: Partial<schema.InsertPhoto>) {
     return db.update(schema.photos).set(patch).where(eq(schema.photos.id, id)).returning().get();
   }
