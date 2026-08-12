@@ -90,6 +90,7 @@ const navGroups: NavGroup[] = [
       // — Standalone field tools —
       { href: "/time-clock", label: "GPS Time Clock", icon: ClipboardCheck, permission: "time-clock" },
       { href: "/photos", label: "Photos", icon: Camera, permission: "photos" },
+      { href: "/photos/search", label: "Photo Library", icon: Camera, permission: "photos" },
       { href: "/inspections", label: "Pre-Job Inspections", icon: ClipboardList, permission: "technician" },
       { href: "/multilingual", label: "Multilingual Crew", icon: Languages, permission: "technician" },
       { href: "/drone-lidar", label: "Drone + LiDAR", icon: Radio, permission: "technician" },

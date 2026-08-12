@@ -54,6 +54,13 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
   const [annotatingPhoto, setAnnotatingPhoto] = useState<Photo | null>(null);
   const [reportTemplate, setReportTemplate] = useState<"adjuster" | "customer" | "internal">("adjuster");
   const [uploading, setUploading] = useState(false);
+  // Bulk-upload drag-drop state. `dragActive` drives the visual
+  // highlight of the drop zone. `bulkProgress` tracks per-file phase
+  // ("pending"|"uploading"|"done"|"failed") so the UI can render a
+  // progress bar + per-file status list while an entire folder or camera
+  // roll pours in.
+  const [dragActive, setDragActive] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ name: string; status: "pending"|"uploading"|"done"|"failed"; error?: string }[]>([]);
   const [activeFilter, setActiveFilter] = useState("all");
   const [lightbox, setLightbox] = useState<Photo | null>(null);
   // Photo report mode: when true, tiles become selectable (checkbox in the
@@ -180,12 +187,19 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
     return canvas.toDataURL("image/jpeg", 0.9);
   };
 
-  const handleFiles = async (files: FileList | null) => {
+  const handleFiles = async (files: FileList | File[] | null) => {
     if (!files) return;
+    const list = Array.from(files as any) as File[];
+    if (list.length === 0) return;
     setUploading(true);
+    // Seed the progress panel with one row per file so the tech sees the
+    // full queue up-front instead of files appearing one-by-one.
+    setBulkProgress(list.map(f => ({ name: f.name, status: "pending" })));
     let successCount = 0;
     const createdIds: number[] = [];
-    for (const file of Array.from(files)) {
+    for (let idx = 0; idx < list.length; idx++) {
+      const file = list[idx];
+      setBulkProgress(p => p.map((row, i) => i === idx ? { ...row, status: "uploading" } : row));
       // ── EXIF FIRST ── Extract camera GPS + original timestamp + device before
       // we downscale/re-encode. This preserves the evidentiary chain: even if
       // we compress the pixels, the coordinates + capture time are the
@@ -243,12 +257,17 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
         if (created?.id) createdIds.push(created.id);
         queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "photos"] });
         successCount++;
-      } catch (e) {
-        toast({ title: "Upload failed", variant: "destructive" });
+        setBulkProgress(p => p.map((row, i) => i === idx ? { ...row, status: "done" } : row));
+      } catch (e: any) {
+        setBulkProgress(p => p.map((row, i) => i === idx ? { ...row, status: "failed", error: e?.message } : row));
       }
     }
     setUploading(false);
     setCaption("");
+    // Auto-clear the progress panel after a short beat so the tech can see
+    // the final tally before it fades. Failures stay visible longer.
+    const anyFailed = bulkProgress.some(p => p.status === "failed");
+    setTimeout(() => setBulkProgress([]), anyFailed ? 12000 : 3500);
     if (successCount > 0) {
       toast({ title: `${successCount} photo${successCount === 1 ? "" : "s"} saved to job` });
     }
@@ -395,8 +414,98 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
     .filter((x): x is PendingPhoto => x !== null)
     .filter(inFilter);
 
+  // Drag handlers on the outer wrapper so techs can drop files anywhere on
+  // the photos tab, not just onto a tiny target. dragenter/dragleave use a
+  // small counter to avoid flicker when moving between nested children.
+  const dragCounterRef = useRef(0);
+  const onDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (readOnly) return;
+    dragCounterRef.current++;
+    if (e.dataTransfer?.items?.length) setDragActive(true);
+  };
+  const onDragOver = (e: React.DragEvent) => { e.preventDefault(); };
+  const onDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) setDragActive(false);
+  };
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setDragActive(false);
+    if (readOnly) return;
+    // Prefer dataTransfer.files (works for OS-native drag + browser's file
+    // picker drops); fall back to items only when files is empty.
+    const dropped: File[] = [];
+    if (e.dataTransfer?.files?.length) {
+      for (const f of Array.from(e.dataTransfer.files)) {
+        if (f.type.startsWith("image/")) dropped.push(f);
+      }
+    }
+    if (dropped.length === 0 && e.dataTransfer?.items?.length) {
+      for (const item of Array.from(e.dataTransfer.items)) {
+        const f = item.getAsFile();
+        if (f && f.type.startsWith("image/")) dropped.push(f);
+      }
+    }
+    if (dropped.length > 0) handleFiles(dropped);
+  };
+
+  const totalProgress = bulkProgress.length;
+  const doneProgress = bulkProgress.filter(p => p.status === "done").length;
+  const failedProgress = bulkProgress.filter(p => p.status === "failed").length;
+  const progressPct = totalProgress === 0 ? 0 : Math.round((doneProgress + failedProgress) / totalProgress * 100);
+
   return (
-    <div className="space-y-4">
+    <div
+      className={`space-y-4 relative ${dragActive ? "ring-2 ring-teal-600 rounded-lg" : ""}`}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {/* Full-panel drop overlay — appears whenever files are being dragged
+          over the photos tab. Uses pointer-events:none so it doesn't block
+          the drop event from firing on the wrapper. */}
+      {dragActive && !readOnly && (
+        <div className="pointer-events-none absolute inset-0 z-40 bg-teal-500/10 border-2 border-dashed border-teal-600 rounded-lg flex items-center justify-center">
+          <div className="bg-white/95 rounded-lg shadow-lg px-6 py-4 text-center">
+            <CloudUpload className="w-8 h-8 text-teal-600 mx-auto mb-1"/>
+            <div className="font-semibold text-slate-900">Drop photos to upload</div>
+            <div className="text-xs text-slate-600">Tag: {room.trim() || "no room"} · Category: {category}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk-upload progress panel. Renders while an upload batch is in
+          flight and briefly after completion so the tech sees the tally.
+          Failed rows expose the error message inline. */}
+      {bulkProgress.length > 0 && (
+        <div className="border rounded-lg bg-white p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold">
+              Uploading {doneProgress + failedProgress} of {totalProgress}
+              {failedProgress > 0 && <span className="text-red-600 ml-2">({failedProgress} failed)</span>}
+            </div>
+            <div className="text-xs text-slate-500 tabular-nums">{progressPct}%</div>
+          </div>
+          <div className="h-1.5 bg-slate-100 rounded overflow-hidden">
+            <div className="h-full bg-teal-600 transition-all" style={{ width: `${progressPct}%` }}/>
+          </div>
+          <div className="max-h-32 overflow-y-auto text-xs space-y-0.5">
+            {bulkProgress.map((row, i) => (
+              <div key={i} className={`flex items-center justify-between gap-2 px-1 py-0.5 rounded ${row.status === "failed" ? "bg-red-50" : row.status === "done" ? "text-slate-500" : ""}`}>
+                <span className="truncate flex-1">{row.name}</span>
+                <span className={`text-[10px] uppercase font-semibold ${row.status === "failed" ? "text-red-600" : row.status === "done" ? "text-emerald-600" : row.status === "uploading" ? "text-teal-700" : "text-slate-400"}`}>
+                  {row.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Upload bar */}
       {!readOnly && (
         <div className="border rounded-lg p-3 bg-muted/20 space-y-3">

@@ -1640,6 +1640,88 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     await hydrateImageRows(rows, { urlField: "dataUrl", keyField: "storageKey" });
     res.json(rows);
   }));
+
+  // ── Cross-job photo search ────────────────────────────────────────────────
+  // Filters photos across every job on any combination of: free-text (matches
+  // filename OR caption), room label, damage type, severity, category, phase,
+  // capture-date range (against originalTakenAt OR takenAt), and jobId.
+  //
+  // Deliberately paginated + capped so a global "show me everything" query
+  // can't OOM the box on a big DB. Returns the join of the photo row with
+  // job number + customer + address so the search UI can jump straight to
+  // the source job without an N+1 fetch.
+  app.get("/api/photos/search", wrapAsync(async (req, res) => {
+    const q = String(req.query.q ?? "").trim();
+    const room = String(req.query.room ?? "").trim();
+    const damageType = String(req.query.damageType ?? "").trim();
+    const severity = String(req.query.severity ?? "").trim();
+    const category = String(req.query.category ?? "").trim();
+    const phase = String(req.query.phase ?? "").trim();
+    const jobId = req.query.jobId ? Number(req.query.jobId) : null;
+    const from = String(req.query.from ?? "").trim();
+    const to = String(req.query.to ?? "").trim();
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit ?? 100)));
+    const offset = Math.max(0, Number(req.query.offset ?? 0));
+
+    const clauses: string[] = [];
+    const params: any[] = [];
+    if (q) {
+      clauses.push("(LOWER(p.filename) LIKE ? OR LOWER(p.caption) LIKE ?)");
+      const like = `%${q.toLowerCase()}%`;
+      params.push(like, like);
+    }
+    if (room) { clauses.push("LOWER(p.room) = ?"); params.push(room.toLowerCase()); }
+    if (damageType) { clauses.push("LOWER(p.damage_type) = ?"); params.push(damageType.toLowerCase()); }
+    if (severity) { clauses.push("LOWER(p.severity) = ?"); params.push(severity.toLowerCase()); }
+    if (category) { clauses.push("LOWER(p.category) = ?"); params.push(category.toLowerCase()); }
+    if (phase) { clauses.push("LOWER(p.phase) = ?"); params.push(phase.toLowerCase()); }
+    if (jobId != null && Number.isFinite(jobId)) { clauses.push("p.job_id = ?"); params.push(jobId); }
+    if (from) { clauses.push("COALESCE(p.original_taken_at, p.taken_at) >= ?"); params.push(from); }
+    if (to) { clauses.push("COALESCE(p.original_taken_at, p.taken_at) <= ?"); params.push(to); }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+
+    // Count first so the UI can render a paginator without loading rows.
+    const countRow: any = sqlite.prepare(`SELECT COUNT(*) AS n FROM photos p ${where}`).get(...params);
+    const total = Number(countRow?.n ?? 0);
+
+    const rows: any[] = sqlite.prepare(`
+      SELECT p.*, j.job_number AS jobNumber, j.address AS jobAddress,
+             c.name AS customerName
+      FROM photos p
+      LEFT JOIN jobs j ON j.id = p.job_id
+      LEFT JOIN contacts c ON c.id = j.contact_id
+      ${where}
+      ORDER BY COALESCE(p.original_taken_at, p.taken_at, p.uploaded_at) DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, limit, offset);
+
+    await hydrateImageRows(rows, { urlField: "dataUrl", keyField: "storageKey" });
+
+    // Also compute lightweight facet counts so the UI can show "12 in Kitchen,
+    // 5 with water damage" chips without a second round-trip. Cheap because
+    // the WHERE clause is already narrowing.
+    const facet = (col: string) => {
+      try {
+        return sqlite.prepare(`
+          SELECT ${col} AS v, COUNT(*) AS n FROM photos p ${where}
+          GROUP BY ${col} ORDER BY n DESC LIMIT 20
+        `).all(...params) as any[];
+      } catch { return []; }
+    };
+
+    res.json({
+      total,
+      limit,
+      offset,
+      photos: rows,
+      facets: {
+        room: facet("p.room"),
+        damageType: facet("p.damage_type"),
+        severity: facet("p.severity"),
+        category: facet("p.category"),
+      },
+    });
+  }));
   app.get("/api/jobs/:id/photos", wrapAsync(async (req, res) => {
     const rows = storage.getPhotosByJob(Number(req.params.id)) as any[];
     await hydrateImageRows(rows, { urlField: "dataUrl", keyField: "storageKey" });

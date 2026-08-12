@@ -41,6 +41,7 @@ const EstimateDetail = lazy(() => import("@/pages/EstimateDetail"));
 const Invoices = lazy(() => import("@/pages/Invoices"));
 const Payments = lazy(() => import("@/pages/Payments"));
 const Photos = lazy(() => import("@/pages/Photos"));
+const PhotoSearch = lazy(() => import("@/pages/PhotoSearch"));
 const Scheduling = lazy(() => import("@/pages/Scheduling"));
 const Technician = lazy(() => import("@/pages/Technician"));
 const Messaging = lazy(() => import("@/pages/Messaging"));
@@ -278,6 +279,9 @@ function AuthenticatedRoutes() {
         <Route path="/contacts" component={() => <Page component={Contacts} name="Contacts" />} />
 
         {/* Field Ops */}
+        {/* Cross-job photo library search — must come BEFORE /photos so wouter
+            matches the more-specific /photos/search first. */}
+        <Route path="/photos/search" component={() => <Page component={PhotoSearch} name="PhotoSearch" />} />
         <Route path="/photos" component={() => <Page component={Photos} name="Photos" />} />
         <Route path="/scheduling"><Redirect to="/scheduling-hub?tab=schedule" /></Route>
         <Route path="/technician"><Redirect to="/technician-hub?tab=technician" /></Route>
