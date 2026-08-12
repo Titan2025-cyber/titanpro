@@ -5,8 +5,11 @@
  */
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import { Camera, Upload, Trash2, FolderOpen, X, ZoomIn, CloudUpload, AlertTriangle, RefreshCw, FileText, CheckSquare, Square } from "lucide-react";
+import { Camera, Upload, Trash2, FolderOpen, X, ZoomIn, CloudUpload, AlertTriangle, RefreshCw, FileText, CheckSquare, Square, MapPin, Sparkles, Pencil, Share2, Mic, MicOff } from "lucide-react";
 import jsPDF from "jspdf";
+import { extractExif, fileToDataUrl } from "@/lib/photoExif";
+import { generatePhotoReport } from "@/lib/photoReport";
+import PhotoAnnotator from "@/components/PhotoAnnotator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -43,6 +46,14 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
   const cameraRef = useRef<HTMLInputElement>(null);
   const [caption, setCaption] = useState("");
   const [category, setCategory] = useState("general");
+  // Room label captured at upload time. Autocompletes off other photos on this
+  // job so techs pick from an existing room name instead of typing new ones.
+  const [room, setRoom] = useState("");
+  // Toggle: run AI room/damage/severity classifier on each photo after upload.
+  // Costs a small credit per image; user can turn off for bulk imports.
+  const [aiEnabled, setAiEnabled] = useState(true);
+  const [annotatingPhoto, setAnnotatingPhoto] = useState<Photo | null>(null);
+  const [reportTemplate, setReportTemplate] = useState<"adjuster" | "customer" | "internal">("adjuster");
   const [uploading, setUploading] = useState(false);
   const [activeFilter, setActiveFilter] = useState("all");
   const [lightbox, setLightbox] = useState<Photo | null>(null);
@@ -151,20 +162,34 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
     if (!files) return;
     setUploading(true);
     let successCount = 0;
+    const createdIds: number[] = [];
     for (const file of Array.from(files)) {
-      // Capture time = camera app's file timestamp when available (works on iOS
-      // Safari & Android Chrome for camera captures), else fall back to "now".
-      // This ensures a photo taken offline at 8:15 AM keeps that timestamp
-      // even when the upload actually happens hours later.
-      const shutterMs = file.lastModified && file.lastModified > 0 ? file.lastModified : Date.now();
+      // ── EXIF FIRST ── Extract camera GPS + original timestamp + device before
+      // we downscale/re-encode. This preserves the evidentiary chain: even if
+      // we compress the pixels, the coordinates + capture time are the
+      // camera's own, not the server clock.
+      const exif = await extractExif(file);
+
+      // Prefer the camera's DateTimeOriginal, then the file's lastModified,
+      // then wall-clock now.
+      const shutterMs = exif.originalTakenAt
+        ? new Date(exif.originalTakenAt).getTime()
+        : (file.lastModified && file.lastModified > 0 ? file.lastModified : Date.now());
       const takenAt = new Date(shutterMs);
 
-      const dataUrl: string = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
+      // Downscale huge camera images (up to 12MP+) to 1800px long edge before
+      // base64 encoding. Cuts payload size by ~10x with no perceptible loss.
+      let dataUrl: string;
+      try {
+        dataUrl = await fileToDataUrl(file, 1800, 0.85);
+      } catch {
+        dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+      }
 
       let stamped = dataUrl;
       try {
@@ -175,7 +200,7 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
       }
 
       try {
-        await apiRequest("POST", "/api/photos", {
+        const res = await apiRequest("POST", "/api/photos", {
           jobId,
           filename: file.name,
           dataUrl: stamped,
@@ -183,7 +208,17 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
           category,
           phase: phase && phase !== "both" ? phase : "mitigation",
           takenAt: takenAt.toISOString(),
+          // New enrichment fields — EXIF-derived when available, room from the
+          // shared uploader input.
+          latitude: exif.latitude || null,
+          longitude: exif.longitude || null,
+          originalTakenAt: exif.originalTakenAt || null,
+          deviceMake: exif.deviceMake || null,
+          deviceModel: exif.deviceModel || null,
+          room: room.trim() || null,
         });
+        const created = await res.json().catch(() => null);
+        if (created?.id) createdIds.push(created.id);
         queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "photos"] });
         successCount++;
       } catch (e) {
@@ -194,6 +229,13 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
     setCaption("");
     if (successCount > 0) {
       toast({ title: `${successCount} photo${successCount === 1 ? "" : "s"} saved to job` });
+    }
+    // Fire-and-forget AI classification for each newly-created photo. Runs in
+    // the background; a query invalidation refreshes the tiles when each one
+    // finishes. Failures are silent so a bad AI call never blocks upload.
+    if (aiEnabled && createdIds.length > 0) {
+      Promise.all(createdIds.map(id => apiRequest("POST", `/api/photos/${id}/classify`, {}).catch(() => null)))
+        .then(() => queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "photos"] }));
     }
   };
 
@@ -460,7 +502,7 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
       {/* Upload bar */}
       {!readOnly && (
         <div className="border rounded-lg p-3 bg-muted/20 space-y-3">
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
             <div>
               <Label className="text-xs">Category</Label>
               <Select value={category} onValueChange={setCategory}>
@@ -473,6 +515,25 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
               </Select>
             </div>
             <div>
+              <Label className="text-xs">Room</Label>
+              <Input
+                className="h-8 text-xs mt-1"
+                value={room}
+                onChange={e => setRoom(e.target.value)}
+                list={`room-suggestions-${jobId}`}
+                placeholder="Kitchen, Master Bath…"
+              />
+              {/* Autocomplete off existing rooms already used on this job
+                  plus a small set of common defaults. */}
+              <datalist id={`room-suggestions-${jobId}`}>
+                {Array.from(new Set([
+                  ...photos.map((p:any) => p.room).filter(Boolean),
+                  "Kitchen", "Living Room", "Master Bath", "Master Bedroom", "Bedroom 2", "Bedroom 3",
+                  "Hall Bath", "Laundry", "Garage", "Basement", "Attic", "Dining Room", "Office", "Exterior",
+                ])).map(r => <option key={r as string} value={r as string}/>)}
+              </datalist>
+            </div>
+            <div>
               <Label className="text-xs">Caption (optional)</Label>
               <Input
                 className="h-8 text-xs mt-1"
@@ -482,6 +543,11 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
               />
             </div>
           </div>
+          <label className="flex items-center gap-2 text-xs text-gray-600">
+            <input type="checkbox" checked={aiEnabled} onChange={e => setAiEnabled(e.target.checked)}/>
+            <Sparkles className="w-3 h-3 text-teal-600"/>
+            Auto-tag with AI (room / damage type / severity)
+          </label>
           <div className="flex gap-2">
             <input ref={fileRef} type="file" accept="image/*" multiple className="hidden"
               onChange={e => handleFiles(e.target.files)} />

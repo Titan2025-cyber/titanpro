@@ -172,7 +172,74 @@ export const photos = sqliteTable("photos", {
   category: text("category").default("general"), // general | before | during | after | damage | moisture
   phase: text("phase").default("mitigation"), // mitigation | reconstruction
   takenAt: text("taken_at").notNull().default(""),
+  // ── EXIF / evidence chain ────────────────────────────────────────────────
+  // Extracted client-side at upload time via exifr. Persisted verbatim so the
+  // photo remains court-admissible: latitude/longitude prove where the shot
+  // was taken, originalTakenAt is the camera's own timestamp (not our server
+  // clock), device fields identify the capture hardware.
+  latitude: text("latitude"),
+  longitude: text("longitude"),
+  originalTakenAt: text("original_taken_at"),
+  deviceMake: text("device_make"),
+  deviceModel: text("device_model"),
+  // ── Insurance / room grouping ────────────────────────────────────────────
+  // Free-text with autocomplete on the client (Kitchen, Master Bath, etc.).
+  // Adjusters and Xactimate estimators think room-by-room; reports group by
+  // room, then by phase within room.
+  room: text("room"),
+  // AI-suggested & tech-confirmed damage classification.
+  damageType: text("damage_type"), // water | fire | mold | wind | impact | smoke | vandalism | other
+  severity: text("severity"),      // minor | moderate | severe | catastrophic
+  aiClassified: integer("ai_classified", { mode: "boolean" }).default(false),
+  // ── Annotations / voice ──────────────────────────────────────────────────
+  // JSON blob of {type,x,y,w,h,text,color} shapes drawn on top of the image.
+  // Rendered onto the image at PDF export time. Original bytes untouched.
+  annotationsJson: text("annotations_json"),
+  voiceNoteUrl: text("voice_note_url"),
+  voiceNoteTranscript: text("voice_note_transcript"),
+  // Optional link to a specific room shape on the job's floor plan. When set,
+  // the PDF drops a numbered pin on the plan and groups the photo beneath
+  // that room's header regardless of the free-text `room` field.
+  floorPlanRoomId: text("floor_plan_room_id"),
 });
+
+// Per-job floor plan sketch. A single JSON blob keeps the schema simple and
+// lets the client evolve the sketch shape without another migration. Shape:
+//   { rooms: [{ id, name, x, y, w, h, color, notes }],
+//     scale: { pixelsPerFoot?: number },
+//     background: { dataUrl?: string }  // optional traced background image
+//   }
+export const floorPlans = sqliteTable("floor_plans", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  jobId: integer("job_id").notNull().unique(),
+  planJson: text("plan_json").notNull().default("{\"rooms\":[]}"),
+  updatedAt: text("updated_at").notNull().default(""),
+  updatedBy: text("updated_by"),
+});
+export const insertFloorPlanSchema = createInsertSchema(floorPlans).omit({ id: true });
+export type InsertFloorPlan = z.infer<typeof insertFloorPlanSchema>;
+export type FloorPlan = typeof floorPlans.$inferSelect;
+
+// One-shot public share links for photo reports. When Cody generates a
+// report, we issue a token and email/text the URL to the adjuster/customer.
+// View count + last-viewed telemetry drive the "did the adjuster open it?"
+// signal on the job page.
+export const photoShareTokens = sqliteTable("photo_share_tokens", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  token: text("token").notNull().unique(),
+  jobId: integer("job_id").notNull(),
+  template: text("template").notNull().default("adjuster"), // adjuster | customer | internal
+  photoIds: text("photo_ids"), // JSON array of photo IDs; null = all photos on job
+  createdBy: text("created_by"),
+  createdAt: text("created_at").notNull().default(""),
+  expiresAt: text("expires_at").notNull(),
+  viewCount: integer("view_count").default(0),
+  lastViewedAt: text("last_viewed_at"),
+  revoked: integer("revoked", { mode: "boolean" }).default(false),
+});
+export const insertPhotoShareTokenSchema = createInsertSchema(photoShareTokens).omit({ id: true, viewCount: true, lastViewedAt: true });
+export type InsertPhotoShareToken = z.infer<typeof insertPhotoShareTokenSchema>;
+export type PhotoShareToken = typeof photoShareTokens.$inferSelect;
 export const insertPhotoSchema = createInsertSchema(photos).omit({ id: true });
 export type InsertPhoto = z.infer<typeof insertPhotoSchema>;
 export type Photo = typeof photos.$inferSelect;

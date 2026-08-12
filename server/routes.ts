@@ -1628,21 +1628,168 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const stored = await writeImageFieldSafe(incomingUrl, "photos");
     body.dataUrl = stored.dataUrl;
     if (stored.storageKey) body.storageKey = stored.storageKey;
-    res.json(storage.createPhoto(body));
+    // Allow-list the enrichment fields so callers can’t stuff arbitrary
+    // columns; anything not in this set is dropped.
+    const allowed = [
+      "jobId", "filename", "dataUrl", "storageKey", "caption", "category", "phase", "takenAt",
+      "latitude", "longitude", "originalTakenAt", "deviceMake", "deviceModel",
+      "room", "damageType", "severity", "aiClassified",
+      "annotationsJson", "voiceNoteUrl", "voiceNoteTranscript", "floorPlanRoomId",
+    ];
+    const insert: any = {};
+    for (const k of allowed) if (body[k] !== undefined && body[k] !== null) insert[k] = body[k];
+    res.json(storage.createPhoto(insert));
   }));
+  // PATCH — accepts the same enrichment fields for editing after upload.
   app.patch("/api/photos/:id", (req, res) => {
     const id = Number(req.params.id);
-    const { category, caption } = req.body;
+    const editable = [
+      "category", "caption", "phase", "room", "damageType", "severity",
+      "annotationsJson", "floorPlanRoomId", "voiceNoteTranscript", "voiceNoteUrl",
+    ];
     const updates: any = {};
-    if (category) updates.category = category;
-    if (caption !== undefined) updates.caption = caption;
-    const updated = sqlite.prepare(`UPDATE photos SET ${Object.keys(updates).map(k => `${k}=?`).join(",")} WHERE id=? RETURNING *`).get(...Object.values(updates), id);
+    for (const k of editable) if (req.body[k] !== undefined) updates[k] = req.body[k];
+    if (Object.keys(updates).length === 0) return res.json({ id });
+    const updated = storage.updatePhoto(id, updates);
     res.json(updated || { id });
   });
   app.delete("/api/photos/:id", (req, res) => {
     storage.deletePhoto(Number(req.params.id));
     res.json({ success: true });
   });
+
+  // ── AI classify a photo (room, damage type, severity, caption suggestion) ───
+  // Uses Anthropic Vision (Claude Sonnet 4.6) when ANTHROPIC_API_KEY is set.
+  // On any error we still return 200 with { skipped: true } so the client's
+  // best-effort background classification never turns into a red toast.
+  app.post("/api/photos/:id/classify", wrapAsync(async (req, res) => {
+    const id = Number(req.params.id);
+    const photo: any = storage.getPhoto(id);
+    if (!photo) return res.status(404).json({ error: "not_found" });
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return res.json({ skipped: true, reason: "no_anthropic_key" });
+    // Hydrate the actual image URL if the row lives in the bucket.
+    const rows = [photo];
+    try { await hydrateImageRows(rows, { urlField: "dataUrl", keyField: "storageKey" }); } catch {}
+    const src: string = rows[0].dataUrl || "";
+    if (!src) return res.json({ skipped: true, reason: "no_image_data" });
+
+    const prompt = `You are analyzing a restoration/HVAC job site photo. Return STRICT JSON only with keys: room (short room name like "Kitchen", "Master Bath", "Living Room", or ""), damageType (one of: water, fire, mold, wind, impact, smoke, vandalism, other, or ""), severity (one of: minor, moderate, severe, catastrophic, or ""), caption (one short factual sentence).`;
+    let imageBlock: any;
+    if (src.startsWith("data:")) {
+      const m = src.match(/^data:([^;]+);base64,(.+)$/);
+      if (!m) return res.json({ skipped: true, reason: "bad_data_url" });
+      imageBlock = { type: "image", source: { type: "base64", media_type: m[1], data: m[2] } };
+    } else {
+      imageBlock = { type: "image", source: { type: "url", url: src } };
+    }
+    try {
+      const r = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5",
+          max_tokens: 300,
+          messages: [{ role: "user", content: [imageBlock, { type: "text", text: prompt }] }],
+        }),
+      });
+      if (!r.ok) return res.json({ skipped: true, status: r.status });
+      const j: any = await r.json();
+      const text: string = (j.content?.[0]?.text || "").trim();
+      const match = text.match(/\{[\s\S]*\}/);
+      if (!match) return res.json({ skipped: true, reason: "no_json" });
+      const parsed = JSON.parse(match[0]);
+      const patch: any = { aiClassified: true };
+      if (parsed.room && !photo.room) patch.room = String(parsed.room).slice(0, 60);
+      if (parsed.damageType && !photo.damageType) patch.damageType = String(parsed.damageType).slice(0, 30);
+      if (parsed.severity && !photo.severity) patch.severity = String(parsed.severity).slice(0, 30);
+      if (parsed.caption && (!photo.caption || photo.caption === photo.filename)) patch.caption = String(parsed.caption).slice(0, 240);
+      const updated = storage.updatePhoto(id, patch);
+      res.json({ updated, ai: parsed });
+    } catch (e: any) {
+      res.json({ skipped: true, error: e?.message });
+    }
+  }));
+
+  // ── Floor plan (one JSON blob per job) ────────────────────────────────────────
+  app.get("/api/jobs/:id/floor-plan", (req, res) => {
+    const row = storage.getFloorPlan(Number(req.params.id));
+    if (!row) return res.status(404).json({ error: "not_found" });
+    res.json(row);
+  });
+  app.put("/api/jobs/:id/floor-plan", (req, res) => {
+    const jobId = Number(req.params.id);
+    const planJson: string = typeof req.body?.planJson === "string" ? req.body.planJson : JSON.stringify(req.body || {});
+    // Validate it's parseable JSON with a rooms array — refuse garbage so
+    // corrupted saves never brick the sketcher.
+    try {
+      const parsed = JSON.parse(planJson);
+      if (!parsed || !Array.isArray(parsed.rooms)) throw new Error("missing_rooms");
+    } catch (e: any) {
+      return res.status(400).json({ error: "bad_plan_json", detail: e?.message });
+    }
+    const updatedBy = (req as any).session?.user?.name || (req as any).session?.user?.email || null;
+    res.json(storage.upsertFloorPlan(jobId, planJson, updatedBy));
+  });
+
+  // ── Public photo report share tokens ──────────────────────────────────────
+  // Authenticated create: any authed staff can mint a token for a job.
+  // Default 30-day expiry per user preference.
+  app.post("/api/jobs/:id/share-tokens", wrapAsync(async (req, res) => {
+    const jobId = Number(req.params.id);
+    const template = String(req.body?.template || "adjuster");
+    const days = Number(req.body?.expiresInDays || 30);
+    const photoIds = Array.isArray(req.body?.photoIds) ? JSON.stringify(req.body.photoIds) : null;
+    const token = require("crypto").randomBytes(24).toString("base64url");
+    const expiresAt = new Date(Date.now() + days * 24 * 3600 * 1000).toISOString();
+    const createdBy = (req as any).session?.user?.name || (req as any).session?.user?.email || null;
+    const row = storage.createShareToken({ token, jobId, template, photoIds, createdBy, expiresAt } as any);
+    res.json(row);
+  }));
+  app.get("/api/jobs/:id/share-tokens", (req, res) => {
+    res.json(storage.listShareTokensForJob(Number(req.params.id)));
+  });
+  app.delete("/api/share-tokens/:token", (req, res) => {
+    storage.revokeShareToken(String(req.params.token));
+    res.json({ ok: true });
+  });
+  // Public read — NO auth. Returns job photos + floor plan for the report.
+  // Bumps view_count + last_viewed_at so the tech knows when the adjuster opened it.
+  app.get("/api/public/reports/:token", wrapAsync(async (req, res) => {
+    const token = String(req.params.token);
+    const row: any = storage.getShareToken(token);
+    if (!row) return res.status(404).json({ error: "not_found" });
+    if (row.revoked) return res.status(410).json({ error: "revoked" });
+    if (new Date(row.expiresAt).getTime() < Date.now()) return res.status(410).json({ error: "expired" });
+    storage.bumpShareTokenView(token);
+    const rows = storage.getPhotosByJob(row.jobId) as any[];
+    await hydrateImageRows(rows, { urlField: "dataUrl", keyField: "storageKey" });
+    // Optional subset by explicit photoIds list.
+    let photos = rows;
+    if (row.photoIds) {
+      try {
+        const ids = new Set(JSON.parse(row.photoIds).map((n: any) => Number(n)));
+        photos = rows.filter(p => ids.has(p.id));
+      } catch {}
+    }
+    const plan = storage.getFloorPlan(row.jobId) || null;
+    const job: any = (storage as any).getJob?.(row.jobId) || null;
+    res.json({
+      template: row.template,
+      expiresAt: row.expiresAt,
+      viewCount: row.viewCount,
+      job: job ? {
+        jobNumber: job.jobNumber, customer: job.customer, address: job.address,
+        city: job.city, state: job.state, zip: job.zip, causeOfLoss: job.causeOfLoss,
+      } : null,
+      floorPlan: plan ? JSON.parse(plan.planJson || "{}") : null,
+      photos,
+    });
+  }));
 
   // ── Channels & Messages ───────────────────────────────────────────────────
   app.get("/api/channels", (_req, res) => { res.json(storage.getChannels()); });

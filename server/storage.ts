@@ -779,6 +779,61 @@ if (!techNotifCols.includes("link")) {
 }
 // Index for the hot query on the bell (unread for a specific employee).
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_tech_notif_emp_read ON tech_notifications(employee_id, read)`);
+
+// Photo enrichment migration — EXIF + room + annotations + damage class +
+// voice + AI-classification flag. All nullable so legacy photos load fine.
+const photoCols3 = (sqlite.prepare("PRAGMA table_info(photos)").all() as any[]).map((c: any) => c.name);
+const photoAdditions: [string, string][] = [
+  ["latitude", "TEXT"],
+  ["longitude", "TEXT"],
+  ["original_taken_at", "TEXT"],
+  ["device_make", "TEXT"],
+  ["device_model", "TEXT"],
+  ["room", "TEXT"],
+  ["damage_type", "TEXT"],
+  ["severity", "TEXT"],
+  ["ai_classified", "INTEGER DEFAULT 0"],
+  ["annotations_json", "TEXT"],
+  ["voice_note_url", "TEXT"],
+  ["voice_note_transcript", "TEXT"],
+  ["floor_plan_room_id", "TEXT"],
+];
+for (const [col, type] of photoAdditions) {
+  if (!photoCols3.includes(col)) sqlite.exec(`ALTER TABLE photos ADD COLUMN ${col} ${type}`);
+}
+// Hot indexes for the cross-job photo search page.
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_photos_job ON photos(job_id)`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_photos_room ON photos(room)`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_photos_damage ON photos(damage_type)`);
+
+// Public share tokens table for photo reports (no login required to view).
+sqlite.exec(`CREATE TABLE IF NOT EXISTS photo_share_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token TEXT NOT NULL UNIQUE,
+  job_id INTEGER NOT NULL,
+  template TEXT NOT NULL DEFAULT 'adjuster',
+  photo_ids TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT '',
+  expires_at TEXT NOT NULL,
+  view_count INTEGER DEFAULT 0,
+  last_viewed_at TEXT,
+  revoked INTEGER DEFAULT 0
+)`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_share_tokens_token ON photo_share_tokens(token)`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_share_tokens_job ON photo_share_tokens(job_id)`);
+
+// Floor plans: one row per job holding a JSON sketch. Kept intentionally
+// schemaless (`plan_json`) so we can iterate the sketch shape without more
+// ALTER TABLEs. UNIQUE(job_id) enforces one plan per job — upserts overwrite.
+sqlite.exec(`CREATE TABLE IF NOT EXISTS floor_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER NOT NULL UNIQUE,
+  plan_json TEXT NOT NULL DEFAULT '{"rooms":[]}',
+  updated_at TEXT NOT NULL DEFAULT '',
+  updated_by TEXT
+)`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_photos_floor_room ON photos(floor_plan_room_id)`);
 // data_url on photos was declared NOT NULL originally; SQLite can't drop that
 // constraint in place, so we simply write empty string when the file lives in
 // the bucket and the existing NOT NULL check passes.
@@ -1017,6 +1072,15 @@ export interface IStorage {
   getPhotosByJob(jobId: number): schema.Photo[];
   createPhoto(data: schema.InsertPhoto): schema.Photo;
   deletePhoto(id: number): void;
+  getPhoto(id: number): schema.Photo | undefined;
+  updatePhoto(id: number, patch: Partial<schema.InsertPhoto>): schema.Photo;
+  getFloorPlan(jobId: number): schema.FloorPlan | undefined;
+  upsertFloorPlan(jobId: number, planJson: string, updatedBy?: string): schema.FloorPlan;
+  createShareToken(row: schema.InsertPhotoShareToken): schema.PhotoShareToken;
+  getShareToken(token: string): schema.PhotoShareToken | undefined;
+  bumpShareTokenView(token: string): void;
+  revokeShareToken(token: string): void;
+  listShareTokensForJob(jobId: number): schema.PhotoShareToken[];
 
   // Channels & Messages
   getChannels(): schema.Channel[];
@@ -1278,6 +1342,49 @@ class SqliteStorage implements IStorage {
     return db.insert(schema.photos).values(d).returning().get();
   }
   deletePhoto(id: number) { db.delete(schema.photos).where(eq(schema.photos.id, id)).run(); }
+  getPhoto(id: number) { return db.select().from(schema.photos).where(eq(schema.photos.id, id)).get(); }
+  updatePhoto(id: number, patch: Partial<schema.InsertPhoto>) {
+    return db.update(schema.photos).set(patch).where(eq(schema.photos.id, id)).returning().get();
+  }
+
+  // ── Floor plans ───────────────────────────────────────────────────────────
+  // One row per job (UNIQUE(job_id)). Upsert semantics let the client just
+  // PUT the plan without worrying about first-vs-subsequent save.
+  getFloorPlan(jobId: number) {
+    return db.select().from(schema.floorPlans).where(eq(schema.floorPlans.jobId, jobId)).get();
+  }
+  upsertFloorPlan(jobId: number, planJson: string, updatedBy?: string) {
+    const existing = this.getFloorPlan(jobId);
+    const now = new Date().toISOString();
+    if (existing) {
+      return db.update(schema.floorPlans)
+        .set({ planJson, updatedAt: now, updatedBy: updatedBy || null })
+        .where(eq(schema.floorPlans.jobId, jobId))
+        .returning().get();
+    }
+    return db.insert(schema.floorPlans)
+      .values({ jobId, planJson, updatedAt: now, updatedBy: updatedBy || null })
+      .returning().get();
+  }
+
+  // ── Photo share tokens ───────────────────────────────────────────────────────
+  createShareToken(row: schema.InsertPhotoShareToken) {
+    const d = { ...row, createdAt: new Date().toISOString() };
+    return db.insert(schema.photoShareTokens).values(d).returning().get();
+  }
+  getShareToken(token: string) {
+    return db.select().from(schema.photoShareTokens).where(eq(schema.photoShareTokens.token, token)).get();
+  }
+  bumpShareTokenView(token: string) {
+    sqlite.prepare(`UPDATE photo_share_tokens SET view_count = COALESCE(view_count,0) + 1, last_viewed_at = ? WHERE token = ?`)
+      .run(new Date().toISOString(), token);
+  }
+  revokeShareToken(token: string) {
+    sqlite.prepare(`UPDATE photo_share_tokens SET revoked = 1 WHERE token = ?`).run(token);
+  }
+  listShareTokensForJob(jobId: number) {
+    return db.select().from(schema.photoShareTokens).where(eq(schema.photoShareTokens.jobId, jobId)).all();
+  }
 
   // Channels & Messages
   getChannels() { return db.select().from(schema.channels).all(); }
