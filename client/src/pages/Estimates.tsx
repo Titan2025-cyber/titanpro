@@ -19,8 +19,20 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 export default function Estimates() {
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ jobId: "", title: "", status: "draft" });
+  // Auto-open the New Estimate dialog when we arrived from a Job page
+  // (which passes ?jobId= in the URL). Saves the user a click.
+  const _initialAuto = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("jobId");
+  const [open, setOpen] = useState(!!_initialAuto);
+  // Phase defaults to mitigation — matches the Job page filter's default.
+  // Pre-fills jobId and phase from ?jobId= and ?phase= query params so the
+  // "New Estimate" button on a Job screen carries context through.
+  const initialParams = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
+  const [form, setForm] = useState({
+    jobId: initialParams.get("jobId") || "",
+    title: "",
+    status: "draft",
+    phase: initialParams.get("phase") || "mitigation",
+  });
 
   const { data: estimates = [], isLoading } = useQuery<Estimate[]>({ queryKey: ["/api/estimates"] });
   const { data: jobs = [] } = useQuery<Job[]>({ queryKey: ["/api/jobs"] });
@@ -32,11 +44,12 @@ export default function Estimates() {
   const createMutation = useMutation({
     mutationFn: (data: any) => apiRequest("POST", "/api/estimates", data),
     onSuccess: () => {
+      // Refresh every consumer of estimate data:
+      //   • /api/estimates              — global list on this page
+      //   • /api/jobs/:id/estimates     — per-job Estimates tab on JobDetail
+      //   • /api/jobs/financials       — Financial Summary card totals
       queryClient.invalidateQueries({ queryKey: ["/api/estimates"] });
-      // Also refresh the per-job financials so the Job → Activity →
-      // Financial Summary card picks up the new estimate total. Without
-      // this the card stays stuck on the value that was cached at page
-      // load and won't reflect the estimate just created.
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
       setOpen(false);
     },
@@ -52,6 +65,7 @@ export default function Estimates() {
     mutationFn: (estId: number) => apiRequest("DELETE", `/api/estimates/${estId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/estimates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
       toast({ title: "Estimate deleted" });
     },
@@ -87,6 +101,19 @@ export default function Estimates() {
               <div>
                 <Label>Title</Label>
                 <Input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="e.g. Water Mitigation Estimate" />
+              </div>
+              <div>
+                <Label>Phase</Label>
+                <Select value={form.phase} onValueChange={v => setForm(f => ({ ...f, phase: v }))}>
+                  <SelectTrigger data-testid="select-estimate-phase"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="mitigation">Mitigation</SelectItem>
+                    <SelectItem value="reconstruction">Reconstruction</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  The Job page shows Mitigation and Reconstruction estimates separately — pick the phase you want this estimate to appear under.
+                </p>
               </div>
               <Button
                 className="w-full bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red-dark))] text-white"

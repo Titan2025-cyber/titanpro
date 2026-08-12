@@ -1401,7 +1401,11 @@ export default function JobDetail() {
         <TabsContent value="estimates" className="mt-4">
           <div className="flex justify-between items-center mb-3">
             <p className="text-sm text-muted-foreground">{visibleEstimates.length} estimate(s)<span className="capitalize"> · {phaseFilter}</span></p>
-            <Link href="/estimates">
+            {/* Carry the current job id + phase into the New Estimate
+                dialog so the estimate lands on the phase the user is
+                actually viewing (was defaulting to mitigation and
+                appearing missing when the user was on reconstruction). */}
+            <Link href={`/estimates?jobId=${job.id}&phase=${phaseFilter}`}>
               <Button size="sm" variant="outline"><FileText className="w-3 h-3 mr-1" />New Estimate</Button>
             </Link>
           </div>

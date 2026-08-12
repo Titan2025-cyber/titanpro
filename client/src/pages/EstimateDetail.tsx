@@ -91,6 +91,9 @@ export default function EstimateDetail() {
     mutationFn: (data: any) => apiRequest("PATCH", `/api/estimates/${id}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/estimates"] });
+      // Job screen Estimates tab reads from /api/jobs/:id/estimates —
+      // refresh it too so a saved line-item change shows up under the job.
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       // Financial Summary on the Job → Activity tab reads from
       // /api/jobs/financials which sums estimate totals. Refresh it
       // whenever the estimate changes so the card updates immediately.
@@ -111,6 +114,7 @@ export default function EstimateDetail() {
     mutationFn: () => apiRequest("DELETE", `/api/estimates/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/estimates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
       toast({ title: "Estimate deleted" });
       setLocation("/estimates");
