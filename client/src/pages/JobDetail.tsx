@@ -1656,12 +1656,16 @@ function EditableCustomerCard(props: {
  */
 function InsuranceEditor({ job, updateJob }: { job: any; updateJob: any }) {
   const [editing, setEditing] = useState(false);
+  // NOTE: the schema column is `insuranceCarrier` (DB: insurance_carrier).
+  // An earlier version used `insuranceCompany`, which Drizzle silently
+  // dropped on PATCH because it wasn't a real column — so the save appeared
+  // to succeed but nothing persisted. Always read + write insuranceCarrier.
   const [draft, setDraft] = useState({
     adjusterName: job.adjusterName ?? "",
     adjusterPhone: job.adjusterPhone ?? "",
     policyNumber: job.policyNumber ?? "",
     claimNumber: job.claimNumber ?? "",
-    insuranceCompany: (job as any).insuranceCompany ?? "",
+    insuranceCarrier: job.insuranceCarrier ?? "",
   });
   // Sync draft whenever the underlying job changes (e.g. after save invalidation).
   useEffect(() => {
@@ -1670,9 +1674,9 @@ function InsuranceEditor({ job, updateJob }: { job: any; updateJob: any }) {
       adjusterPhone: job.adjusterPhone ?? "",
       policyNumber: job.policyNumber ?? "",
       claimNumber: job.claimNumber ?? "",
-      insuranceCompany: (job as any).insuranceCompany ?? "",
+      insuranceCarrier: job.insuranceCarrier ?? "",
     });
-  }, [job.adjusterName, job.adjusterPhone, job.policyNumber, job.claimNumber, (job as any).insuranceCompany]);
+  }, [job.adjusterName, job.adjusterPhone, job.policyNumber, job.claimNumber, job.insuranceCarrier]);
 
   const save = async () => {
     await updateJob.mutateAsync({
@@ -1680,7 +1684,7 @@ function InsuranceEditor({ job, updateJob }: { job: any; updateJob: any }) {
       adjusterPhone: draft.adjusterPhone.trim() || null,
       policyNumber: draft.policyNumber.trim() || null,
       claimNumber: draft.claimNumber.trim() || null,
-      insuranceCompany: draft.insuranceCompany.trim() || null,
+      insuranceCarrier: draft.insuranceCarrier.trim() || null,
     });
     setEditing(false);
   };
@@ -1711,13 +1715,13 @@ function InsuranceEditor({ job, updateJob }: { job: any; updateJob: any }) {
         {editing ? (
           <div className="grid grid-cols-2 gap-3 text-sm">
             <div className="col-span-2">
-              <Label className="text-xs">Insurance Company</Label>
+              <Label className="text-xs">Insurance Carrier</Label>
               <Input
                 className="mt-1"
-                value={draft.insuranceCompany}
-                onChange={e => setDraft(d => ({ ...d, insuranceCompany: e.target.value }))}
+                value={draft.insuranceCarrier}
+                onChange={e => setDraft(d => ({ ...d, insuranceCarrier: e.target.value }))}
                 placeholder="e.g. State Farm, Allstate"
-                data-testid="input-insurance-company"
+                data-testid="input-insurance-carrier"
               />
             </div>
             <div>
