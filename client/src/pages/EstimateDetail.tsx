@@ -158,7 +158,15 @@ export default function EstimateDetail() {
         unitPrice: item.unitPrice,
         total: item.total,
       }));
-    saveItems([...lineItems, ...newItems]);
+    if (newItems.length === 0) {
+      toast({ title: "No items selected", description: "Pick at least one scope item to add.", variant: "destructive" });
+      return;
+    }
+    // Structural change — save immediately, not debounced. Otherwise the
+    // Scope Engine "Add" click looked like it did nothing when the user
+    // navigated away before the 500 ms debounced PATCH fired.
+    saveItems([...lineItems, ...newItems], true);
+    toast({ title: `${newItems.length} item${newItems.length === 1 ? "" : "s"} added to estimate` });
     setScopeResult(null);
     setScopeText("");
     setSelectedScopeItems(new Set());
