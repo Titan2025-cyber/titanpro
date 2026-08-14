@@ -12,6 +12,7 @@ import { initAuditAndTrash } from "./auditAndTrash";
 import { registerAnalyticsRoutes } from "./routes_analytics";
 import { registerSubcontractorRoutes } from "./routes_subcontractors";
 import { registerContactAdminRoutes } from "./routes_contact_admin";
+import { registerExternalDocRoutes } from "./routes_external_docs";
 import { registerRampRoutes } from "./routes_ramp";
 import { registerRoutePlannerRoutes } from "./routes_routeplanner";
 import { registerSuite5Routes } from "./routes_suite5";
@@ -649,6 +650,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerAnalyticsRoutes(app, sqlite as any, requireStaffAuth);
   registerSubcontractorRoutes(app, sqlite as any, requireStaffAuth);
   registerContactAdminRoutes(app, sqlite as any, requireStaffAuth);
+  registerExternalDocRoutes(app, sqlite as any, requireStaffAuth);
 
   // ── In-app notification bell (per-user) ──────────────────────────────────
   // Every endpoint is scoped to the authenticated employee — no name picker
@@ -5276,6 +5278,30 @@ Approve in Partner Portal → Admin View.
   try { sqlite.exec(`ALTER TABLE storm_events ADD COLUMN noaa_alert_id TEXT`); } catch(_) {}
   try { sqlite.exec(`ALTER TABLE storm_events ADD COLUMN noaa_severity TEXT`); } catch(_) {}
   try { sqlite.exec(`ALTER TABLE storm_events ADD COLUMN noaa_event TEXT`); } catch(_) {}
+
+  // #18: external-document uploads for estimates and invoices.
+  // Techs & PMs can drop a PDF/JPG written outside Titan Pro (Xactimate,
+  // Symbility, a subcontractor's invoice, an insurance carrier's approval,
+  // whatever) into the job's estimate or invoice list. `source = 'external'`
+  // rows are minimal: just the file + total + vendor label. Internal rows
+  // (source = 'internal' or NULL) keep the full line-items behavior.
+  try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN source TEXT DEFAULT 'internal'`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN external_file_url TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN external_file_key TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN external_file_name TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN external_file_mime TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN external_file_size INTEGER`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN external_vendor TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN uploaded_by TEXT`); } catch(_) {}
+
+  try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN source TEXT DEFAULT 'internal'`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN external_file_url TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN external_file_key TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN external_file_name TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN external_file_mime TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN external_file_size INTEGER`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN external_vendor TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN uploaded_by TEXT`); } catch(_) {}
 
   // Scheduler heartbeat table — tracks last run of each job so a restart
   // doesn't re-fire hourly tasks and we can see it's alive.

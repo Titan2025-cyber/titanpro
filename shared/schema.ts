@@ -110,6 +110,18 @@ export const estimates = sqliteTable("estimates", {
   // Negotiation / rebuttal data
   rebuttalText: text("rebuttal_text"),
   carrierAdjustment: real("carrier_adjustment"),
+  // External-document support: an estimate written outside Titan Pro (a PDF
+  // from Xactimate, Symbility, a subcontractor's own template, etc.) can be
+  // attached directly to a job. `source = 'external'` skips line-items and
+  // uses the attached file as the source of truth. See migration #18.
+  source: text("source").default("internal"),          // 'internal' | 'external'
+  externalFileUrl: text("external_file_url"),
+  externalFileKey: text("external_file_key"),
+  externalFileName: text("external_file_name"),
+  externalFileMime: text("external_file_mime"),
+  externalFileSize: integer("external_file_size"),
+  externalVendor: text("external_vendor"),             // e.g. 'Xactimate', 'ACME Roofing'
+  uploadedBy: text("uploaded_by"),
   createdAt: text("created_at").notNull().default(""),
 });
 export const insertEstimateSchema = createInsertSchema(estimates).omit({ id: true });
@@ -134,6 +146,15 @@ export const invoices = sqliteTable("invoices", {
   paidAt: text("paid_at"),
   notes: text("notes"),
   phase: text("phase").default("mitigation"), // mitigation | reconstruction
+  // External-document support (see estimates table above)
+  source: text("source").default("internal"),          // 'internal' | 'external'
+  externalFileUrl: text("external_file_url"),
+  externalFileKey: text("external_file_key"),
+  externalFileName: text("external_file_name"),
+  externalFileMime: text("external_file_mime"),
+  externalFileSize: integer("external_file_size"),
+  externalVendor: text("external_vendor"),
+  uploadedBy: text("uploaded_by"),
   createdAt: text("created_at").notNull().default(""),
 });
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true });

@@ -1,7 +1,8 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useParams, Link } from "wouter";
 import { useState, lazy, Suspense, useEffect, useRef } from "react";
-import { ArrowLeft, MapPin, Phone, Mail, Shield, FileText, Receipt, Droplets, Camera, FolderOpen, TrendingUp, StickyNote, Lock, Globe, Pencil, Trash2, Plus, Check, X, Wrench, MessageSquare, Star, Send, KeyRound, Copy, RefreshCw, ExternalLink, ShieldCheck, HandCoins } from "lucide-react";
+import { ArrowLeft, MapPin, Phone, Mail, Shield, FileText, Receipt, Droplets, Camera, FolderOpen, TrendingUp, StickyNote, Lock, Globe, Pencil, Trash2, Plus, Check, X, Wrench, MessageSquare, Star, Send, KeyRound, Copy, RefreshCw, ExternalLink, ShieldCheck, HandCoins, Upload, Paperclip } from "lucide-react";
+import UploadExternalDocDialog from "@/components/UploadExternalDocDialog";
 import { StageSelector, DateManager, PROGRESS_STAGES } from "@/components/JobPipeline";
 import { JobAnalytics } from "@/components/JobAnalytics";
 import { JobCostingPanel } from "@/pages/JobCosting";
@@ -810,6 +811,11 @@ export default function JobDetail() {
   // Mitigation and Reconstruction are fully independent data sets on the same job:
   // each phase shows ONLY its own estimates, invoices, photos, and documents.
   const [phaseFilter, setPhaseFilter] = useState<string>("mitigation");
+  // External-document upload dialogs — dropped in below the existing
+  // "New Estimate" / "New Invoice" buttons on the Estimates and Invoices
+  // tabs. See UploadExternalDocDialog.tsx.
+  const [uploadEstOpen, setUploadEstOpen] = useState(false);
+  const [uploadInvOpen, setUploadInvOpen] = useState(false);
 
   // Tabs that only apply to the mitigation phase. When the user switches to
   // Reconstruction, these are hidden — auto-switch away if one is active.
@@ -1405,48 +1411,107 @@ export default function JobDetail() {
 
         {/* ── Estimates Tab ── */}
         <TabsContent value="estimates" className="mt-4">
-          <div className="flex justify-between items-center mb-3">
+          <div className="flex justify-between items-center mb-3 gap-2">
             <p className="text-sm text-muted-foreground">{visibleEstimates.length} estimate(s)<span className="capitalize"> · {phaseFilter}</span></p>
-            {/* Carry the current job id + phase into the New Estimate
-                dialog so the estimate lands on the phase the user is
-                actually viewing (was defaulting to mitigation and
-                appearing missing when the user was on reconstruction). */}
-            <Link href={`/estimates?jobId=${job.id}&phase=${phaseFilter}`}>
-              <Button size="sm" variant="outline"><FileText className="w-3 h-3 mr-1" />New Estimate</Button>
-            </Link>
+            <div className="flex items-center gap-2">
+              {/* Upload an outside-authored estimate PDF/image directly into
+                  this phase's bucket. See UploadExternalDocDialog. */}
+              <Button size="sm" variant="outline" onClick={() => setUploadEstOpen(true)}>
+                <Upload className="w-3 h-3 mr-1" />Upload external
+              </Button>
+              {/* Carry the current job id + phase into the New Estimate
+                  dialog so the estimate lands on the phase the user is
+                  actually viewing (was defaulting to mitigation and
+                  appearing missing when the user was on reconstruction). */}
+              <Link href={`/estimates?jobId=${job.id}&phase=${phaseFilter}`}>
+                <Button size="sm" variant="outline"><FileText className="w-3 h-3 mr-1" />New Estimate</Button>
+              </Link>
+            </div>
           </div>
           <div className="space-y-2">
-            {visibleEstimates.map(e => (
-              <Link key={e.id} href={`/estimates/${e.id}`}>
+            {visibleEstimates.map(e => {
+              const isExternal = (e as any).source === "external";
+              const inner = (
                 <Card className="hover:shadow-md transition-shadow cursor-pointer">
                   <CardContent className="p-3 flex items-center justify-between">
-                    <div>
-                      <p className="font-semibold text-sm">{e.title}</p>
-                      <p className="text-xs text-muted-foreground">{e.status}</p>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-sm truncate flex items-center gap-1.5">
+                        {isExternal && <Paperclip className="w-3 h-3 shrink-0 text-muted-foreground" />}
+                        {e.title}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {e.status}
+                        {isExternal && (e as any).externalVendor ? ` · ${(e as any).externalVendor}` : ""}
+                        {isExternal ? " · external" : ""}
+                      </p>
                     </div>
                     <p className="font-bold text-[hsl(var(--titan-blue))]">${(e.total || 0).toLocaleString()}</p>
                   </CardContent>
                 </Card>
-              </Link>
-            ))}
+              );
+              return isExternal ? (
+                <a
+                  key={e.id}
+                  href={`/api/estimates/${e.id}/external-file`}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open external estimate"
+                >
+                  {inner}
+                </a>
+              ) : (
+                <Link key={e.id} href={`/estimates/${e.id}`}>{inner}</Link>
+              );
+            })}
             {visibleEstimates.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">No estimates for {phaseFilter} yet.</p>}
           </div>
         </TabsContent>
 
         {/* ── Invoices Tab ── */}
         <TabsContent value="invoices" className="mt-4">
+          <div className="flex justify-between items-center mb-3 gap-2">
+            <p className="text-sm text-muted-foreground">{visibleInvoices.length} invoice(s)<span className="capitalize"> · {phaseFilter}</span></p>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => setUploadInvOpen(true)}>
+                <Upload className="w-3 h-3 mr-1" />Upload external
+              </Button>
+            </div>
+          </div>
           <div className="space-y-2">
-            {visibleInvoices.map(inv => (
-              <Card key={inv.id}>
-                <CardContent className="p-3 flex items-center justify-between">
-                  <div>
-                    <p className="font-semibold text-sm">{inv.invoiceNumber}</p>
-                    <p className="text-xs text-muted-foreground">{inv.status} · Due {inv.dueDate}</p>
-                  </div>
-                  <p className="font-bold text-green-600">${(inv.total || 0).toLocaleString()}</p>
-                </CardContent>
-              </Card>
-            ))}
+            {visibleInvoices.map(inv => {
+              const isExternal = (inv as any).source === "external";
+              const inner = (
+                <Card className={isExternal ? "hover:shadow-md transition-shadow cursor-pointer" : ""}>
+                  <CardContent className="p-3 flex items-center justify-between">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-sm truncate flex items-center gap-1.5">
+                        {isExternal && <Paperclip className="w-3 h-3 shrink-0 text-muted-foreground" />}
+                        {inv.invoiceNumber}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {inv.status}{inv.dueDate ? ` · Due ${inv.dueDate}` : ""}
+                        {isExternal && (inv as any).externalVendor ? ` · ${(inv as any).externalVendor}` : ""}
+                        {isExternal ? " · external" : ""}
+                      </p>
+                    </div>
+                    <p className="font-bold text-green-600">${(inv.total || 0).toLocaleString()}</p>
+                  </CardContent>
+                </Card>
+              );
+              return isExternal ? (
+                <a
+                  key={inv.id}
+                  href={`/api/invoices/${inv.id}/external-file`}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open external invoice"
+                >
+                  {inner}
+                </a>
+              ) : (
+                <div key={inv.id}>{inner}</div>
+              );
+            })}
             {visibleInvoices.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">No invoices for {phaseFilter} yet.</p>}
           </div>
         </TabsContent>
@@ -1552,6 +1617,24 @@ export default function JobDetail() {
           <JobSMSThread jobId={Number(id)} contactPhone={contact?.phone ?? undefined} />
         </TabsContent>
       </Tabs>
+
+      {/* External-doc upload dialogs (mounted once, opened from the tab headers) */}
+      <UploadExternalDocDialog
+        kind="estimate"
+        jobId={Number(id)}
+        phase={phaseFilter}
+        open={uploadEstOpen}
+        onOpenChange={setUploadEstOpen}
+        onUploaded={() => queryClient.invalidateQueries({ queryKey: ["/api/jobs", id, "estimates"] })}
+      />
+      <UploadExternalDocDialog
+        kind="invoice"
+        jobId={Number(id)}
+        phase={phaseFilter}
+        open={uploadInvOpen}
+        onOpenChange={setUploadInvOpen}
+        onUploaded={() => queryClient.invalidateQueries({ queryKey: ["/api/jobs", id, "invoices"] })}
+      />
     </div>
   );
 }
