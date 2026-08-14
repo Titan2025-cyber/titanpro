@@ -11,6 +11,7 @@ import { makeNotifier } from "./notify_bell";
 import { initAuditAndTrash } from "./auditAndTrash";
 import { registerAnalyticsRoutes } from "./routes_analytics";
 import { registerSubcontractorRoutes } from "./routes_subcontractors";
+import { registerContactAdminRoutes } from "./routes_contact_admin";
 import { registerRampRoutes } from "./routes_ramp";
 import { registerRoutePlannerRoutes } from "./routes_routeplanner";
 import { registerSuite5Routes } from "./routes_suite5";
@@ -511,10 +512,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!c) return res.status(404).json({ error: "Not found" });
     res.json(c);
   });
-  app.delete("/api/contacts/:id", (req, res) => {
-    storage.deleteContact(Number(req.params.id));
-    res.json({ success: true });
-  });
+  // DELETE /api/contacts/:id — safe-delete handler is registered later via
+  // registerContactAdminRoutes(). The old naive handler was removed because it
+  // orphaned jobs, invoices, portal sessions, and payout requests.
+
 
   // ── Jobs ──────────────────────────────────────────────────────────────────
   app.get("/api/jobs", (_req, res) => { res.json(storage.getJobs()); });
@@ -647,6 +648,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // aging AR, lead conversion, and margin distribution in one payload.
   registerAnalyticsRoutes(app, sqlite as any, requireStaffAuth);
   registerSubcontractorRoutes(app, sqlite as any, requireStaffAuth);
+  registerContactAdminRoutes(app, sqlite as any, requireStaffAuth);
 
   // ── In-app notification bell (per-user) ──────────────────────────────────
   // Every endpoint is scoped to the authenticated employee — no name picker
