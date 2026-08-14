@@ -23,7 +23,7 @@ export const ROLE_PERMISSIONS: Record<string, string[]> = {
     "partner-portal", "partner-portal:write", "customer-portal",
     "safety", "certifications", "follow-ups", "reports", "reports:advanced",
     "activity-log", "sms", "time-clock", "settings", "user-management",
-    "ramp", "route-planner", "business-dev", "finance",
+    "route-planner", "business-dev", "finance",
     "weekly-billing", // owner-only executive report
     "ai-agent", // AI Agent Center (owner + general manager)
     "hr", // HR Management Module + AI HR Assistant
@@ -49,7 +49,7 @@ export const ROLE_PERMISSIONS: Record<string, string[]> = {
     "partner-portal", "customer-portal",
     "safety", "certifications", "follow-ups", "reports", "reports:advanced",
     "activity-log", "sms", "time-clock",
-    "ramp", "route-planner", "business-dev", "finance",
+    "route-planner", "business-dev", "finance",
     "hr", // HR Management Module + AI HR Assistant
   ],
   tech: [

@@ -581,7 +581,6 @@ export default function Login() {
           <SiGmail /><SiQuickbooks /><SiStripe />
           <span className="titan-runson-word">Xactimate</span>
           <span className="titan-runson-word">CompanyCam</span>
-          <span className="titan-runson-word">Ramp</span>
         </div>
 
         {/* Proprietary / copyright footer */}

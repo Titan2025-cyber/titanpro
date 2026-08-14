@@ -13,7 +13,6 @@ import { registerAnalyticsRoutes } from "./routes_analytics";
 import { registerSubcontractorRoutes } from "./routes_subcontractors";
 import { registerContactAdminRoutes } from "./routes_contact_admin";
 import { registerExternalDocRoutes } from "./routes_external_docs";
-import { registerRampRoutes } from "./routes_ramp";
 import { registerRoutePlannerRoutes } from "./routes_routeplanner";
 import { registerSuite5Routes } from "./routes_suite5";
 import { registerSuite6Routes } from "./routes_suite6";
@@ -4610,7 +4609,7 @@ cody@titanrestorationllc.com`;
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── Server-side auth guard for suite/ramp/route-planner APIs ────────────────
+  // ── Server-side auth guard for suite/route-planner APIs ─────────────────────
   // These modules register their routes without per-route auth. Since the app can
   // run on a network-reachable host, we require a valid staff session for every
   // one of their endpoints by mounting requireStaffAuth on each path prefix before
@@ -4629,8 +4628,6 @@ cody@titanrestorationllc.com`;
     "/api/adjuster-courses", "/api/adjuster-enrollments", "/api/approved-claims",
     "/api/general-conditions", "/api/op-rebuttal", "/api/supplement-tracker",
     "/api/vehicle-maintenance", "/api/vehicles", "/api/xact-audit",
-    // ramp
-    "/api/ramp-transactions",
     // route planner
     "/api/route-stops", "/api/routes", "/api/trips",
     // consumables inventory
@@ -4663,9 +4660,6 @@ cody@titanrestorationllc.com`;
 
   // ── Suite 4 Routes ─────────────────────────────────────────────────────────
   registerSuite4Routes(app, sqlite, { requireRole });
-
-  // ── Ramp Routes ─────────────────────────────────────────────────────────────
-  registerRampRoutes(app, sqlite, { requireRole });
 
   // ── Route Planner Routes ───────────────────────────────────────────────────
   registerRoutePlannerRoutes(app, sqlite);
@@ -5189,6 +5183,12 @@ Approve in Partner Portal → Admin View.
   });
 
 
+  // ── Ramp removal cleanup — dropped 2026-08-14 ─────────────────────────────
+  // Ramp was never wired to real payouts. Removing the endpoints, UI, and tables.
+  try { sqlite.exec(`DROP TABLE IF EXISTS ramp_transactions`); } catch(_) {}
+  try { sqlite.exec(`DROP TABLE IF EXISTS ramp_payments`); } catch(_) {}
+  try { sqlite.prepare(`DELETE FROM integrations WHERE key = 'ramp'`).run(); } catch(_) {}
+
   // ── Partner Since migration ─────────────────────────────────────────────────
   try { sqlite.exec(`ALTER TABLE contacts ADD COLUMN partner_since TEXT`); } catch(_) {}
   // DocuSketch column migrations
@@ -5467,12 +5467,11 @@ Approve in Partner Portal → Admin View.
 
 
   // ══════════════════════════════════════════════════════════════════════════
-  // RAMP INTEGRATION — Bill Pay for partner/sub payouts
+  // INTEGRATIONS — shared kv-table + generic GET/PATCH settings API
+  // Used by QuickBooks (see below) and any future third-party integration.
   // ══════════════════════════════════════════════════════════════════════════
 
-  // Store Ramp config in a simple kv table
   try { sqlite.exec(`CREATE TABLE IF NOT EXISTS integrations (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)`); } catch(_) {}
-  try { sqlite.exec(`CREATE TABLE IF NOT EXISTS ramp_payments (id INTEGER PRIMARY KEY AUTOINCREMENT, payout_request_id INTEGER, contact_name TEXT, amount REAL, method TEXT, ramp_bill_id TEXT, status TEXT DEFAULT 'pending', submitted_at TEXT, error TEXT, created_at TEXT)`); } catch(_) {}
   try { sqlite.exec(`CREATE TABLE IF NOT EXISTS qb_invoices (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id INTEGER, qb_invoice_id TEXT, qb_customer_id TEXT, status TEXT DEFAULT 'synced', synced_at TEXT, qb_link TEXT)`); } catch(_) {}
   try { sqlite.exec(`CREATE TABLE IF NOT EXISTS qb_payments (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id INTEGER, qb_payment_id TEXT, amount REAL, received_at TEXT, created_at TEXT)`); } catch(_) {}
   // Stripe Checkout sessions (test mode). status: open | paid | expired. payout_status: pending | in_transit | paid
@@ -5498,80 +5497,6 @@ Approve in Partner Portal → Admin View.
     sqlite.prepare("INSERT INTO integrations (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
       .run(req.params.key, JSON.stringify(merged), new Date().toISOString());
     res.json({ ok: true });
-  }));
-
-  // POST /api/ramp/pay — submit a payout request to Ramp Bill Pay
-  // Real money movement: owner/admin only, with status + idempotency guards.
-  app.post("/api/ramp/pay", requireRole("owner", "admin"), wrapAsync(async (req, res) => {
-    const { payoutRequestId } = req.body;
-    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'ramp'").get();
-    if (!cfg) return res.status(400).json({ error: "Ramp not configured. Add API key in Settings → Integrations." });
-    const { apiKey, entityId, bankAccountId } = JSON.parse(cfg.value || "{}");
-    if (!apiKey) return res.status(400).json({ error: "Ramp API key not set." });
-
-    const pr: any = sqlite.prepare("SELECT * FROM payout_requests WHERE id = ?").get(payoutRequestId);
-    if (!pr) return res.status(404).json({ error: "Payout request not found" });
-
-    // Status precondition: only pay requests that are pending/approved. Block
-    // anything already paid or submitted so a partner is never double-paid.
-    const payableStatuses = ["pending", "approved"];
-    if (!payableStatuses.includes(String(pr.status || "").toLowerCase())) {
-      return res.status(409).json({ error: `This payout is already "${pr.status}" and cannot be paid again.` });
-    }
-    // Guard against a prior successful/in-flight Ramp submission for this request.
-    const priorPaid: any = sqlite.prepare("SELECT id FROM ramp_payments WHERE payout_request_id = ? AND status IN ('submitted','paid')").get(payoutRequestId);
-    if (priorPaid) {
-      return res.status(409).json({ error: "This payout has already been submitted to Ramp." });
-    }
-    // Amount sanity check.
-    const payAmount = Number(pr.amount);
-    if (!Number.isFinite(payAmount) || payAmount <= 0) {
-      return res.status(400).json({ error: "Payout amount must be a positive number." });
-    }
-
-    const contact: any = sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(pr.contact_id);
-    const now = new Date().toISOString();
-
-    // Create a Ramp bill via their API
-    try {
-      const resp = await fetch("https://api.ramp.com/developer/v1/bills", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          entity_id: entityId,
-          source_bank_account_id: bankAccountId,
-          amount: { amount: Math.round(payAmount * 100), currency_code: "USD" },
-          vendor_name: contact?.name || "Partner",
-          memo: `Titan Pro payout — Job #${pr.job_id || "N/A"} — ${contact?.name || "Partner"}`,
-          // Stable idempotency key (no timestamp) so a retry of the same payout
-          // request is de-duplicated by Ramp instead of creating a second bill.
-          idempotency_key: `titan-payout-${payoutRequestId}`,
-          line_items: [{ amount: { amount: Math.round(payAmount * 100), currency_code: "USD" }, memo: `Referral/sub payout` }],
-        }),
-      });
-      const data = await resp.json() as any;
-      if (!resp.ok) throw new Error(data.message || JSON.stringify(data));
-
-      sqlite.prepare("INSERT INTO ramp_payments (payout_request_id, contact_name, amount, method, ramp_bill_id, status, submitted_at, created_at) VALUES (?, ?, ?, ?, ?, 'submitted', ?, ?)")
-        .run(payoutRequestId, contact?.name, pr.amount, pr.method, data.id, now, now);
-      sqlite.prepare("UPDATE payout_requests SET status = 'paid', notes = ? WHERE id = ?")
-        .run(`Submitted to Ramp — Bill ID: ${data.id}`, payoutRequestId);
-
-      res.json({ ok: true, rampBillId: data.id, status: "submitted" });
-    } catch (err: any) {
-      sqlite.prepare("INSERT INTO ramp_payments (payout_request_id, contact_name, amount, status, error, submitted_at, created_at) VALUES (?, ?, ?, 'failed', ?, ?, ?)")
-        .run(payoutRequestId, contact?.name, pr.amount, err.message, now, now);
-      res.status(500).json({ error: err.message });
-    }
-  }));
-
-  // GET /api/ramp/payments — list all Ramp payment submissions
-  app.get("/api/ramp/payments", wrapAsync((req, res) => {
-    const rows = sqlite.prepare("SELECT * FROM ramp_payments ORDER BY created_at DESC LIMIT 100").all();
-    res.json(rows);
   }));
 
   // ══════════════════════════════════════════════════════════════════════════

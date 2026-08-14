@@ -1400,21 +1400,9 @@ function AdminView({
                       )}
                       {req.status === "approved" && (
                         <div className="flex gap-1 mt-2 flex-wrap">
-                          <Button size="sm" className="bg-orange-500 hover:bg-orange-600 text-white text-xs h-7 px-2"
-                            onClick={async () => {
-                              try {
-                                const r = await apiRequest("POST", "/api/ramp/pay", { payoutRequestId: req.id });
-                                const d = await r.json();
-                                if (!r.ok) throw new Error(d.error);
-                                queryClient.invalidateQueries({ queryKey: ["/api/payout-requests"] });
-                                alert("Submitted to Ramp! Bill ID: " + d.rampBillId);
-                              } catch(e: any) { alert("Ramp error: " + e.message); }
-                            }}>
-                            ⚡ Pay via Ramp
-                          </Button>
                           <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white text-xs h-7 px-2"
                             onClick={() => updatePayout.mutate({ id: req.id, data: { status: "paid", paidAt: new Date().toISOString() } })}>
-                            <CheckCircle className="w-3 h-3 mr-1" />Mark Paid Manually
+                            <CheckCircle className="w-3 h-3 mr-1" />Mark Paid
                           </Button>
                         </div>
                       )}

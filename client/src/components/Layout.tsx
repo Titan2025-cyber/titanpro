@@ -151,7 +151,6 @@ const navGroups: NavGroup[] = [
       { href: "/lien-waivers", label: "Lien Waivers", icon: FileCheck, permission: "finance" },
       { href: "/cash-flow", label: "Cash Flow Calendar", icon: Calendar, permission: "finance" },
       { href: "/payment-plans", label: "Payment Plans", icon: DollarSign, permission: "finance" },
-      { href: "/ramp-import", label: "Ramp Import", icon: CreditCard, permission: "ramp" },
       { href: "/qb-sync", label: "QuickBooks Sync", icon: BookMarked, permission: "finance" },
       { href: "/command-bi", label: "Command BI", icon: Brain, permission: "finance" },
       { href: "/nps-surveys", label: "NPS Surveys", icon: Star, permission: "finance" },

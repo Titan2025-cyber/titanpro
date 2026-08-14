@@ -131,7 +131,6 @@ const GeneralConditions = lazy(() => import("@/pages/GeneralConditions"));
 const AdjusterCE = lazy(() => import("@/pages/AdjusterCE"));
 const ApprovedClaimsLibrary = lazy(() => import("@/pages/ApprovedClaimsLibrary"));
 const FleetManager = lazy(() => import("@/pages/FleetManager"));
-const RampImport = lazy(() => import("@/pages/RampImport"));
 const CashFlowCalendar = lazy(() => import("@/pages/CashFlowCalendar"));
 const PaymentPlans = lazy(() => import("@/pages/PaymentPlans"));
 const SafetyChecklist = lazy(() => import("@/pages/SafetyChecklist"));
@@ -399,7 +398,6 @@ function AuthenticatedRoutes() {
         <Route path="/adjuster-ce"><Redirect to="/adjuster-hub?tab=ce" /></Route>
         <Route path="/approved-claims" component={() => <Page component={ApprovedClaimsLibrary} name="ApprovedClaimsLibrary" />} />
         <Route path="/fleet" component={() => <Page component={FleetManager} name="FleetManager" />} />
-        <Route path="/ramp-import" component={() => <Page component={RampImport} name="RampImport" />} />
 
         {/* Suite 7 — 11 Upgrades */}
         <Route path="/carrier-response-time"><Redirect to="/carrier-hub?tab=response-time" /></Route>

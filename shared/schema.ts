@@ -1324,27 +1324,6 @@ export const insertVehicleMaintenanceLogSchema = createInsertSchema(vehicleMaint
 export type InsertVehicleMaintenanceLog = z.infer<typeof insertVehicleMaintenanceLogSchema>;
 export type VehicleMaintenanceLog = typeof vehicleMaintenanceLogs.$inferSelect;
 
-// ── Ramp Transactions ─────────────────────────────────────────────────────────
-export const rampTransactions = sqliteTable("ramp_transactions", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  rampId: text("ramp_id"),                    // Ramp's own transaction ID (dedup)
-  jobId: integer("job_id"),                   // matched job (nullable until assigned)
-  cardHolder: text("card_holder"),
-  merchantName: text("merchant_name"),
-  merchantCategory: text("merchant_category"),
-  amount: real("amount").notNull(),           // always positive (expense)
-  currency: text("currency").notNull().default("USD"),
-  transactionDate: text("transaction_date").notNull(),
-  memo: text("memo"),
-  costCategory: text("cost_category"),        // e.g. materials, fuel, equipment, labor, other
-  matchStatus: text("match_status").notNull().default("unmatched"), // unmatched | auto | manual | skipped
-  importedAt: text("imported_at").notNull().default(""),
-  notes: text("notes"),
-});
-export const insertRampTransactionSchema = createInsertSchema(rampTransactions).omit({ id: true });
-export type InsertRampTransaction = z.infer<typeof insertRampTransactionSchema>;
-export type RampTransaction = typeof rampTransactions.$inferSelect;
-
 // ── Route Planner ─────────────────────────────────────────────────────────────
 export const savedRoutes = sqliteTable("saved_routes", {
   id: integer("id").primaryKey({ autoIncrement: true }),
