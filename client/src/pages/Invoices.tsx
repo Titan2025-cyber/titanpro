@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Plus, DollarSign, Eye, FileText, Pencil, Download, Trash2, BookOpen, RefreshCw, Link2, CheckCircle, Send, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -34,13 +34,27 @@ function fmtDate(value?: string | null): string {
 }
 
 export default function Invoices() {
-  const [open, setOpen] = useState(false);
+  // Pre-fill jobId and phase from ?jobId= and ?phase= query params so the
+  // "New Invoice" button on the Job page can deep-link into this dialog
+  // with the right job and phase already selected (matches Estimates.tsx).
+  const initialParams = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
+  const _prefillJobId = initialParams.get("jobId") || "";
+  const _prefillPhase = initialParams.get("phase") || "mitigation";
+
+  const [open, setOpen] = useState(!!_prefillJobId); // auto-open when deep-linked from a job
   const [payOpen, setPayOpen] = useState<number | null>(null);
   const [viewId, setViewId] = useState<number | null>(null);
   const [editId, setEditId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState({ status: "", adjustment: "", adjustmentReason: "", notes: "", dueDate: "", taxRate: "0" });
   const [editItems, setEditItems] = useState<LineItemRow[]>([]);
-  const [form, setForm] = useState({ jobId: "", contactId: "", invoiceNumber: `INV-${new Date().getFullYear()}-`, dueDate: "", taxRate: String(DEFAULT_TAX_RATE) });
+  const [form, setForm] = useState({
+    jobId: _prefillJobId,
+    contactId: "",
+    invoiceNumber: `INV-${new Date().getFullYear()}-`,
+    dueDate: "",
+    taxRate: String(DEFAULT_TAX_RATE),
+    phase: _prefillPhase,
+  });
   const [items, setItems] = useState<LineItemRow[]>([blankRow()]);
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState("check");
@@ -59,7 +73,7 @@ export default function Invoices() {
   const canCreate = !!form.jobId && parsedItems.some(it => it.description && it.total > 0);
 
   function resetForm() {
-    setForm({ jobId: "", contactId: "", invoiceNumber: `INV-${new Date().getFullYear()}-`, dueDate: "", taxRate: String(DEFAULT_TAX_RATE) });
+    setForm({ jobId: "", contactId: "", invoiceNumber: `INV-${new Date().getFullYear()}-`, dueDate: "", taxRate: String(DEFAULT_TAX_RATE), phase: "mitigation" });
     setItems([blankRow()]);
   }
 
@@ -107,6 +121,15 @@ export default function Invoices() {
   const { user } = useAuth();
   const { data: invoices = [], isLoading } = useQuery<Invoice[]>({ queryKey: ["/api/invoices"] });
   const { data: jobs = [] } = useQuery<Job[]>({ queryKey: ["/api/jobs"] });
+
+  // Once jobs are loaded, if we were deep-linked with a jobId, auto-fill the
+  // customer from the job’s contact so the user isn’t asked to pick it again.
+  useEffect(() => {
+    if (!_prefillJobId || !jobs.length || form.contactId) return;
+    const job = jobs.find(j => j.id === Number(_prefillJobId));
+    if (job?.contactId) setForm(f => ({ ...f, contactId: String(job.contactId) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobs, _prefillJobId]);
   const { data: contacts = [] } = useQuery<Contact[]>({ queryKey: ["/api/contacts"] });
 
   // Create invoice. When "send through QuickBooks" is on, the create-and-send
@@ -266,6 +289,21 @@ export default function Invoices() {
                 </Select>
               </div>
               <div><Label>Invoice #</Label><Input value={form.invoiceNumber} onChange={e => setForm(f => ({ ...f, invoiceNumber: e.target.value }))} /></div>
+              <div>
+                <Label>Phase</Label>
+                <Select value={form.phase} onValueChange={v => setForm(f => ({ ...f, phase: v }))}>
+                  <SelectTrigger data-testid="select-invoice-phase"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="mitigation">Mitigation</SelectItem>
+                    <SelectItem value="reconstruction">Reconstruction</SelectItem>
+                    <SelectItem value="invoice_pending">Invoice pending</SelectItem>
+                    <SelectItem value="complete">Complete</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  The Job page shows each phase's invoices separately — pick the phase this invoice belongs to.
+                </p>
+              </div>
 
               {/* Line items */}
               <div className="rounded-md border p-3 space-y-2">
@@ -357,6 +395,7 @@ export default function Invoices() {
                   subtotal: formSubtotal,
                   tax: formTax,
                   total: formTotal,
+                  phase: form.phase || "mitigation",
                 })}
               >{createMutation.isPending
                   ? (sendViaQb ? "Creating & sending…" : "Creating…")

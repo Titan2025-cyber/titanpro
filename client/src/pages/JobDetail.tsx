@@ -1516,9 +1516,17 @@ export default function JobDetail() {
           <div className="flex justify-between items-center mb-3 gap-2">
             <p className="text-sm text-muted-foreground">{visibleInvoices.length} invoice(s)<span className="capitalize"> · {phaseFilter}</span></p>
             <div className="flex items-center gap-2">
+              {/* Upload an outside-authored invoice PDF/image directly into
+                  this phase's bucket. See UploadExternalDocDialog. */}
               <Button size="sm" variant="outline" onClick={() => setUploadInvOpen(true)}>
                 <Upload className="w-3 h-3 mr-1" />Upload external
               </Button>
+              {/* Deep-link to the standalone Invoices page with jobId + phase
+                  pre-filled so the new invoice lands on the phase the user
+                  is actually viewing (matches the Estimates flow). */}
+              <Link href={`/invoices?jobId=${job.id}&phase=${phaseFilter}`}>
+                <Button size="sm" variant="outline"><Receipt className="w-3 h-3 mr-1" />New Invoice</Button>
+              </Link>
             </div>
           </div>
           <div className="space-y-2">
