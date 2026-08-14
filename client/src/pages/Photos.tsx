@@ -1,6 +1,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState, useRef } from "react";
-import { Camera, Upload, Trash2, FolderOpen, Tag, Check } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Camera, Upload, Trash2, FolderOpen, Tag, Check, X, CloudUpload } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,8 +25,48 @@ export default function Photos() {
   const [relabelCat, setRelabelCat] = useState<string>("");
   const { toast } = useToast();
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
+
+  // ── Capture Session ─────────────────────────────────────────────────────
+  // Shoot many photos back-to-back, batch-save at the end.
+  const [captureSessionOpen, setCaptureSessionOpen] = useState(false);
+  const [sessionQueue, setSessionQueue] = useState<{ file: File; previewUrl: string }[]>([]);
+  const sessionCameraRef = useRef<HTMLInputElement>(null);
+  const sessionPickerRef = useRef<HTMLInputElement>(null);
+
+  // Revoke object URLs on unmount so previews don't leak memory.
+  useEffect(() => {
+    return () => {
+      sessionQueue.forEach(item => URL.revokeObjectURL(item.previewUrl));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const addToSession = (files: FileList | File[] | null) => {
+    if (!files) return;
+    const list = Array.from(files as any) as File[];
+    if (list.length === 0) return;
+    const additions = list.map(file => ({
+      file,
+      previewUrl: URL.createObjectURL(file),
+    }));
+    setSessionQueue(prev => [...prev, ...additions]);
+  };
+
+  const removeFromSession = (idx: number) => {
+    setSessionQueue(prev => {
+      const target = prev[idx];
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((_, i) => i !== idx);
+    });
+  };
+
+  const clearSession = () => {
+    sessionQueue.forEach(item => URL.revokeObjectURL(item.previewUrl));
+    setSessionQueue([]);
+  };
 
   const { data: jobs = [] } = useQuery<Job[]>({ queryKey: ["/api/jobs"] });
   const { data: allPhotos = [] } = useQuery<Photo[]>({ queryKey: ["/api/photos"] });
@@ -52,27 +92,53 @@ export default function Photos() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/photos"] }),
   });
 
-  const handleFiles = async (files: FileList | null) => {
+  const handleFiles = async (files: FileList | File[] | null) => {
     if (!files || !selectedJobId) return;
+    const list = Array.from(files as any) as File[];
+    if (list.length === 0) return;
     setUploading(true);
-    for (const file of Array.from(files)) {
-      const reader = new FileReader();
-      await new Promise<void>(resolve => {
-        reader.onload = async () => {
-          await uploadMutation.mutateAsync({
-            jobId: Number(selectedJobId),
-            filename: file.name,
-            dataUrl: reader.result as string,
-            caption: caption || file.name,
-            category,
-          });
-          resolve();
-        };
-        reader.readAsDataURL(file);
-      });
+    setUploadProgress({ done: 0, total: list.length });
+    let ok = 0;
+    let failed = 0;
+    for (let i = 0; i < list.length; i++) {
+      const file = list[i];
+      try {
+        const reader = new FileReader();
+        await new Promise<void>((resolve, reject) => {
+          reader.onload = async () => {
+            try {
+              await uploadMutation.mutateAsync({
+                jobId: Number(selectedJobId),
+                filename: file.name,
+                dataUrl: reader.result as string,
+                caption: caption || file.name,
+                category,
+              });
+              ok++;
+              resolve();
+            } catch (err) {
+              reject(err);
+            }
+          };
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        });
+      } catch {
+        failed++;
+      }
+      setUploadProgress({ done: i + 1, total: list.length });
     }
     setUploading(false);
+    setUploadProgress(null);
     setCaption("");
+    if (list.length > 1 || failed > 0) {
+      toast({
+        title: failed === 0
+          ? `Uploaded ${ok} photo${ok === 1 ? "" : "s"}`
+          : `Uploaded ${ok}, ${failed} failed`,
+        variant: failed === 0 ? undefined : "destructive",
+      });
+    }
   };
 
   // Group photos by job
@@ -137,9 +203,156 @@ export default function Photos() {
               <Camera className="w-4 h-4 mr-2" />Take Photo
             </Button>
           </div>
+
+          {/* Capture Session — shoot many, upload once as a batch */}
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full border-teal-600 text-teal-700 hover:bg-teal-50 dark:hover:bg-teal-950/30"
+            disabled={!selectedJobId || uploading}
+            onClick={() => setCaptureSessionOpen(true)}
+            data-testid="button-capture-session"
+          >
+            <Camera className="w-4 h-4 mr-2" />Start Capture Session
+            <span className="ml-2 text-[10px] text-teal-600/70">shoot many → save once</span>
+          </Button>
+
+          {uploadProgress && (
+            <div className="text-xs text-muted-foreground">
+              Uploading {uploadProgress.done} of {uploadProgress.total}…
+              <div className="mt-1 h-1.5 rounded bg-muted overflow-hidden">
+                <div
+                  className="h-full bg-[hsl(var(--titan-blue))] transition-all"
+                  style={{ width: `${(uploadProgress.done / Math.max(uploadProgress.total, 1)) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           {!selectedJobId && <p className="text-xs text-muted-foreground">Select a job file above to enable photo upload.</p>}
         </CardContent>
       </Card>
+
+      {/* ── Capture Session tray ── */}
+      {captureSessionOpen && (
+        <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-lg w-full max-w-2xl max-h-[95vh] flex flex-col shadow-2xl">
+            <input ref={sessionCameraRef} type="file" accept="image/*" capture="environment" className="hidden"
+              onChange={e => { addToSession(e.target.files); if (e.target) e.target.value = ""; }} />
+            <input ref={sessionPickerRef} type="file" accept="image/*" multiple className="hidden"
+              onChange={e => { addToSession(e.target.files); if (e.target) e.target.value = ""; }} />
+
+            <div className="px-4 py-3 border-b flex items-center justify-between">
+              <div>
+                <div className="font-semibold text-[hsl(var(--titan-blue))] flex items-center gap-2">
+                  <Camera className="w-4 h-4" /> Capture Session
+                </div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">
+                  {sessionQueue.length} photo{sessionQueue.length === 1 ? "" : "s"} staged
+                  {category ? <> · category <span className="font-medium text-foreground">{category}</span></> : null}
+                </div>
+              </div>
+              <button
+                className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800"
+                onClick={() => setCaptureSessionOpen(false)}
+                aria-label="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-3">
+              {sessionQueue.length === 0 ? (
+                <div className="h-full flex items-center justify-center text-center p-8">
+                  <div>
+                    <Camera className="w-10 h-10 mx-auto text-slate-300 mb-3" />
+                    <div className="text-sm font-medium text-slate-700 dark:text-slate-200">No photos yet</div>
+                    <div className="text-xs text-muted-foreground mt-1 max-w-xs mx-auto">
+                      Shoot photos one after another. Nothing uploads until you tap Save all.
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                  {sessionQueue.map((item, idx) => (
+                    <div key={idx} className="relative aspect-square rounded overflow-hidden bg-slate-100 border">
+                      <img src={item.previewUrl} alt="" className="w-full h-full object-cover" />
+                      <button
+                        onClick={() => removeFromSession(idx)}
+                        className="absolute top-1 right-1 bg-black/60 text-white rounded-full p-1 hover:bg-red-600"
+                        aria-label="Remove"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-1.5 py-0.5">
+                        <span className="text-[10px] text-white font-medium">#{idx + 1}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="border-t p-3 space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  size="sm"
+                  className="bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
+                  onClick={() => sessionCameraRef.current?.click()}
+                  data-testid="button-session-shoot"
+                >
+                  <Camera className="w-3.5 h-3.5 mr-1.5" />
+                  {sessionQueue.length === 0 ? "Take first photo" : "Take another"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => sessionPickerRef.current?.click()}
+                  data-testid="button-session-pick"
+                >
+                  <Upload className="w-3.5 h-3.5 mr-1.5" />Pick from library
+                </Button>
+              </div>
+              <div className="flex gap-2">
+                {sessionQueue.length > 0 && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-slate-500"
+                    onClick={clearSession}
+                    data-testid="button-session-clear"
+                  >
+                    Clear all
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  className="ml-auto bg-emerald-600 hover:bg-emerald-700 text-white"
+                  disabled={sessionQueue.length === 0 || !selectedJobId}
+                  onClick={() => {
+                    // Snapshot the queue, close the tray, and kick off the
+                    // batch upload. handleFiles walks the array sequentially
+                    // and updates the progress bar on the page.
+                    const files = sessionQueue.map(s => s.file);
+                    const count = files.length;
+                    clearSession();
+                    setCaptureSessionOpen(false);
+                    toast({ title: `Uploading ${count} photo${count === 1 ? "" : "s"}…` });
+                    void handleFiles(files);
+                  }}
+                  data-testid="button-session-save-all"
+                >
+                  <CloudUpload className="w-3.5 h-3.5 mr-1.5" />
+                  Save all ({sessionQueue.length})
+                </Button>
+              </div>
+              <p className="text-[10px] text-muted-foreground text-center leading-snug">
+                Photos are stored on this device until you tap Save all. If you close the app before saving, the queue is lost.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Photos grouped by job */}
       {Object.keys(photosByJob).length === 0 && (
