@@ -5,7 +5,8 @@
  */
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { Camera, Upload, Trash2, FolderOpen, X, ZoomIn, CloudUpload, AlertTriangle, RefreshCw, FileText, CheckSquare, Square, MapPin, Sparkles, Pencil, Share2, Mic, MicOff } from "lucide-react";
+import { Camera, Upload, Trash2, FolderOpen, X, ZoomIn, CloudUpload, AlertTriangle, RefreshCw, FileText, CheckSquare, Square, MapPin, Sparkles, Pencil, Share2, Mic, MicOff, Video } from "lucide-react";
+import LiveCameraCapture from "@/components/LiveCameraCapture";
 import { extractExif } from "@/lib/photoExif";
 import { generatePhotoReport } from "@/lib/photoReport";
 import PhotoAnnotator from "@/components/PhotoAnnotator";
@@ -83,6 +84,7 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
   const [sessionQueue, setSessionQueue] = useState<{ file: File; previewUrl: string }[]>([]);
   const sessionCameraRef = useRef<HTMLInputElement>(null);
   const sessionPickerRef = useRef<HTMLInputElement>(null);
+  const [liveOpen, setLiveOpen] = useState(false);
 
   // Revoke object URLs when the queue clears so we don't leak memory.
   useEffect(() => {
@@ -664,9 +666,19 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
               <Camera className="w-3.5 h-3.5 mr-1.5" />Take Photo
             </Button>
           </div>
-          {/* Capture Session: shoot many photos, save as one batch. Fastest
-              path for walk-throughs — saves in the background so the tech
-              can move to the next task immediately. */}
+          {/* Live viewfinder — fastest path. Camera stays open, tap-tap-tap. */}
+          <Button
+            size="sm"
+            className="w-full bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red)/.85)] text-white"
+            onClick={() => setLiveOpen(true)}
+            data-testid="button-live-camera"
+          >
+            <Video className="w-3.5 h-3.5 mr-1.5" />Live camera (rapid capture)
+            <span className="ml-1.5 text-[10px] text-white/70">tap-tap-tap · no roundtrip</span>
+          </Button>
+
+          {/* Capture Session: native camera picker, staged batch. Fallback for browsers
+              that block getUserMedia or for tech who prefer the OS camera app. */}
           <Button
             size="sm"
             variant="outline"
@@ -675,7 +687,7 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
             data-testid="button-capture-session"
           >
             <Camera className="w-3.5 h-3.5 mr-1.5" />Start Capture Session
-            <span className="ml-1.5 text-[10px] text-teal-600/70">shoot many → save once</span>
+            <span className="ml-1.5 text-[10px] text-teal-600/70">native camera · stage → save once</span>
           </Button>
         </div>
       )}
@@ -1057,6 +1069,19 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
           }}
         />
       )}
+
+      {/* ── Live in-app viewfinder ── */}
+      <LiveCameraCapture
+        open={liveOpen}
+        onClose={() => setLiveOpen(false)}
+        onCapture={(files) => {
+          const count = files.length;
+          toast({ title: `Uploading ${count} photo${count === 1 ? "" : "s"} in the background…` });
+          void handleFiles(files);
+        }}
+        contextLabel={room ? `room ${room}` : `Job #${jobId}`}
+        filenamePrefix={`job-${jobId}`}
+      />
 
       {/* ── Capture Session tray ──
           Full-screen sheet: keep shooting or picking multi-select photos

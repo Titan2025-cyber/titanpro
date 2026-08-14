@@ -9,6 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Photo, Job } from "@shared/schema";
+import LiveCameraCapture from "@/components/LiveCameraCapture";
+import { Video } from "lucide-react";
 
 const CATEGORIES = [
   "general", "before", "during", "after",
@@ -35,6 +37,9 @@ export default function Photos() {
   const [sessionQueue, setSessionQueue] = useState<{ file: File; previewUrl: string }[]>([]);
   const sessionCameraRef = useRef<HTMLInputElement>(null);
   const sessionPickerRef = useRef<HTMLInputElement>(null);
+
+  // Live in-app viewfinder (getUserMedia). Doesn't roundtrip through the OS.
+  const [liveOpen, setLiveOpen] = useState(false);
 
   // Revoke object URLs on unmount so previews don't leak memory.
   useEffect(() => {
@@ -204,7 +209,19 @@ export default function Photos() {
             </Button>
           </div>
 
-          {/* Capture Session — shoot many, upload once as a batch */}
+          {/* Live camera viewfinder — in-app, no roundtrip. Best for rapid capture. */}
+          <Button
+            size="sm"
+            className="w-full bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red)/.85)] text-white"
+            disabled={!selectedJobId || uploading}
+            onClick={() => setLiveOpen(true)}
+            data-testid="button-live-camera"
+          >
+            <Video className="w-4 h-4 mr-2" />Live camera (rapid capture)
+            <span className="ml-2 text-[10px] text-white/70">tap-tap-tap · no roundtrip</span>
+          </Button>
+
+          {/* Capture Session — native picker, staged batch. Kept as fallback. */}
           <Button
             size="sm"
             variant="outline"
@@ -214,7 +231,7 @@ export default function Photos() {
             data-testid="button-capture-session"
           >
             <Camera className="w-4 h-4 mr-2" />Start Capture Session
-            <span className="ml-2 text-[10px] text-teal-600/70">shoot many → save once</span>
+            <span className="ml-2 text-[10px] text-teal-600/70">native camera · stage → save once</span>
           </Button>
 
           {uploadProgress && (
@@ -232,6 +249,18 @@ export default function Photos() {
           {!selectedJobId && <p className="text-xs text-muted-foreground">Select a job file above to enable photo upload.</p>}
         </CardContent>
       </Card>
+
+      {/* ── Live viewfinder ── */}
+      <LiveCameraCapture
+        open={liveOpen}
+        onClose={() => setLiveOpen(false)}
+        onCapture={(files) => {
+          toast({ title: `Uploading ${files.length} photo${files.length === 1 ? "" : "s"}…` });
+          void handleFiles(files);
+        }}
+        contextLabel={selectedJobId ? `Job #${selectedJobId} · ${category}` : undefined}
+        filenamePrefix={selectedJobId ? `job-${selectedJobId}` : "photo"}
+      />
 
       {/* ── Capture Session tray ── */}
       {captureSessionOpen && (
