@@ -548,6 +548,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Per-job, per-phase cost & estimate sums (estimates/invoices/job_costs carry a phase column).
     const costsPhase = sqlite.prepare("SELECT job_id, phase, SUM(total) as total FROM job_costs GROUP BY job_id, phase").all() as any[];
     const estimatesPhase = sqlite.prepare("SELECT job_id, phase, SUM(total) as total FROM estimates WHERE status != 'rejected' GROUP BY job_id, phase").all() as any[];
+    // Externally-uploaded estimate/invoice rollup so the Financial Summary
+    // card can call out how much of the totals came from outside-authored
+    // documents (Xactimate PDFs, sub invoices, carrier approvals, etc.).
+    // NULL source is treated as internal.
+    const extEstimatesPhase = sqlite.prepare(
+      "SELECT job_id, phase, COUNT(*) as cnt, SUM(total) as total FROM estimates WHERE source = 'external' AND status != 'rejected' GROUP BY job_id, phase"
+    ).all() as any[];
+    const extInvoicesPhase = sqlite.prepare(
+      "SELECT job_id, phase, COUNT(*) as cnt, SUM(total) as total FROM invoices WHERE source = 'external' GROUP BY job_id, phase"
+    ).all() as any[];
     const supplements = sqlite.prepare("SELECT job_id, SUM(amount_approved) as settled FROM supplements WHERE status IN ('approved','partial') GROUP BY job_id").all() as any[];
 
     const PHASES = ["mitigation", "reconstruction"] as const;
@@ -565,6 +575,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       (estPhaseMap[e.job_id] ||= {});
       const ph = normPhase(e.phase);
       estPhaseMap[e.job_id][ph] = (estPhaseMap[e.job_id][ph] || 0) + (e.total || 0);
+    });
+
+    // job_id -> phase -> { total, count } for externally-uploaded docs.
+    type ExtBucket = { total: number; count: number };
+    const extEstMap: Record<number, Record<string, ExtBucket>> = {};
+    extEstimatesPhase.forEach((e: any) => {
+      (extEstMap[e.job_id] ||= {});
+      const ph = normPhase(e.phase);
+      const cur = extEstMap[e.job_id][ph] ||= { total: 0, count: 0 };
+      cur.total += (e.total || 0);
+      cur.count += (e.cnt || 0);
+    });
+    const extInvMap: Record<number, Record<string, ExtBucket>> = {};
+    extInvoicesPhase.forEach((i: any) => {
+      (extInvMap[i.job_id] ||= {});
+      const ph = normPhase(i.phase);
+      const cur = extInvMap[i.job_id][ph] ||= { total: 0, count: 0 };
+      cur.total += (i.total || 0);
+      cur.count += (i.cnt || 0);
     });
 
     const suppMap: Record<number, number> = {};
@@ -602,6 +631,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const phCollected = phPayments.filter((p: any) => p.type === 'received' && !p.credit_memo).reduce((s: number, p: any) => s + (p.amount || 0), 0);
         const phCreditMemos = phPayments.filter((p: any) => p.credit_memo).reduce((s: number, p: any) => s + (p.amount || 0), 0);
         const phGrossProfit = phCollected - phCosts;
+        const phExtEst = extEstMap[job.id]?.[ph] || { total: 0, count: 0 };
+        const phExtInv = extInvMap[job.id]?.[ph] || { total: 0, count: 0 };
         byPhase[ph] = {
           estimateTotal: phEstimate,
           invoiceTotal: phInvoiceTotal,
@@ -612,8 +643,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           settledAmount, // claim-level, shown on both phases
           grossMarginPct: phCollected > 0 ? Math.round((phGrossProfit / phCollected) * 100) : 0,
           outstanding: phInvoiceTotal - phCollected,
+          externalEstimateTotal: phExtEst.total,
+          externalEstimateCount: phExtEst.count,
+          externalInvoiceTotal: phExtInv.total,
+          externalInvoiceCount: phExtInv.count,
         };
       }
+
+      // Job-level external totals (sum across phases).
+      const extEstTotalJob = (extEstMap[job.id]?.mitigation?.total || 0) + (extEstMap[job.id]?.reconstruction?.total || 0);
+      const extEstCountJob = (extEstMap[job.id]?.mitigation?.count || 0) + (extEstMap[job.id]?.reconstruction?.count || 0);
+      const extInvTotalJob = (extInvMap[job.id]?.mitigation?.total || 0) + (extInvMap[job.id]?.reconstruction?.total || 0);
+      const extInvCountJob = (extInvMap[job.id]?.mitigation?.count || 0) + (extInvMap[job.id]?.reconstruction?.count || 0);
 
       result[job.id] = {
         jobId: job.id,
@@ -626,6 +667,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         settledAmount,
         grossMarginPct: collected > 0 ? Math.round(((collected - totalCosts) / collected) * 100) : 0,
         outstanding: invoiceTotal - collected,
+        externalEstimateTotal: extEstTotalJob,
+        externalEstimateCount: extEstCountJob,
+        externalInvoiceTotal: extInvTotalJob,
+        externalInvoiceCount: extInvCountJob,
         byPhase,
       };
     }

@@ -1193,10 +1193,54 @@ export default function JobDetail() {
                   <span className={`text-lg font-bold ${(phaseFin?.grossMarginPct ?? 0) >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>{phaseFin?.grossMarginPct ?? 0}%</span>
                 </div>
               </div>
+              {/* External-document rollup: highlights the portion of the
+                  phase's Estimate/Invoice totals that came from outside-
+                  authored PDFs uploaded to the job (Xactimate, sub invoices,
+                  carrier approvals, etc.). Hidden entirely when there are
+                  none in this phase. */}
+              {(((phaseFin?.externalEstimateCount ?? 0) + (phaseFin?.externalInvoiceCount ?? 0)) > 0) && (
+                <div className="mt-4 pt-3 border-t" data-testid="jobfin-external">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Paperclip className="w-3 h-3 text-muted-foreground" />
+                    <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">External documents in this phase</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("estimates")}
+                      className="text-left group focus:outline-none"
+                      data-testid="jobfin-external-estimates"
+                      title="View estimates"
+                    >
+                      <span className="text-xs text-muted-foreground block">
+                        {phaseFin?.externalEstimateCount ?? 0} uploaded estimate(s)
+                      </span>
+                      <span className="text-sm font-semibold text-[hsl(var(--titan-blue))] group-hover:underline">
+                        {money(phaseFin?.externalEstimateTotal ?? 0)}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("invoices")}
+                      className="text-left group focus:outline-none"
+                      data-testid="jobfin-external-invoices"
+                      title="View invoices"
+                    >
+                      <span className="text-xs text-muted-foreground block">
+                        {phaseFin?.externalInvoiceCount ?? 0} uploaded invoice(s)
+                      </span>
+                      <span className="text-sm font-semibold text-green-600 dark:text-green-400 group-hover:underline">
+                        {money(phaseFin?.externalInvoiceTotal ?? 0)}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <p className="text-[11px] text-muted-foreground mt-4 pt-3 border-t">
                 Figures reflect the <span className="font-medium capitalize text-foreground">{phaseFilter}</span> phase only, except Settled Amount which is claim-level (same on both phases).
                 Gross profit = collected revenue &minus; job costs. Margin is profit as a share of collected revenue.
-                Outstanding = invoiced &minus; collected. Click the estimate amount to view estimates.
+                Outstanding = invoiced &minus; collected. External-doc totals are already included in the Estimate Amount and Outstanding figures above &mdash; the strip only breaks out how much came from uploaded outside documents. Click the estimate amount to view estimates.
               </p>
             </CardContent>
           </Card>
