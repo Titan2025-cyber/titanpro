@@ -14,7 +14,8 @@ import { useState, useMemo } from "react";
 import {
   ChevronLeft, ChevronRight, Plus, Calendar, Clock, MapPin,
   User, Mail, X, Edit2, Trash2, Bell, BellOff, CheckCircle,
-  Coffee, Utensils, Handshake, Building2, MoreHorizontal, List
+  Coffee, Utensils, Handshake, Building2, MoreHorizontal, List,
+  Cake, Heart, Phone, Sparkles
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -31,6 +32,18 @@ import type { Contact } from "@shared/schema";
 import { todayLocalISO } from "@/lib/dates";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+interface Celebration {
+  contact_id: number;
+  name: string;
+  type: string;
+  company?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  kind: "birthday" | "anniversary";
+  date_iso: string;   // YYYY-MM-DD of next occurrence
+  days_until: number;
+}
+
 interface BdEvent {
   id: number;
   title: string;
@@ -69,27 +82,28 @@ function getEventType(type: string) {
 
 // ── Event Form Dialog ─────────────────────────────────────────────────────────
 function EventForm({
-  event, contacts, defaultDate, onClose
+  event, contacts, defaultDate, prefill, onClose
 }: {
   event?: BdEvent;
   contacts: Contact[];
   defaultDate?: string;
+  prefill?: Partial<BdEvent>;
   onClose: () => void;
 }) {
   const { toast } = useToast();
   const isEdit = !!event;
 
   const [form, setForm] = useState({
-    title: event?.title || "",
-    eventType: event?.eventType || "meeting",
-    date: event?.date || defaultDate || todayLocalISO(),
-    startTime: event?.startTime || "09:00",
-    endTime: event?.endTime || "",
-    location: event?.location || "",
-    notes: event?.notes || "",
-    contactId: event?.contactId ? String(event.contactId) : "",
-    contactEmail: event?.contactEmail || "",
-    contactName: event?.contactName || "",
+    title: event?.title || prefill?.title || "",
+    eventType: event?.eventType || prefill?.eventType || "meeting",
+    date: event?.date || prefill?.date || defaultDate || todayLocalISO(),
+    startTime: event?.startTime || prefill?.startTime || "09:00",
+    endTime: event?.endTime || prefill?.endTime || "",
+    location: event?.location || prefill?.location || "",
+    notes: event?.notes || prefill?.notes || "",
+    contactId: event?.contactId ? String(event.contactId) : (prefill?.contactId ? String(prefill.contactId) : ""),
+    contactEmail: event?.contactEmail || prefill?.contactEmail || "",
+    contactName: event?.contactName || prefill?.contactName || "",
     notifyPartner: event ? Boolean(event.notifyPartner) : true,
   });
 
@@ -332,15 +346,17 @@ function EventDetail({ event, onEdit, onDelete, onClose }: {
   );
 }
 
-// ── Month Calendar Grid ───────────────────────────────────────────────────────
+// ── Month Calendar Grid ────────────────────────────────────────────────────────────────
 function MonthView({
-  year, month, events, onDayClick, onEventClick
+  year, month, events, celebrations, onDayClick, onEventClick, onCelebrationClick
 }: {
   year: number;
   month: number; // 0-indexed
   events: BdEvent[];
+  celebrations: Celebration[];
   onDayClick: (date: string) => void;
   onEventClick: (event: BdEvent) => void;
+  onCelebrationClick: (c: Celebration) => void;
 }) {
   const firstDay = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -360,6 +376,11 @@ function MonthView({
   function eventsOnDay(day: number) {
     const d = dateStr(day);
     return events.filter(e => e.date === d).sort((a, b) => a.startTime.localeCompare(b.startTime));
+  }
+
+  function celebrationsOnDay(day: number) {
+    const d = dateStr(day);
+    return celebrations.filter(c => c.date_iso === d);
   }
 
   return (
@@ -389,6 +410,21 @@ function MonthView({
                 {day}
               </div>
               <div className="space-y-0.5">
+                {celebrationsOnDay(day).slice(0, 2).map(c => (
+                  <button
+                    key={`${c.contact_id}-${c.kind}`}
+                    onClick={e => { e.stopPropagation(); onCelebrationClick(c); }}
+                    title={`${c.kind === "birthday" ? "\ud83c\udf82 Birthday" : "\ud83d\udc9d Anniversary"} — ${c.name}`}
+                    className={`w-full text-left text-[10px] px-1.5 py-0.5 rounded truncate border font-medium flex items-center gap-1 hover:opacity-80 transition-opacity ${
+                      c.kind === "birthday"
+                        ? "bg-pink-100 text-pink-800 border-pink-300 dark:bg-pink-900/30 dark:text-pink-300"
+                        : "bg-rose-100 text-rose-800 border-rose-300 dark:bg-rose-900/30 dark:text-rose-300"
+                    }`}
+                  >
+                    {c.kind === "birthday" ? <Cake className="w-2.5 h-2.5 shrink-0" /> : <Heart className="w-2.5 h-2.5 shrink-0" />}
+                    <span className="truncate">{c.name.split(" ")[0]}</span>
+                  </button>
+                ))}
                 {dayEvents.slice(0, 3).map(ev => {
                   const et = getEventType(ev.eventType);
                   return (
@@ -414,7 +450,12 @@ function MonthView({
 }
 
 // ── List / Agenda View ────────────────────────────────────────────────────────
-function ListView({ events, onEventClick }: { events: BdEvent[]; onEventClick: (e: BdEvent) => void }) {
+function ListView({ events, celebrations, onEventClick, onCelebrationClick }: {
+  events: BdEvent[];
+  celebrations: Celebration[];
+  onEventClick: (e: BdEvent) => void;
+  onCelebrationClick: (c: Celebration) => void;
+}) {
   const today = todayLocalISO();
   const upcoming = events.filter(e => e.date >= today).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
   const past = events.filter(e => e.date < today).sort((a, b) => b.date.localeCompare(a.date));
@@ -448,7 +489,38 @@ function ListView({ events, onEventClick }: { events: BdEvent[]; onEventClick: (
     );
   }
 
-  if (events.length === 0) {
+  function CelebrationRow({ c }: { c: Celebration }) {
+    const isBday = c.kind === "birthday";
+    return (
+      <button onClick={() => onCelebrationClick(c)}
+        className="w-full text-left flex items-start gap-3 p-3 rounded-lg hover:bg-muted/50 transition-colors border border-transparent hover:border-border">
+        <div className={`w-10 h-10 flex-shrink-0 rounded-lg flex items-center justify-center border ${
+          isBday
+            ? "bg-pink-100 text-pink-700 border-pink-300 dark:bg-pink-900/30 dark:text-pink-300"
+            : "bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-900/30 dark:text-rose-300"
+        }`}>
+          {isBday ? <Cake className="w-5 h-5" /> : <Heart className="w-5 h-5" />}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="font-medium text-sm truncate">
+            {isBday ? "\ud83c\udf82" : "\ud83d\udc9d"} {c.name}'s {isBday ? "birthday" : "anniversary"}
+          </p>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5 flex-wrap">
+            <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{c.date_iso}</span>
+            {c.company && <span className="flex items-center gap-1"><Building2 className="w-3 h-3" />{c.company}</span>}
+            {c.phone && <span className="flex items-center gap-1"><Phone className="w-3 h-3" />{c.phone}</span>}
+          </div>
+        </div>
+        <div className="flex-shrink-0 text-right">
+          <Badge className={`text-[10px] border ${isBday ? "bg-pink-100 text-pink-800 border-pink-300" : "bg-rose-100 text-rose-800 border-rose-300"}`}>
+            {c.days_until === 0 ? "Today" : `in ${c.days_until}d`}
+          </Badge>
+        </div>
+      </button>
+    );
+  }
+
+  if (events.length === 0 && celebrations.length === 0) {
     return (
       <div className="text-center py-16 text-muted-foreground">
         <Calendar className="w-10 h-10 mx-auto mb-3 opacity-30" />
@@ -460,9 +532,19 @@ function ListView({ events, onEventClick }: { events: BdEvent[]; onEventClick: (
 
   return (
     <div className="space-y-6">
+      {celebrations.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 flex items-center gap-1.5">
+            <Sparkles className="w-3 h-3 text-pink-500" />Upcoming celebrations ({celebrations.length})
+          </p>
+          <div className="space-y-1">
+            {celebrations.map(c => <CelebrationRow key={`${c.contact_id}-${c.kind}`} c={c} />)}
+          </div>
+        </div>
+      )}
       {upcoming.length > 0 && (
         <div>
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Upcoming ({upcoming.length})</p>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Upcoming events ({upcoming.length})</p>
           <div className="space-y-1">
             {upcoming.map(ev => <EventRow key={ev.id} ev={ev} />)}
           </div>
@@ -492,6 +574,8 @@ export default function BDCalendar() {
   const [detailEvent, setDetailEvent] = useState<BdEvent | undefined>();
   const [defaultDate, setDefaultDate] = useState<string>("");
   const [filterType, setFilterType] = useState("all");
+  const [celebrationDetail, setCelebrationDetail] = useState<Celebration | undefined>();
+  const [prefill, setPrefill] = useState<Partial<BdEvent> | undefined>();
 
   const { data: events = [], isLoading } = useQuery<BdEvent[]>({
     queryKey: ["/api/bd-events"],
@@ -502,6 +586,15 @@ export default function BDCalendar() {
   const { data: contacts = [] } = useQuery<Contact[]>({
     queryKey: ["/api/contacts"],
     queryFn: () => apiRequest("GET", "/api/contacts").then(r => r.json()),
+  });
+
+  // Upcoming birthdays & anniversaries from contact marketing profiles.
+  // We ask for a 90-day window so month navigation shows the next 3 months
+  // of celebrations without an extra fetch.
+  const { data: celebrations = [] } = useQuery<Celebration[]>({
+    queryKey: ["/api/contacts/marketing/upcoming"],
+    queryFn: () => apiRequest("GET", "/api/contacts/marketing/upcoming?days=90").then(r => r.json()),
+    staleTime: 5 * 60 * 1000,
   });
 
   const deleteEvent = useMutation({
@@ -536,10 +629,20 @@ export default function BDCalendar() {
     [filteredEvents, year, month]
   );
 
+  // Celebrations for the currently-viewed month
+  const monthCelebrations = useMemo(() =>
+    celebrations.filter(c => {
+      const [y, m] = c.date_iso.split("-").map(Number);
+      return y === year && (m - 1) === month;
+    }),
+    [celebrations, year, month]
+  );
+
   // Stats
   const thisMonthCount = monthEvents.length;
   const upcomingCount = events.filter(e => e.date >= today.toISOString().slice(0, 10)).length;
   const notifiedCount = events.filter(e => e.notified).length;
+  const celebrationsThisMonth = monthCelebrations.length;
 
   function openCreate(date?: string) {
     setEditEvent(undefined);
@@ -572,23 +675,31 @@ export default function BDCalendar() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card className="border-0 bg-muted/40">
           <CardContent className="pt-4 pb-3 px-4">
             <p className="text-2xl font-bold">{thisMonthCount}</p>
-            <p className="text-xs text-muted-foreground">This Month</p>
+            <p className="text-xs text-muted-foreground">Events This Month</p>
           </CardContent>
         </Card>
         <Card className="border-0 bg-muted/40">
           <CardContent className="pt-4 pb-3 px-4">
             <p className="text-2xl font-bold text-[hsl(var(--titan-blue))]">{upcomingCount}</p>
-            <p className="text-xs text-muted-foreground">Upcoming</p>
+            <p className="text-xs text-muted-foreground">Upcoming Events</p>
           </CardContent>
         </Card>
         <Card className="border-0 bg-muted/40">
           <CardContent className="pt-4 pb-3 px-4">
             <p className="text-2xl font-bold text-green-600">{notifiedCount}</p>
             <p className="text-xs text-muted-foreground">Partners Notified</p>
+          </CardContent>
+        </Card>
+        <Card className="border-0 bg-pink-50 dark:bg-pink-950/20">
+          <CardContent className="pt-4 pb-3 px-4">
+            <p className="text-2xl font-bold text-pink-600 flex items-center gap-1.5">
+              <Cake className="w-5 h-5" />{celebrationsThisMonth}
+            </p>
+            <p className="text-xs text-muted-foreground">Celebrations this month</p>
           </CardContent>
         </Card>
       </div>
@@ -637,11 +748,18 @@ export default function BDCalendar() {
         <MonthView
           year={year} month={month}
           events={filteredEvents}
+          celebrations={monthCelebrations}
           onDayClick={(date) => openCreate(date)}
           onEventClick={setDetailEvent}
+          onCelebrationClick={setCelebrationDetail}
         />
       ) : (
-        <ListView events={filteredEvents} onEventClick={setDetailEvent} />
+        <ListView
+          events={filteredEvents}
+          celebrations={celebrations}
+          onEventClick={setDetailEvent}
+          onCelebrationClick={setCelebrationDetail}
+        />
       )}
 
       {/* Legend */}
@@ -666,8 +784,86 @@ export default function BDCalendar() {
             event={editEvent}
             contacts={contacts}
             defaultDate={defaultDate}
-            onClose={() => setFormOpen(false)}
+            prefill={prefill}
+            onClose={() => { setFormOpen(false); setPrefill(undefined); }}
           />
+        </DialogContent>
+      </Dialog>
+
+      {/* Celebration Detail Dialog */}
+      <Dialog open={!!celebrationDetail} onOpenChange={open => { if (!open) setCelebrationDetail(undefined); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {celebrationDetail?.kind === "birthday"
+                ? <><Cake className="w-4 h-4 text-pink-500" />Birthday</>
+                : <><Heart className="w-4 h-4 text-rose-500" />Anniversary</>}
+            </DialogTitle>
+          </DialogHeader>
+          {celebrationDetail && (
+            <div className="space-y-3">
+              <div>
+                <p className="text-lg font-bold">{celebrationDetail.name}</p>
+                {celebrationDetail.company && (
+                  <p className="text-sm text-muted-foreground flex items-center gap-1">
+                    <Building2 className="w-3.5 h-3.5" />{celebrationDetail.company}
+                  </p>
+                )}
+                <p className="text-sm text-muted-foreground mt-1">
+                  {celebrationDetail.date_iso}
+                  {" \u00b7 "}
+                  {celebrationDetail.days_until === 0
+                    ? "Today"
+                    : celebrationDetail.days_until === 1
+                      ? "Tomorrow"
+                      : `in ${celebrationDetail.days_until} days`}
+                </p>
+              </div>
+
+              {(celebrationDetail.phone || celebrationDetail.email) && (
+                <div className="space-y-1 border-t pt-3">
+                  {celebrationDetail.phone && (
+                    <a href={`tel:${celebrationDetail.phone}`} className="text-sm text-[hsl(var(--titan-blue))] flex items-center gap-2 hover:underline">
+                      <Phone className="w-3.5 h-3.5" />{celebrationDetail.phone}
+                    </a>
+                  )}
+                  {celebrationDetail.email && (
+                    <a href={`mailto:${celebrationDetail.email}`} className="text-sm text-[hsl(var(--titan-blue))] flex items-center gap-2 hover:underline">
+                      <Mail className="w-3.5 h-3.5" />{celebrationDetail.email}
+                    </a>
+                  )}
+                </div>
+              )}
+
+              <div className="flex flex-col gap-2 pt-2">
+                <Button
+                  className="w-full bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red)/.85)] text-white"
+                  onClick={() => {
+                    // Pre-fill a touchpoint event on the celebration date, tied to this contact.
+                    // We use `prefill` (not `editEvent`) so save creates a new event via POST.
+                    setEditEvent(undefined);
+                    setPrefill({
+                      title: celebrationDetail.kind === "birthday"
+                        ? `\ud83c\udf82 ${celebrationDetail.name}'s birthday`
+                        : `\ud83d\udc9d ${celebrationDetail.name}'s anniversary`,
+                      eventType: "coffee",
+                      date: celebrationDetail.date_iso,
+                      startTime: "10:00",
+                      contactId: celebrationDetail.contact_id,
+                      contactName: celebrationDetail.name,
+                      contactEmail: celebrationDetail.email || undefined,
+                    });
+                    setDefaultDate(celebrationDetail.date_iso);
+                    setCelebrationDetail(undefined);
+                    setFormOpen(true);
+                  }}
+                >
+                  <Plus className="w-4 h-4 mr-1.5" />Schedule a touchpoint
+                </Button>
+                <Button variant="outline" className="w-full" onClick={() => setCelebrationDetail(undefined)}>Close</Button>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 
