@@ -16,6 +16,7 @@
  */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -34,15 +35,19 @@ const fmtDays = (n: number) => `${(n || 0).toFixed(1)}d`;
 export default function Analytics() {
   const [days, setDays] = useState("90");
 
-  const { data, isLoading } = useQuery<Overview>({
+  // Analytics endpoint is guarded by requireStaffAuth. Use apiRequest so the
+  // staff bearer token is attached — raw fetch() returned 401 and left the
+  // skeleton loader spinning forever (fixed 2026-08-14).
+  const { data, isLoading, error, refetch } = useQuery<Overview>({
     queryKey: ["/api/analytics/overview", days],
     queryFn: async () => {
-      const r = await fetch(`/api/analytics/overview?days=${days}`, { credentials: "include" });
-      if (!r.ok) throw new Error("Failed to load analytics");
+      const r = await apiRequest("GET", `/api/analytics/overview?days=${days}`);
+      if (!r.ok) throw new Error(`Failed to load analytics (${r.status})`);
       return r.json();
     },
     // Refresh once a minute — cheap query and users leave the tab open.
     refetchInterval: 60_000,
+    retry: 1,
   });
 
   return (
@@ -64,7 +69,15 @@ export default function Analytics() {
         </Select>
       </div>
 
-      {isLoading || !data ? (
+      {error ? (
+        <div className="rounded-lg border border-red-500/40 bg-red-500/5 p-6 text-center">
+          <p className="text-sm font-medium text-red-500 mb-2">Analytics failed to load</p>
+          <p className="text-xs text-muted-foreground mb-3">{(error as Error).message}</p>
+          <button onClick={() => refetch()} className="text-xs px-3 py-1.5 rounded border border-red-500/40 hover:bg-red-500/10 transition-colors">
+            Retry
+          </button>
+        </div>
+      ) : isLoading || !data ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {Array.from({ length: 8 }).map((_, i) => (
             <Skeleton key={i} className="h-32 w-full" />

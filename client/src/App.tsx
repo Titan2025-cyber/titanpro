@@ -411,6 +411,9 @@ function AuthenticatedRoutes() {
         <Route path="/security" component={() => <Page component={Security} name="Security" />} />
         <Route path="/audit-log" component={() => <Page component={AuditLog} name="AuditLog" />} />
         <Route path="/integrations" component={() => <Page component={Integrations} name="Integrations" />} />
+        {/* /settings landed on a raw dev-facing 404. Redirect to Integrations,
+            the primary Admin → Tools landing page. Fixed 2026-08-14. */}
+        <Route path="/settings"><Redirect to="/integrations" /></Route>
 
         {/* Portals (staff-side admin views — public customer/partner portals live
            in AppRoutes above, reachable via QR code without staff login) */}

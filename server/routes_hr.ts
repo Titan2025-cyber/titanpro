@@ -434,12 +434,65 @@ function deterministicWriteup(d: any): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// HR ↔ Roster backfill
+// ─────────────────────────────────────────────────────────────────────────────
+// Every login-enabled person in `employees` (the staff roster) must have a
+// matching row in `hr_employees` so compliance tracking (I-9, W-4, E-Verify,
+// handbook assignments) covers the whole workforce. Before 2026-08-14 the HR
+// module only surfaced people who had been manually created there — a real
+// compliance gap. This backfill matches by email first, then by full name,
+// and only inserts when no HR record exists. Compliance flags default off so
+// staff must actively review the new rows.
+function backfillHREmployeesFromRoster(sqlite: Database.Database) {
+  try {
+    const roster: any[] = sqlite.prepare(
+      "SELECT id, name, role, position, phone, gmail_email FROM employees WHERE is_active = 1"
+    ).all();
+    if (!roster.length) return;
+    const existing: any[] = sqlite.prepare(
+      "SELECT id, first_name, last_name, email FROM hr_employees"
+    ).all();
+    const byEmail = new Map<string, any>();
+    const byName = new Map<string, any>();
+    for (const e of existing) {
+      if (e.email) byEmail.set(String(e.email).toLowerCase(), e);
+      byName.set(`${e.first_name} ${e.last_name}`.toLowerCase(), e);
+    }
+    const insert = sqlite.prepare(
+      `INSERT INTO hr_employees (first_name, last_name, email, phone, job_title, status, employment_type, work_state, i9_on_file, w4_on_file, everify_done)
+       VALUES (?, ?, ?, ?, ?, 'active', 'full_time', 'SC', 0, 0, 0)`
+    );
+    let inserted = 0;
+    for (const r of roster) {
+      const email = (r.gmail_email || "").toString().toLowerCase();
+      const nameKey = String(r.name || "").toLowerCase();
+      if (email && byEmail.has(email)) continue;
+      if (byName.has(nameKey)) continue;
+      const parts = String(r.name || "").trim().split(/\s+/);
+      if (parts.length < 1 || !parts[0]) continue;
+      const first = parts[0];
+      const last = parts.slice(1).join(" ") || "(unset)";
+      try {
+        insert.run(first, last, r.gmail_email || null, r.phone || null, r.position || r.role || null);
+        inserted += 1;
+      } catch (e: any) {
+        console.warn(`[HR] backfill skipped for ${r.name}: ${e?.message || e}`);
+      }
+    }
+    if (inserted > 0) console.log(`[HR] backfilled ${inserted} employee record(s) from roster`);
+  } catch (e: any) {
+    console.warn("[HR] backfill failed:", e?.message || e);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Route registration
 // ─────────────────────────────────────────────────────────────────────────────
 export function registerHRRoutes(app: Express, sqlite: Database.Database) {
   ensureSchema(sqlite);
   seedKB(sqlite);
   seedTrainings(sqlite);
+  backfillHREmployeesFromRoster(sqlite);
 
   const { requireStaffAuth, requireRole } = makeAuthMiddleware(sqlite);
   // HR is sensitive — restrict to owner + admin (and general_manager where present).

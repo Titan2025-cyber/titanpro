@@ -19,7 +19,32 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth";
+import { formatPhone, phoneHref } from "@/lib/phone";
 import type { Contact, Job } from "@shared/schema";
+
+// Portal PIN visibility helper. The PIN is a live credential; showing it in a
+// plain list on the Contacts screen (visible to every staff role that can see
+// contacts) exposed every customer's portal login. Fixed 2026-08-14 by masking
+// by default and requiring an owner/admin-only reveal action.
+function PortalPinBadge({ pin, contactId, canReveal }: { pin: string; contactId: number; canReveal: boolean }) {
+  const [shown, setShown] = useState(false);
+  return (
+    <span className="text-xs text-muted-foreground mt-0.5 inline-flex items-center gap-1" data-testid={`portal-pin-${contactId}`}>
+      Portal PIN: <span className="font-mono">{shown ? pin : "\u2022\u2022\u2022\u2022"}</span>
+      {canReveal && (
+        <button
+          type="button"
+          className="underline underline-offset-2 text-[10px] text-[hsl(var(--titan-blue))] hover:opacity-80"
+          onClick={() => setShown(s => !s)}
+          aria-label={shown ? "Hide portal PIN" : "Reveal portal PIN"}
+        >
+          {shown ? "Hide" : "Reveal"}
+        </button>
+      )}
+    </span>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Marketing profile shape — mirrors server/routes_contact_admin.ts fields.
@@ -312,6 +337,8 @@ function MarketingDialog({
 // Contacts main page
 // ─────────────────────────────────────────────────────────────────────────────
 export default function Contacts() {
+  const { user } = useAuth();
+  const canRevealPin = user?.role === "owner" || user?.role === "admin";
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ name: "", type: "customer", email: "", phone: "", address: "", company: "", referralRate: "", portalPin: "" });
   const [marketing, setMarketing] = useState<Marketing>({});
@@ -399,10 +426,10 @@ export default function Contacts() {
                 )}
               </div>
               {c.company && <p className="text-xs text-muted-foreground flex items-center gap-1"><Building2 className="w-3 h-3" />{c.company}</p>}
-              {c.phone && <a href={`tel:${c.phone}`} className="text-xs text-[hsl(var(--titan-blue))] flex items-center gap-1 hover:underline"><Phone className="w-3 h-3" />{c.phone}</a>}
+              {c.phone && <a href={phoneHref(c.phone)} className="text-xs text-[hsl(var(--titan-blue))] flex items-center gap-1 hover:underline"><Phone className="w-3 h-3" />{formatPhone(c.phone)}</a>}
               {c.email && <a href={`mailto:${c.email}`} className="text-xs text-[hsl(var(--titan-blue))] flex items-center gap-1 hover:underline"><Mail className="w-3 h-3" />{c.email}</a>}
               {c.referralRate && <p className="text-xs text-green-600 font-medium mt-1">Referral Rate: {c.referralRate}%</p>}
-              {c.portalPin && !isArchived && <p className="text-xs text-muted-foreground mt-0.5">Portal PIN: {c.portalPin}</p>}
+              {c.portalPin && !isArchived && <PortalPinBadge pin={c.portalPin} contactId={c.id} canReveal={canRevealPin} />}
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -467,13 +494,28 @@ export default function Contacts() {
                 </div>
                 <div><Label>Name</Label><Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} data-testid="input-contact-name" /></div>
                 <div className="grid grid-cols-2 gap-3">
-                  <div><Label>Phone</Label><Input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} data-testid="input-contact-phone" /></div>
+                  <div><Label>Phone</Label><Input type="tel" inputMode="tel" autoComplete="tel" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} data-testid="input-contact-phone" /></div>
                   <div><Label>Email</Label><Input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} data-testid="input-contact-email" /></div>
                 </div>
                 <div><Label>Company</Label><Input value={form.company} onChange={e => setForm(f => ({ ...f, company: e.target.value }))} data-testid="input-contact-company" /></div>
                 <div><Label>Address</Label><Input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} /></div>
                 {form.type === "referral" && <div><Label>Referral Rate (%)</Label><Input type="number" value={form.referralRate} onChange={e => setForm(f => ({ ...f, referralRate: e.target.value }))} /></div>}
-                {form.type === "customer" && <div><Label>Portal PIN (4 digits)</Label><Input maxLength={4} value={form.portalPin} onChange={e => setForm(f => ({ ...f, portalPin: e.target.value }))} placeholder="e.g. 1234" /></div>}
+                {form.type === "customer" && (
+                  <div>
+                    <Label>Portal PIN (4 digits)</Label>
+                    <Input
+                      type="password"
+                      inputMode="numeric"
+                      autoComplete="new-password"
+                      pattern="[0-9]{4}"
+                      maxLength={4}
+                      value={form.portalPin}
+                      onChange={e => setForm(f => ({ ...f, portalPin: e.target.value.replace(/\D/g, "") }))}
+                      placeholder=""
+                    />
+                    <p className="text-[10px] text-muted-foreground mt-1">Avoid 0000, 1234, or repeating digits. The customer can change it on first login.</p>
+                  </div>
+                )}
 
                 {form.type === "referral" && (
                   <MarketingFields value={marketing} onChange={patch => setMarketing(m => ({ ...m, ...patch }))} />
@@ -575,12 +617,22 @@ function ReferralCompaniesSection({
               </p>
               <div><Label>Company Name</Label><Input value={companyForm.name} onChange={e => setCompanyForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. State Farm — Augusta" data-testid="input-company-name" /></div>
               <div className="grid grid-cols-2 gap-3">
-                <div><Label>Phone</Label><Input value={companyForm.phone} onChange={e => setCompanyForm(f => ({ ...f, phone: e.target.value }))} data-testid="input-company-phone" /></div>
+                <div><Label>Phone</Label><Input type="tel" inputMode="tel" autoComplete="tel" value={companyForm.phone} onChange={e => setCompanyForm(f => ({ ...f, phone: e.target.value }))} data-testid="input-company-phone" /></div>
                 <div><Label>Email</Label><Input type="email" value={companyForm.email} onChange={e => setCompanyForm(f => ({ ...f, email: e.target.value }))} data-testid="input-company-email" /></div>
               </div>
               <div>
                 <Label>Portal PIN (4 digits)</Label>
-                <Input maxLength={4} value={companyForm.portalPin} onChange={e => setCompanyForm(f => ({ ...f, portalPin: e.target.value }))} placeholder="e.g. 4321" data-testid="input-company-pin" />
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="new-password"
+                  pattern="[0-9]{4}"
+                  maxLength={4}
+                  value={companyForm.portalPin}
+                  onChange={e => setCompanyForm(f => ({ ...f, portalPin: e.target.value.replace(/\D/g, "") }))}
+                  placeholder=""
+                  data-testid="input-company-pin"
+                />
               </div>
 
               <MarketingFields value={companyMarketing} onChange={patch => setCompanyMarketing(m => ({ ...m, ...patch }))} />
@@ -626,6 +678,8 @@ function ReferralCompaniesSection({
 
 function CompanyCard({ company, allReferrals }: { company: Contact; allReferrals: Contact[] }) {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const canRevealPin = user?.role === "owner" || user?.role === "admin";
   const [expanded, setExpanded] = useState(true);
   const [attachOpen, setAttachOpen] = useState(false);
   const [selectedTechId, setSelectedTechId] = useState("");
@@ -677,11 +731,12 @@ function CompanyCard({ company, allReferrals }: { company: Contact; allReferrals
               <Badge className="text-xs bg-green-100 text-green-800 border border-green-200">Company</Badge>
               {company.portalPin && (
                 <Badge className="text-xs bg-green-100 text-green-800 border border-green-200 gap-1">
-                  <KeyRound className="w-2.5 h-2.5" />Portal PIN: {company.portalPin}
+                  <KeyRound className="w-2.5 h-2.5" />
+                  <PortalPinBadge pin={company.portalPin} contactId={company.id} canReveal={canRevealPin} />
                 </Badge>
               )}
             </div>
-            {company.phone && <a href={`tel:${company.phone}`} className="text-xs text-[hsl(var(--titan-blue))] flex items-center gap-1 hover:underline"><Phone className="w-3 h-3" />{company.phone}</a>}
+            {company.phone && <a href={phoneHref(company.phone)} className="text-xs text-[hsl(var(--titan-blue))] flex items-center gap-1 hover:underline"><Phone className="w-3 h-3" />{formatPhone(company.phone)}</a>}
             {company.email && <a href={`mailto:${company.email}`} className="text-xs text-[hsl(var(--titan-blue))] flex items-center gap-1 hover:underline"><Mail className="w-3 h-3" />{company.email}</a>}
             <p className="text-xs text-muted-foreground mt-1">{techs.length} tech{techs.length === 1 ? "" : "s"} attached</p>
           </div>
@@ -702,7 +757,7 @@ function CompanyCard({ company, allReferrals }: { company: Contact; allReferrals
                   <div className="space-y-3">
                     <div><Label>Tech Name</Label><Input value={newTech.name} onChange={e => setNewTech(f => ({ ...f, name: e.target.value }))} data-testid="input-tech-name" /></div>
                     <div className="grid grid-cols-2 gap-3">
-                      <div><Label>Phone</Label><Input value={newTech.phone} onChange={e => setNewTech(f => ({ ...f, phone: e.target.value }))} data-testid="input-tech-phone" /></div>
+                      <div><Label>Phone</Label><Input type="tel" inputMode="tel" autoComplete="tel" value={newTech.phone} onChange={e => setNewTech(f => ({ ...f, phone: e.target.value }))} data-testid="input-tech-phone" /></div>
                       <div><Label>Email</Label><Input type="email" value={newTech.email} onChange={e => setNewTech(f => ({ ...f, email: e.target.value }))} data-testid="input-tech-email" /></div>
                     </div>
 
@@ -755,7 +810,7 @@ function CompanyCard({ company, allReferrals }: { company: Contact; allReferrals
                 <div>
                   <p className="font-medium">{t.name}</p>
                   <div className="flex gap-3 text-xs text-muted-foreground">
-                    {t.phone && <span>{t.phone}</span>}
+                    {t.phone && <span>{formatPhone(t.phone)}</span>}
                     {t.email && <span>{t.email}</span>}
                   </div>
                 </div>

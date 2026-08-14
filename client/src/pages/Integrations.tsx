@@ -221,7 +221,9 @@ export default function Integrations() {
         <h1 className="text-lg font-bold">Integrations</h1>
       </div>
 
-      <div className="grid grid-cols-1 gap-4">
+      {/* Single-card layout after Ramp removal — constrain width so the card
+         doesn't stretch across the full desktop viewport. Fixed 2026-08-14. */}
+      <div className="max-w-3xl">
         <QuickBooksSection />
       </div>
     </div>

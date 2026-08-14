@@ -641,7 +641,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           grossProfit: phGrossProfit,
           settledAmount, // claim-level, shown on both phases
           grossMarginPct: phCollected > 0 ? Math.round((phGrossProfit / phCollected) * 100) : 0,
-          outstanding: phInvoiceTotal - phCollected,
+          outstanding: Math.max(0, phInvoiceTotal - phCollected),
           externalEstimateTotal: phExtEst.total,
           externalEstimateCount: phExtEst.count,
           externalInvoiceTotal: phExtInv.total,
@@ -665,7 +665,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         grossProfit,
         settledAmount,
         grossMarginPct: collected > 0 ? Math.round(((collected - totalCosts) / collected) * 100) : 0,
-        outstanding: invoiceTotal - collected,
+        outstanding: Math.max(0, invoiceTotal - collected),
         externalEstimateTotal: extEstTotalJob,
         externalEstimateCount: extEstCountJob,
         externalInvoiceTotal: extInvTotalJob,
@@ -5183,7 +5183,38 @@ Approve in Partner Portal → Admin View.
   });
 
 
-  // ── Ramp removal cleanup — dropped 2026-08-14 ─────────────────────────────
+  // ── Job-number integrity migration — 2026-08-14 ─────────────────────────────
+  // Production data had duplicate + inconsistent job numbers
+  // ("TP-2026-Augusta-0428" collided across two distinct jobs;
+  // "Tp-26-Augusta-0423" mixed-case; "TP-26-Augusta-0420" short-year).
+  // Fix in three passes:
+  //   1. Uppercase the "TP-" prefix on any historical row.
+  //   2. Normalize short-year "TP-26-..." → "TP-2026-...".
+  //   3. For any duplicate job_number, keep the earliest job (lowest id)
+  //      and suffix later collisions with "-DUP<id>" so the unique index
+  //      can be created without data loss. The suffix is intentionally
+  //      ugly so staff notice and rename.
+  try {
+    sqlite.exec("UPDATE jobs SET job_number = REPLACE(job_number, 'Tp-', 'TP-') WHERE job_number LIKE 'Tp-%'");
+    sqlite.exec("UPDATE jobs SET job_number = REPLACE(job_number, 'TP-26-', 'TP-2026-') WHERE job_number LIKE 'TP-26-%'");
+    const dups: any[] = sqlite.prepare(
+      "SELECT job_number, MIN(id) AS keep_id FROM jobs WHERE job_number IS NOT NULL AND job_number <> '' GROUP BY job_number HAVING COUNT(*) > 1"
+    ).all();
+    for (const d of dups) {
+      const dupRows: any[] = sqlite.prepare(
+        "SELECT id FROM jobs WHERE job_number = ? AND id <> ?"
+      ).all(d.job_number, d.keep_id);
+      for (const r of dupRows) {
+        sqlite.prepare("UPDATE jobs SET job_number = ? WHERE id = ?")
+          .run(`${d.job_number}-DUP${r.id}`, r.id);
+        console.log(`[jobs] resolved duplicate job_number "${d.job_number}" on id=${r.id}`);
+      }
+    }
+    sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_job_number ON jobs(job_number)");
+  } catch (e: any) {
+    console.warn("[migration] job-number normalization skipped:", e?.message || e);
+  }
+
   // Ramp was never wired to real payouts. Removing the endpoints, UI, and tables.
   try { sqlite.exec(`DROP TABLE IF EXISTS ramp_transactions`); } catch(_) {}
   try { sqlite.exec(`DROP TABLE IF EXISTS ramp_payments`); } catch(_) {}

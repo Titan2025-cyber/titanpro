@@ -110,7 +110,13 @@ export default function Reports() {
                     { l: "Total Billed", v: money(data.totals.billed) },
                     { l: "Settled", v: money(data.totals.settled) },
                     { l: "Collected", v: money(data.totals.collected) },
-                    { l: "Outstanding", v: money((data.totals.settled || 0) - (data.totals.collected || 0)) },
+                    // Outstanding is clamped at zero for display. When collected
+                    // exceeds settled the true A/R is $0 and the difference is a
+                    // customer credit — shown separately below (fixed 2026-08-14).
+                    { l: "Outstanding", v: money(Math.max(0, (data.totals.settled || 0) - (data.totals.collected || 0))) },
+                    ...(((data.totals.collected || 0) - (data.totals.settled || 0)) > 0
+                      ? [{ l: "Customer credit", v: money((data.totals.collected || 0) - (data.totals.settled || 0)) }]
+                      : []),
                   ].map(k => (
                     <div key={k.l} className="border rounded-md p-3 border-l-4 border-l-[hsl(var(--titan-blue))]">
                       <p className="text-[10px] uppercase tracking-wide text-neutral-500 font-semibold">{k.l}</p>
@@ -139,7 +145,7 @@ export default function Reports() {
                           <td style={{ textAlign: "right" }}>{money(p.billed)}</td>
                           <td style={{ textAlign: "right" }}>{money(p.settled)}</td>
                           <td style={{ textAlign: "right" }}>{money(p.collected)}</td>
-                          <td style={{ textAlign: "right" }}>{money((p.settled || 0) - (p.collected || 0))}</td>
+                          <td style={{ textAlign: "right" }}>{money(Math.max(0, (p.settled || 0) - (p.collected || 0)))}</td>
                         </tr>
                       ))}
                       <tr style={{ fontWeight: 700 }}>
@@ -147,7 +153,7 @@ export default function Reports() {
                         <td style={{ textAlign: "right" }}>{money(data.totals.billed)}</td>
                         <td style={{ textAlign: "right" }}>{money(data.totals.settled)}</td>
                         <td style={{ textAlign: "right" }}>{money(data.totals.collected)}</td>
-                        <td style={{ textAlign: "right" }}>{money((data.totals.settled || 0) - (data.totals.collected || 0))}</td>
+                        <td style={{ textAlign: "right" }}>{money(Math.max(0, (data.totals.settled || 0) - (data.totals.collected || 0)))}</td>
                       </tr>
                     </tbody>
                   </table>

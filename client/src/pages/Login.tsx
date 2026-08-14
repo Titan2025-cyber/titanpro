@@ -417,7 +417,7 @@ export default function Login() {
                   <button
                     type="button"
                     onClick={() => { setMode("web"); setError(""); }}
-                    className={`flex-1 py-2 text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${mode === "web" ? "bg-[hsl(var(--titan-blue))] text-white" : "text-muted-foreground hover:bg-muted"}`}
+                    className={`flex-1 py-2 text-xs font-medium transition-colors flex items-center justify-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--titan-blue))] focus-visible:ring-offset-2 focus-visible:ring-offset-background ${mode === "web" ? "bg-[hsl(var(--titan-blue))] text-white" : "text-muted-foreground hover:bg-muted"}`}
                     data-testid="tab-web-login"
                   >
                     <Mail className="w-3.5 h-3.5" /> Email login
@@ -425,7 +425,7 @@ export default function Login() {
                   <button
                     type="button"
                     onClick={() => { setMode("pin"); setError(""); }}
-                    className={`flex-1 py-2 text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${mode === "pin" ? "bg-[hsl(var(--titan-blue))] text-white" : "text-muted-foreground hover:bg-muted"}`}
+                    className={`flex-1 py-2 text-xs font-medium transition-colors flex items-center justify-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--titan-blue))] focus-visible:ring-offset-2 focus-visible:ring-offset-background ${mode === "pin" ? "bg-[hsl(var(--titan-blue))] text-white" : "text-muted-foreground hover:bg-muted"}`}
                     data-testid="tab-pin-login"
                   >
                     <Smartphone className="w-3.5 h-3.5" /> Quick PIN

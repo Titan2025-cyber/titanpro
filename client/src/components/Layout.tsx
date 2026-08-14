@@ -289,6 +289,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Close the mobile nav drawer on Escape. All other modals in the app respect
+  // Escape; the drawer previously only closed on backdrop click (fixed 2026-08-14).
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMobileOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mobileOpen]);
+
   // Auto-expand the group containing the active route
   useEffect(() => {
     navGroups.forEach(group => {
@@ -353,7 +362,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               {/* Group header button */}
               <button
                 onClick={() => toggleGroup(group.label)}
-                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg transition-all ${
+                className={`w-full flex items-center gap-2 px-2 py-3 lg:py-1.5 rounded-lg transition-all ${
                   hasActive
                     ? "text-[hsl(var(--titan-red))] bg-[hsl(var(--titan-red)/0.06)]"
                     : "text-[hsl(var(--sidebar-fg))] opacity-60 hover:opacity-90 hover:bg-[hsl(var(--sidebar-border)/0.5)]"
@@ -383,7 +392,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                         onClick={() => setMobileOpen(false)}
                         onMouseEnter={() => prefetchRoute(href)}
                         onFocus={() => prefetchRoute(href)}
-                        className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm transition-all ${
+                        className={`flex items-center gap-2 px-2.5 py-3 lg:py-1.5 rounded-md text-sm transition-all min-h-[44px] lg:min-h-0 ${
                           active
                             ? "bg-gradient-to-r from-[hsl(var(--titan-red))] to-[hsl(var(--titan-red-dark))] text-white font-medium shadow-[0_0_16px_-2px_hsl(var(--titan-red)/0.6)] ring-1 ring-white/10"
                             : "text-[hsl(var(--sidebar-fg))] opacity-75 hover:opacity-100 hover:bg-[hsl(var(--sidebar-border))] hover:translate-x-0.5"
