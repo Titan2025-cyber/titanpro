@@ -472,7 +472,13 @@ export default function App() {
             above the Router so it appears on the login screen and every
             authenticated view. */}
         <EnvBanner />
-        <Router hook={useHashLocationNoQuery}>
+        {/* hrefs transform: hash routing means <Link href="/jobs/16"> would
+            render as <a href="/jobs/16">, which breaks right-click / middle-
+            click / Cmd-click "open in new tab" — the fresh tab loads the
+            root path with no hash and lands on the dashboard. Prepending "#"
+            to the rendered href fixes all three, without changing in-page
+            navigation (wouter still intercepts left-clicks). Added 2026-08-15. */}
+        <Router hook={useHashLocationNoQuery} hrefs={(path) => "#" + path}>
           <AppRoutes />
         </Router>
         <SessionTimeout />
