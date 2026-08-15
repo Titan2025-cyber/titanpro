@@ -375,6 +375,12 @@ export const dryingRecords = sqliteTable("drying_records", {
   readingTime: text("reading_time"),              // HH:MM
   techName: text("tech_name").notNull(),
   dayNumber: integer("day_number").default(1),    // Day 1, Day 2, etc.
+  // Record type distinguishes a normal drying visit from a missed day
+  // (homeowner denied access, weather, equipment issue, etc.). Missed days
+  // are logged so the drying timeline shows continuous coverage per S500,
+  // but they skip psychrometric/moisture/equipment capture. Added 2026-08-14.
+  recordType: text("record_type").notNull().default("visit"), // visit|missed
+  missedReason: text("missed_reason"), // free label for missed days (e.g. "Homeowner denied access")
   // IICRC S500 Classification
   waterCategory: text("water_category").notNull().default("category1"), // category1|category2|category3
   waterClass: text("water_class").notNull().default("class2"),           // class1|class2|class3|class4

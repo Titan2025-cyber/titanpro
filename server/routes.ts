@@ -2160,7 +2160,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const job = storage.getJob(jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
 
-    const records = storage.getDryingRecords(jobId);
+    // Missed days carry no moisture data — they must be excluded from the
+    // alert stream, otherwise the "last record clean" check would misfire.
+    const records = storage.getDryingRecords(jobId).filter(r => (r as any).recordType !== "missed");
     if (records.length === 0) return res.json({ alerted: false, reason: "No records" });
 
     // Sort by readingDate asc then dayNumber asc

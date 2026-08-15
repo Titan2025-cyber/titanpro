@@ -756,6 +756,15 @@ const dryingCols = (sqlite.prepare("PRAGMA table_info(drying_records)").all() as
 if (!dryingCols.includes("psychrometric_readings")) {
   sqlite.exec(`ALTER TABLE drying_records ADD COLUMN psychrometric_readings TEXT NOT NULL DEFAULT '[]'`);
 }
+// Missed-day support: recordType = 'visit' | 'missed' with an optional label.
+// Added 2026-08-14 so techs can log denied-access / weather / equipment days
+// in-line with normal drying visits without breaking the day sequence.
+if (!dryingCols.includes("record_type")) {
+  sqlite.exec(`ALTER TABLE drying_records ADD COLUMN record_type TEXT NOT NULL DEFAULT 'visit'`);
+}
+if (!dryingCols.includes("missed_reason")) {
+  sqlite.exec(`ALTER TABLE drying_records ADD COLUMN missed_reason TEXT`);
+}
 
 // ── Object storage columns ────────────────────────────────────────────────
 // Backfill storage_key columns onto every table that previously held image
@@ -1524,7 +1533,13 @@ class SqliteStorage implements IStorage {
 
   // Drying Records
   getDryingRecords(jobId: number) {
-    return db.select().from(schema.dryingRecords).where(eq(schema.dryingRecords.jobId, jobId)).orderBy(schema.dryingRecords.dayNumber).all();
+    // Newest-first by date, with dayNumber as a tiebreaker for same-day entries.
+    // The client re-sorts too (defense in depth), but returning them in this
+    // order keeps offline caches and PDFs consistent.
+    return db.select().from(schema.dryingRecords)
+      .where(eq(schema.dryingRecords.jobId, jobId))
+      .orderBy(desc(schema.dryingRecords.readingDate), desc(schema.dryingRecords.dayNumber))
+      .all();
   }
   getDryingRecord(id: number) { return db.select().from(schema.dryingRecords).where(eq(schema.dryingRecords.id, id)).get(); }
   createDryingRecord(data: schema.InsertDryingRecord) {

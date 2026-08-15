@@ -9,7 +9,8 @@ import { UserSelect } from "@/components/UserSelect";
 import { useState } from "react";
 import {
   Plus, Trash2, ChevronDown, ChevronUp, CheckCircle2,
-  Thermometer, Droplets, Wind, Clipboard, Save, AlertTriangle
+  Thermometer, Droplets, Wind, Clipboard, Save, AlertTriangle,
+  CalendarOff, Ban
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -732,7 +733,159 @@ function RecordCard({ record, jobId, readOnly }: { record: DryingRecord; jobId: 
   );
 }
 
-// ── New Record Form ───────────────────────────────────────────────────────────
+// ── Missed-Day Form ───────────────────────────────────────────────────────────
+// A stripped-down form used to log a day where drying was NOT performed —
+// homeowner denied access, weather, tech unavailable, equipment issue. Missed
+// days preserve the chronological integrity of the drying log per S500 §14
+// without polluting moisture-alert calculations. Added 2026-08-14.
+const MISSED_REASONS = [
+  "Homeowner denied access / not home",
+  "Weather / site inaccessible",
+  "Scheduling conflict / tech unavailable",
+  "Equipment issue / awaiting parts",
+  "Other (see notes)",
+];
+
+function MissedDayForm({ jobId, defaultDay, onClose }: { jobId: number; defaultDay: number; onClose: () => void }) {
+  const { toast } = useToast();
+  const [form, setForm] = useState({
+    readingDate: todayLocalISO(),
+    techName: "",
+    dayNumber: defaultDay,
+    missedReason: MISSED_REASONS[0],
+    observations: "",
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async () => {
+      return apiRequest("POST", `/api/jobs/${jobId}/drying-records`, {
+        recordType: "missed",
+        readingDate: form.readingDate,
+        readingTime: null,
+        // The DB requires tech_name NOT NULL, so fall back to a system label.
+        techName: form.techName || "— no visit —",
+        dayNumber: form.dayNumber,
+        waterCategory: "category1",
+        waterClass: "class2",
+        missedReason: form.missedReason,
+        observations: form.observations,
+        moistureReadings: "[]",
+        equipment: "[]",
+        affectedAreas: "[]",
+        psychrometricReadings: "[]",
+        tempF: null,
+        rhPct: null,
+        gpp: null,
+        dewPointF: null,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "drying-records"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId)] });
+      toast({ title: "Missed day logged", description: `${form.readingDate} — ${form.missedReason}` });
+      onClose();
+    },
+  });
+
+  return (
+    <Card className="border-amber-300 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-950/20">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm flex items-center gap-2 text-amber-900 dark:text-amber-200">
+          <CalendarOff className="w-4 h-4" />
+          Log Missed Day
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pt-0 space-y-3">
+        <p className="text-xs text-amber-800 dark:text-amber-300">
+          Use this to document a day where drying was scheduled but not performed. It keeps the S500 timeline continuous without recording readings.
+        </p>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <div>
+            <Label className="text-xs">Date</Label>
+            <Input type="date" className="h-8 text-xs mt-1" value={form.readingDate}
+              onChange={e => setForm(f => ({ ...f, readingDate: e.target.value }))}
+              data-testid="input-missed-date" />
+          </div>
+          <div>
+            <Label className="text-xs">Day #</Label>
+            <Input type="number" min="1" className="h-8 text-xs mt-1" value={form.dayNumber}
+              onChange={e => setForm(f => ({ ...f, dayNumber: Number(e.target.value) }))} />
+          </div>
+          <div>
+            <Label className="text-xs">Attempted by (optional)</Label>
+            <UserSelect value={form.techName} onChange={v => setForm(f => ({ ...f, techName: v }))} roles={["tech"]} placeholder="— not applicable —" className="h-8 text-xs mt-1" testId="select-missed-tech" />
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs">Reason</Label>
+          <Select value={form.missedReason} onValueChange={v => setForm(f => ({ ...f, missedReason: v }))}>
+            <SelectTrigger className="h-8 text-xs mt-1" data-testid="select-missed-reason"><SelectValue /></SelectTrigger>
+            <SelectContent>{MISSED_REASONS.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-xs">Notes</Label>
+          <Textarea className="mt-1 text-xs min-h-[60px]"
+            placeholder="Optional — who was contacted, follow-up plan, adjuster notified, etc."
+            value={form.observations}
+            onChange={e => setForm(f => ({ ...f, observations: e.target.value }))} />
+        </div>
+        <div className="flex gap-2">
+          <Button className="flex-1 bg-amber-600 hover:bg-amber-700 text-white"
+            onClick={() => createMutation.mutate()}
+            disabled={createMutation.isPending || !form.readingDate || !form.missedReason}
+            data-testid="button-save-missed-day">
+            <CalendarOff className="w-4 h-4 mr-2" />
+            {createMutation.isPending ? "Saving…" : "Log Missed Day"}
+          </Button>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Compact row rendered for records with recordType === 'missed'. Rendered
+// in-line with normal drying visits so the timeline stays contiguous.
+function MissedDayCard({ record, jobId, readOnly }: { record: DryingRecord; jobId: number; readOnly?: boolean }) {
+  const deleteMutation = useMutation({
+    mutationFn: () => apiRequest("DELETE", `/api/drying-records/${record.id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "drying-records"] }),
+  });
+  const missedReason = (record as any).missedReason || "Missed day";
+  return (
+    <Card className="overflow-hidden border-dashed" data-testid={`missed-day-${record.id}`}>
+      <CardContent className="p-3 border-l-4 border-amber-400 bg-amber-50/40 dark:bg-amber-950/20 flex items-center gap-3">
+        <div className="shrink-0 text-center">
+          <p className="text-xs font-bold text-amber-700 dark:text-amber-300">Day {record.dayNumber || "—"}</p>
+          <p className="text-xs text-muted-foreground">{record.readingDate}</p>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <Ban className="w-3.5 h-3.5 text-amber-700 dark:text-amber-300" />
+            <span className="text-xs font-semibold text-amber-900 dark:text-amber-200">Missed day</span>
+            <Badge className="bg-amber-200 text-amber-900 border-0 text-[10px] dark:bg-amber-900 dark:text-amber-100">{missedReason}</Badge>
+          </div>
+          {record.observations && (
+            <p className="text-xs text-muted-foreground mt-0.5 truncate">{record.observations}</p>
+          )}
+          {record.techName && record.techName !== "— no visit —" && (
+            <p className="text-[11px] text-muted-foreground mt-0.5">Attempted by {record.techName}</p>
+          )}
+        </div>
+        {!readOnly && (
+          <Button size="sm" variant="ghost" className="h-7 px-1 text-destructive shrink-0"
+            onClick={() => { if (confirm("Delete this missed-day entry?")) deleteMutation.mutate(); }}
+            data-testid={`delete-missed-${record.id}`}>
+            <Trash2 className="w-3.5 h-3.5" />
+          </Button>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── New Record Form ─────────────────────────────────────────────────────
 function NewRecordForm({ jobId, onClose }: { jobId: number; onClose: () => void }) {
   const { toast } = useToast();
   const [form, setForm] = useState({
@@ -875,17 +1028,34 @@ function NewRecordForm({ jobId, onClose }: { jobId: number; onClose: () => void 
 // ── Main export ───────────────────────────────────────────────────────────────
 export default function DryingRecords({ jobId, readOnly = false }: { jobId: number; readOnly?: boolean }) {
   const [showNew, setShowNew] = useState(false);
+  const [showMissed, setShowMissed] = useState(false);
 
   const { data: records = [], isLoading } = useQuery<DryingRecord[]>({
     queryKey: ["/api/jobs", String(jobId), "drying-records"],
     queryFn: () => apiRequest("GET", `/api/jobs/${jobId}/drying-records`).then(r => r.json()),
   });
 
-  const dryCount = records.filter(r => r.structuralDryingComplete === 1).length;
-  const wetCount = records.filter(r => {
+  // Newest-first ordering, with dayNumber as a tiebreaker for same-day entries.
+  // A stable client-side sort keeps missed days weaving into the visit stream
+  // by date regardless of the order the API returns rows in.
+  const sortedRecords = [...records].sort((a, b) => {
+    const da = a.readingDate || "";
+    const dbb = b.readingDate || "";
+    if (da !== dbb) return dbb.localeCompare(da);
+    return (b.dayNumber || 0) - (a.dayNumber || 0);
+  });
+
+  // Missed days don't have moisture data — exclude them from dry/wet KPIs.
+  const visitRecords = records.filter(r => (r as any).recordType !== "missed");
+  const missedCount = records.length - visitRecords.length;
+  const dryCount = visitRecords.filter(r => r.structuralDryingComplete === 1).length;
+  const wetCount = visitRecords.filter(r => {
     const readings: MoistureRow[] = JSON.parse(r.moistureReadings || "[]");
     return readings.some(m => m.reading > m.target);
   }).length;
+
+  // Next default day number for a new missed-day entry: max seen + 1.
+  const nextDay = records.reduce((max, r) => Math.max(max, r.dayNumber || 0), 0) + 1;
 
   // Offline-queued drying-record POSTs for this job (matched by URL path).
   const {
@@ -911,6 +1081,7 @@ export default function DryingRecords({ jobId, readOnly = false }: { jobId: numb
             <div className="flex gap-2 text-xs">
               {dryCount > 0 && <Badge className="bg-green-500 text-white">{dryCount} Dry</Badge>}
               {wetCount > 0 && <Badge variant="destructive">{wetCount} Active</Badge>}
+              {missedCount > 0 && <Badge className="bg-amber-500 text-white">{missedCount} Missed</Badge>}
             </div>
           )}
           {failedCount > 0 && (
@@ -931,15 +1102,26 @@ export default function DryingRecords({ jobId, readOnly = false }: { jobId: numb
             />
           )}
         </div>
-        {!readOnly && !showNew && (
-          <Button
-            size="sm"
-            className="bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
-            onClick={() => setShowNew(true)}
-            data-testid="button-new-drying-record"
-          >
-            <Plus className="w-3.5 h-3.5 mr-1" />New Record
-          </Button>
+        {!readOnly && !showNew && !showMissed && (
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-amber-400 text-amber-800 hover:bg-amber-50 dark:text-amber-300 dark:border-amber-600 dark:hover:bg-amber-950"
+              onClick={() => setShowMissed(true)}
+              data-testid="button-log-missed-day"
+            >
+              <CalendarOff className="w-3.5 h-3.5 mr-1" />Log Missed Day
+            </Button>
+            <Button
+              size="sm"
+              className="bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
+              onClick={() => setShowNew(true)}
+              data-testid="button-new-drying-record"
+            >
+              <Plus className="w-3.5 h-3.5 mr-1" />New Record
+            </Button>
+          </div>
         )}
       </div>
 
@@ -953,6 +1135,7 @@ export default function DryingRecords({ jobId, readOnly = false }: { jobId: numb
       )}
 
       {showNew && <NewRecordForm jobId={jobId} onClose={() => setShowNew(false)} />}
+      {showMissed && <MissedDayForm jobId={jobId} defaultDay={nextDay} onClose={() => setShowMissed(false)} />}
 
       {isLoading ? (
         <div className="space-y-2">{[1,2].map(i => <div key={i} className="h-14 bg-muted animate-pulse rounded-lg" />)}</div>
@@ -992,7 +1175,11 @@ export default function DryingRecords({ jobId, readOnly = false }: { jobId: numb
               </span>
             </div>
           )}
-          {records.map(r => <RecordCard key={r.id} record={r} jobId={jobId} readOnly={readOnly} />)}
+          {sortedRecords.map(r => (
+            (r as any).recordType === "missed"
+              ? <MissedDayCard key={r.id} record={r} jobId={jobId} readOnly={readOnly} />
+              : <RecordCard key={r.id} record={r} jobId={jobId} readOnly={readOnly} />
+          ))}
         </div>
       )}
     </div>
