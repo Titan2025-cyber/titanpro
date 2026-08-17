@@ -2256,9 +2256,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!body.name || !String(body.name).trim()) return res.status(400).json({ error: "Name is required." });
     res.json(storage.createEmployee(body));
   });
-  app.patch("/api/employees/:id", (req, res) => {
+  app.patch("/api/employees/:id", (req: any, res) => {
+    // Non-privileged users may ONLY edit their own record. This prevents any
+    // signed-in employee from PATCHing another employee's gmailEmail (or any
+    // other profile field). Owner / admin / general_manager can still edit
+    // anyone. Privileged fields (role, pin, active…) are already stripped for
+    // non-owners by stripEmployeePrivilegedFields.
+    const targetId = Number(req.params.id);
+    const me = req.employee;
+    const privileged = me && ["owner", "admin", "general_manager"].includes(String(me.role));
+    if (!privileged && (!me || me.id !== targetId)) {
+      return res.status(403).json({ error: "You can only update your own profile." });
+    }
     const body = stripEmployeePrivilegedFields(req.body);
-    const emp = storage.updateEmployee(Number(req.params.id), body);
+    const emp = storage.updateEmployee(targetId, body);
     if (!emp) return res.status(404).json({ error: "Not found" });
     res.json(emp);
   });

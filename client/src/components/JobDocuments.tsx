@@ -364,20 +364,12 @@ function WorkAuthorizationForm({
           </div>
         </div>
 
-        {/* Legal text — must mirror the PDF terms exactly */}
-        <div className="border rounded-lg p-3 bg-muted/20 text-[11px] leading-snug text-muted-foreground space-y-2 max-h-[220px] overflow-y-auto">
-          <p className="font-semibold text-foreground text-xs">Authorization to Perform Restoration Services — Terms & Conditions</p>
-          <p>I, the undersigned Property Owner / Authorized Representative (“Owner”), authorize <strong>Titan Restoration LLC</strong> (“Contractor”) to enter the property and perform the mitigation, remediation, and/or restoration services described in the Scope of Authorization above. Owner represents that Owner has legal authority to authorize this work.</p>
-          <p><strong>1. Scope & IICRC standards.</strong> Contractor will perform work using generally accepted industry practices and applicable IICRC standards (S500 water, S520 mold, S700 fire, S760 trauma). Additional or changed work will be documented in a written change order.</p>
-          <p><strong>2. Pricing.</strong> Work is priced using Contractor's published pricing schedule. This pricing may differ from insurance software defaults (e.g., Xactimate). Owner acknowledges receiving Contractor's Custom Pricing Acknowledgment, which is incorporated by reference.</p>
-          <p><strong>3. Primary payment obligation.</strong> Owner is the primary party responsible for full payment of all services rendered, regardless of insurance coverage. Owner shall pay any deductible, non-covered items, depreciation holdback withheld until completion, betterment/upgrades, and any shortfall between Contractor's invoice and insurance proceeds. Payment is due within 30 days of invoice.</p>
-          <p><strong>4. Direction to pay / insurance proceeds.</strong> Owner directs their insurance carrier and any mortgagee to include Titan Restoration LLC as a co-payee on all loss-payment drafts for this claim and to send Titan's portion of proceeds directly to Titan. Owner authorizes Contractor to speak with the carrier about scope, pricing, and payment status. This is a direction to pay only; it is not a public-adjuster engagement.</p>
-          <p><strong>5. Endorsement & proof of loss.</strong> Owner shall promptly endorse insurance drafts naming Contractor as a payee, cooperate in a sworn proof of loss when required, and forward Titan's portion within 5 business days of receipt.</p>
-          <p><strong>6. Late payment, interest & collections.</strong> Undisputed balances not paid within 30 days accrue interest at 1% per month or the maximum rate allowed by law. Owner shall pay Contractor's reasonable collection costs, court costs, and attorneys' fees to collect any undisputed balance.</p>
-          <p><strong>7. Lien rights.</strong> Contractor may file and enforce a mechanic's/materialman's lien against the property under S.C. Code Title 29, Ch. 5 (SC) or O.C.G.A. Title 44, Ch. 14, Art. 8 (GA) for unpaid work.</p>
-          <p><strong>8. Prompt pay (carrier).</strong> Owner acknowledges that carriers must acknowledge and pay undisputed claims within statutory time limits: S.C. Code § 38-59-20 and O.C.G.A. §§ 13-11-1 to 13-11-11.</p>
-          <p><strong>9. Access, power & utilities.</strong> Owner will provide safe access, continuous electrical power for drying/remediation equipment, and reasonable use of water. Owner will not disable, unplug, or move Contractor's equipment; if equipment is disabled or removed without written approval, resulting damage or delay is Owner's responsibility.</p>
-          <p><strong>10. Governing law, venue & cancellation.</strong> This Authorization is governed by the laws of {job.address?.includes(", GA") ? "Georgia" : job.address?.includes(", SC") ? "South Carolina" : "Georgia"}. <strong>SC homeowners</strong> have the right to cancel this contract within 3 business days after signing if signed at a location other than Contractor's regular place of business. <strong>GA homeowners</strong> may cancel within 5 business days of receiving a written denial of coverage from the carrier (HB 423). Cancellation must be in writing and delivered to Contractor at cody@titanaugusta.com. Owner remains responsible for the reasonable value of work already performed and materials already ordered.</p>
+        {/* Legal text */}
+        <div className="border rounded-lg p-3 bg-muted/20 text-xs text-muted-foreground space-y-2">
+          <p className="font-semibold text-foreground">Authorization & Assignment of Benefits</p>
+          <p>I, the undersigned, hereby authorize <strong>Titan Restoration LLC</strong> to perform all necessary mitigation, remediation, and/or restoration services as described above at the above-referenced property. I authorize Titan Restoration LLC to act on my behalf with my insurance carrier regarding this claim.</p>
+          <p>I understand that: (1) payment is due per Titan's scope upon completion; (2) any insurance shortfall remains my responsibility; (3) Titan Restoration LLC will comply with all applicable IICRC standards; (4) this authorization covers all reasonable and necessary services to address the described loss.</p>
+          <p>This document is governed by the laws of the State of {job.address?.includes(", GA") ? "Georgia" : job.address?.includes(", SC") ? "South Carolina" : "Georgia"}.</p>
         </div>
 
         {/* Signature pad */}
@@ -403,427 +395,6 @@ function WorkAuthorizationForm({
           >
             <CheckCircle2 className="w-4 h-4 mr-2" />
             {createMutation.isPending ? "Saving…" : "Sign & Save Authorization"}
-          </Button>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-        </div>
-        {!sigData && <p className="text-xs text-amber-600 flex items-center gap-1"><AlertTriangle className="w-3 h-3" />Signature required before saving</p>}
-      </CardContent>
-    </Card>
-  );
-}
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Direction to Pay Notice Form (carrier notice, homeowner-signed)
-// ─────────────────────────────────────────────────────────────────────────────
-function DirectionToPayForm({
-  job, contact, jobId, onClose, phase
-}: { job: Job; contact?: Contact; jobId: number; onClose: () => void; phase?: string }) {
-  const { toast } = useToast();
-  const [sigData, setSigData] = useState<string>("");
-  const [form, setForm] = useState({
-    signerName: contact?.name || "",
-    signerRole: "homeowner",
-    relationship: "Property Owner / Named Insured",
-    propertyAddress: job.address || "",
-    dateOfLoss: (job as any).dateOfLoss || "",
-    lossType: job.lossType || "",
-    insuranceCarrier: job.insuranceCarrier || "",
-    claimNumber: job.claimNumber || "",
-    policyNumber: job.policyNumber || "",
-    adjusterName: (job as any).adjusterName || "",
-    adjusterEmail: (job as any).adjusterEmail || "",
-    adjusterPhone: (job as any).adjusterPhone || "",
-    mortgageeName: (job as any).mortgageeName || "",
-    mortgageeLoanNumber: (job as any).mortgageeLoanNumber || "",
-  });
-
-  const createMutation = useMutation({
-    mutationFn: async () => {
-      const signedAt = new Date().toISOString();
-      let pdfDataUri: string | undefined;
-      try {
-        const { generateDirectionToPayPDF } = await loadPdfEngine();
-        pdfDataUri = generateDirectionToPayPDF({
-          jobNumber: job.jobNumber,
-          signerName: form.signerName,
-          relationship: form.relationship,
-          propertyAddress: form.propertyAddress,
-          dateOfLoss: form.dateOfLoss,
-          lossType: form.lossType,
-          insuranceCarrier: form.insuranceCarrier,
-          claimNumber: form.claimNumber,
-          policyNumber: form.policyNumber,
-          adjusterName: form.adjusterName,
-          adjusterEmail: form.adjusterEmail,
-          adjusterPhone: form.adjusterPhone,
-          mortgageeName: form.mortgageeName,
-          mortgageeLoanNumber: form.mortgageeLoanNumber,
-          signatureDataUrl: sigData,
-          signedAt,
-        });
-      } catch (e) {
-        console.error("PDF generation failed", e);
-      }
-      return apiRequest("POST", `/api/jobs/${jobId}/documents`, {
-        docType: "direction_to_pay_notice",
-        title: `Direction to Pay Notice — ${job.jobNumber}`,
-        formData: JSON.stringify(form),
-        signatureData: sigData,
-        signerName: form.signerName,
-        signerRole: form.signerRole,
-        signedAt,
-        status: sigData ? "signed" : "unsigned",
-        createdBy: "Titan Pro",
-        phase: phase && phase !== "both" ? phase : "mitigation",
-        fileData: pdfDataUri,
-        fileName: `Direction_to_Pay_${job.jobNumber}.pdf`,
-        fileMimeType: "application/pdf",
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "documents"] });
-      toast({ title: "✅ Direction to Pay signed & PDF generated" });
-      onClose();
-    },
-  });
-
-  const today = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-
-  return (
-    <Card className="border-[hsl(var(--titan-blue)/0.4)]">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-sm flex items-center gap-2">
-          <ClipboardCheck className="w-4 h-4 text-[hsl(var(--titan-blue))]" />
-          Direction to Pay Notice
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-5">
-        {/* Form preview header */}
-        <div className="border rounded-lg p-4 bg-muted/20 space-y-1 text-xs">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="font-bold text-base text-[hsl(var(--titan-red))]">TITAN RESTORATION LLC</p>
-              <p className="text-muted-foreground">Augusta, GA · 706-922-0154 · titanaugusta.pro</p>
-            </div>
-            <p className="text-muted-foreground">Date: {today}</p>
-          </div>
-          <p className="font-semibold text-sm mt-2 pt-2 border-t">DIRECTION TO PAY — NOTICE TO INSURANCE CARRIER</p>
-        </div>
-
-        {/* Insured / property */}
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Label className="text-xs">Named Insured</Label>
-            <Input className="mt-1 h-8 text-sm" value={form.signerName}
-              onChange={e => setForm(f => ({ ...f, signerName: e.target.value }))}
-              placeholder="Full legal name" data-testid="input-dtp-signer-name" />
-          </div>
-          <div>
-            <Label className="text-xs">Relationship</Label>
-            <Select value={form.relationship} onValueChange={v => setForm(f => ({ ...f, relationship: v }))}>
-              <SelectTrigger className="mt-1 h-8 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {["Property Owner / Named Insured", "Named Insured (co-owner)", "Power of Attorney", "Property Manager", "Other"].map(r => (
-                  <SelectItem key={r} value={r}>{r}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="col-span-2">
-            <Label className="text-xs">Property Address</Label>
-            <Input className="mt-1 h-8 text-sm" value={form.propertyAddress}
-              onChange={e => setForm(f => ({ ...f, propertyAddress: e.target.value }))}
-              data-testid="input-dtp-address" />
-          </div>
-          <div>
-            <Label className="text-xs">Date of Loss</Label>
-            <Input type="date" className="mt-1 h-8 text-xs" value={form.dateOfLoss}
-              onChange={e => setForm(f => ({ ...f, dateOfLoss: e.target.value }))} />
-          </div>
-          <div>
-            <Label className="text-xs">Loss Type</Label>
-            <Input className="mt-1 h-8 text-sm" value={form.lossType}
-              onChange={e => setForm(f => ({ ...f, lossType: e.target.value }))}
-              placeholder="e.g. water, fire, mold" />
-          </div>
-        </div>
-
-        {/* Carrier / adjuster */}
-        <div className="border rounded-lg p-3 space-y-3">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Insurance Carrier</p>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label className="text-xs">Carrier Name *</Label>
-              <Input className="mt-1 h-8 text-sm" value={form.insuranceCarrier}
-                onChange={e => setForm(f => ({ ...f, insuranceCarrier: e.target.value }))}
-                placeholder="e.g. State Farm" data-testid="input-dtp-carrier" />
-            </div>
-            <div>
-              <Label className="text-xs">Claim Number *</Label>
-              <Input className="mt-1 h-8 text-sm" value={form.claimNumber}
-                onChange={e => setForm(f => ({ ...f, claimNumber: e.target.value }))} />
-            </div>
-            <div>
-              <Label className="text-xs">Policy Number</Label>
-              <Input className="mt-1 h-8 text-sm" value={form.policyNumber}
-                onChange={e => setForm(f => ({ ...f, policyNumber: e.target.value }))} />
-            </div>
-            <div>
-              <Label className="text-xs">Adjuster Name</Label>
-              <Input className="mt-1 h-8 text-sm" value={form.adjusterName}
-                onChange={e => setForm(f => ({ ...f, adjusterName: e.target.value }))} />
-            </div>
-            <div>
-              <Label className="text-xs">Adjuster Email</Label>
-              <Input type="email" className="mt-1 h-8 text-sm" value={form.adjusterEmail}
-                onChange={e => setForm(f => ({ ...f, adjusterEmail: e.target.value }))} />
-            </div>
-            <div>
-              <Label className="text-xs">Adjuster Phone</Label>
-              <Input type="tel" className="mt-1 h-8 text-sm" value={form.adjusterPhone}
-                onChange={e => setForm(f => ({ ...f, adjusterPhone: e.target.value }))} />
-            </div>
-          </div>
-        </div>
-
-        {/* Mortgagee (optional) */}
-        <div className="border rounded-lg p-3 space-y-3">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Mortgagee (optional — appears as co-payee if provided)</p>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label className="text-xs">Mortgagee Name</Label>
-              <Input className="mt-1 h-8 text-sm" value={form.mortgageeName}
-                onChange={e => setForm(f => ({ ...f, mortgageeName: e.target.value }))}
-                placeholder="e.g. Wells Fargo Home Mortgage" />
-            </div>
-            <div>
-              <Label className="text-xs">Loan #</Label>
-              <Input className="mt-1 h-8 text-sm" value={form.mortgageeLoanNumber}
-                onChange={e => setForm(f => ({ ...f, mortgageeLoanNumber: e.target.value }))} />
-            </div>
-          </div>
-        </div>
-
-        {/* Instruction text preview */}
-        <div className="border rounded-lg p-3 bg-muted/20 text-[11px] leading-snug text-muted-foreground space-y-2 max-h-[220px] overflow-y-auto">
-          <p className="font-semibold text-foreground text-xs">Instructions to Carrier</p>
-          <p>As the named Insured, I direct the above carrier and any mortgagee holding my policy proceeds to comply with the following on this claim:</p>
-          <p><strong>1. Name Titan as co-payee</strong> on all loss-payment drafts (ACV, RCV / recoverable depreciation, supplements, additional payments), alongside the Insured and any mortgagee.</p>
-          <p><strong>2. Send Titan's portion directly</strong> to Titan Restoration LLC (706-922-0154, cody@titanaugusta.com) using the mailing/EFT details Titan provides.</p>
-          <p><strong>3. Share scope and estimate information</strong> with Titan at the same time it is shared with the Insured, so pricing and scope can be reconciled before close-out.</p>
-          <p><strong>4. Prompt pay.</strong> This is written notice under prompt-payment law: S.C. Code § 38-59-20 (SC — acknowledge within 15 working days, pay undisputed claims within 30 days) and O.C.G.A. §§ 13-11-1 to 13-11-11 (GA Prompt Pay Act — 15 days for undisputed amounts on completed work).</p>
-          <p>This is a direction to pay only. It is not an Assignment of Benefits and it does not transfer ownership of the claim; the Insured remains the claimant. Titan Restoration LLC is the general contractor of record and is not acting as a public adjuster.</p>
-        </div>
-
-        {/* Signature pad */}
-        <div>
-          <Label className="text-xs font-semibold">Electronic Signature — {form.signerName || "Named Insured"}</Label>
-          <div className="mt-2">
-            <SignaturePad onSign={setSigData} onClear={() => setSigData("")} />
-          </div>
-          {sigData && (
-            <div className="mt-2 flex items-center gap-2 text-xs text-green-600">
-              <CheckCircle2 className="w-3.5 h-3.5" />Signature captured · {new Date().toLocaleString()}
-            </div>
-          )}
-        </div>
-
-        {/* Actions */}
-        <div className="flex gap-2">
-          <Button
-            className="flex-1 bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
-            onClick={() => createMutation.mutate()}
-            disabled={createMutation.isPending || !form.signerName || !form.insuranceCarrier || !form.claimNumber || !sigData}
-            data-testid="button-save-direction-to-pay"
-          >
-            <CheckCircle2 className="w-4 h-4 mr-2" />
-            {createMutation.isPending ? "Saving…" : "Sign & Save Notice"}
-          </Button>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-        </div>
-        {!sigData && <p className="text-xs text-amber-600 flex items-center gap-1"><AlertTriangle className="w-3 h-3" />Signature required before saving</p>}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Custom Pricing Acknowledgment Form (homeowner-signed)
-// ─────────────────────────────────────────────────────────────────────────────
-function CustomPricingForm({
-  job, contact, jobId, onClose, phase
-}: { job: Job; contact?: Contact; jobId: number; onClose: () => void; phase?: string }) {
-  const { toast } = useToast();
-  const [sigData, setSigData] = useState<string>("");
-  const [form, setForm] = useState({
-    signerName: contact?.name || "",
-    signerRole: "homeowner",
-    relationship: "Property Owner",
-    propertyAddress: job.address || "",
-    insuranceCarrier: job.insuranceCarrier || "",
-    claimNumber: job.claimNumber || "",
-    policyNumber: job.policyNumber || "",
-    lossType: job.lossType || "",
-  });
-
-  const createMutation = useMutation({
-    mutationFn: async () => {
-      const signedAt = new Date().toISOString();
-      let pdfDataUri: string | undefined;
-      try {
-        const { generateCustomPricingPDF } = await loadPdfEngine();
-        pdfDataUri = generateCustomPricingPDF({
-          jobNumber: job.jobNumber,
-          signerName: form.signerName,
-          relationship: form.relationship,
-          propertyAddress: form.propertyAddress,
-          insuranceCarrier: form.insuranceCarrier,
-          claimNumber: form.claimNumber,
-          policyNumber: form.policyNumber,
-          lossType: form.lossType,
-          signatureDataUrl: sigData,
-          signedAt,
-        });
-      } catch (e) {
-        console.error("PDF generation failed", e);
-      }
-      return apiRequest("POST", `/api/jobs/${jobId}/documents`, {
-        docType: "custom_pricing_acknowledgment",
-        title: `Custom Pricing Acknowledgment — ${job.jobNumber}`,
-        formData: JSON.stringify(form),
-        signatureData: sigData,
-        signerName: form.signerName,
-        signerRole: form.signerRole,
-        signedAt,
-        status: sigData ? "signed" : "unsigned",
-        createdBy: "Titan Pro",
-        phase: phase && phase !== "both" ? phase : "mitigation",
-        fileData: pdfDataUri,
-        fileName: `Custom_Pricing_Acknowledgment_${job.jobNumber}.pdf`,
-        fileMimeType: "application/pdf",
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "documents"] });
-      toast({ title: "✅ Custom Pricing Acknowledgment signed & PDF generated" });
-      onClose();
-    },
-  });
-
-  const today = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-
-  return (
-    <Card className="border-[hsl(var(--titan-blue)/0.4)]">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-sm flex items-center gap-2">
-          <ClipboardCheck className="w-4 h-4 text-[hsl(var(--titan-blue))]" />
-          Custom Pricing Acknowledgment
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-5">
-        {/* Form preview header */}
-        <div className="border rounded-lg p-4 bg-muted/20 space-y-1 text-xs">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="font-bold text-base text-[hsl(var(--titan-red))]">TITAN RESTORATION LLC</p>
-              <p className="text-muted-foreground">Augusta, GA · 706-922-0154 · titanaugusta.pro</p>
-            </div>
-            <p className="text-muted-foreground">Date: {today}</p>
-          </div>
-          <p className="font-semibold text-sm mt-2 pt-2 border-t">CUSTOM PRICING ACKNOWLEDGMENT & CARRIER PRICING NOTICE</p>
-        </div>
-
-        {/* Fields */}
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Label className="text-xs">Property Owner / Insured Name</Label>
-            <Input className="mt-1 h-8 text-sm" value={form.signerName}
-              onChange={e => setForm(f => ({ ...f, signerName: e.target.value }))}
-              placeholder="Full legal name" data-testid="input-cpa-signer-name" />
-          </div>
-          <div>
-            <Label className="text-xs">Relationship to Property</Label>
-            <Select value={form.relationship} onValueChange={v => setForm(f => ({ ...f, relationship: v }))}>
-              <SelectTrigger className="mt-1 h-8 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {["Property Owner", "Tenant", "Power of Attorney", "Property Manager", "Other"].map(r => (
-                  <SelectItem key={r} value={r}>{r}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="col-span-2">
-            <Label className="text-xs">Property Address</Label>
-            <Input className="mt-1 h-8 text-sm" value={form.propertyAddress}
-              onChange={e => setForm(f => ({ ...f, propertyAddress: e.target.value }))}
-              data-testid="input-cpa-address" />
-          </div>
-          <div>
-            <Label className="text-xs">Insurance Carrier</Label>
-            <Input className="mt-1 h-8 text-sm" value={form.insuranceCarrier}
-              onChange={e => setForm(f => ({ ...f, insuranceCarrier: e.target.value }))}
-              placeholder="e.g. State Farm" />
-          </div>
-          <div>
-            <Label className="text-xs">Claim Number</Label>
-            <Input className="mt-1 h-8 text-sm" value={form.claimNumber}
-              onChange={e => setForm(f => ({ ...f, claimNumber: e.target.value }))} />
-          </div>
-          <div>
-            <Label className="text-xs">Policy Number</Label>
-            <Input className="mt-1 h-8 text-sm" value={form.policyNumber}
-              onChange={e => setForm(f => ({ ...f, policyNumber: e.target.value }))} />
-          </div>
-          <div>
-            <Label className="text-xs">Loss Type</Label>
-            <Input className="mt-1 h-8 text-sm" value={form.lossType}
-              onChange={e => setForm(f => ({ ...f, lossType: e.target.value }))}
-              placeholder="e.g. water, fire, mold" />
-          </div>
-        </div>
-
-        {/* Terms preview — matches PDF Part A + Part B */}
-        <div className="border rounded-lg p-3 bg-muted/20 text-[11px] leading-snug text-muted-foreground space-y-2 max-h-[260px] overflow-y-auto">
-          <p className="font-semibold text-foreground text-xs">Part A — Property Owner Acknowledgment</p>
-          <p><strong>A1. Custom pricing schedule.</strong> I understand Titan prices work using its published Custom Pricing Schedule for equipment, labor, materials, and services actually performed. Titan does not price at generic third-party software defaults (including Xactimate baseline rates).</p>
-          <p><strong>A2. Difference from insurance estimate.</strong> I understand my carrier's initial estimate may be lower than Titan's invoice. Titan will work in good faith with the carrier to reconcile pricing using scope documentation, drying/moisture records, IICRC standards, and market-rate references.</p>
-          <p><strong>A3. Primary payment obligation.</strong> I remain primarily responsible for full payment of Titan's invoice regardless of what the carrier ultimately pays. I will pay any deductible, non-covered items, betterment/upgrades, depreciation holdback withheld until completion, and any shortfall.</p>
-          <p><strong>A4. Direction to pay / co-operation.</strong> I have executed (or will execute) Titan's Direction to Pay Notice directing my carrier to name Titan as co-payee on all loss-payment drafts. I will promptly endorse those drafts and forward Titan's portion within 5 business days of receipt.</p>
-          <p><strong>A5. No public-adjuster role.</strong> Titan is my general contractor, not my public adjuster. Titan may discuss scope and pricing with the carrier but is not negotiating my coverage or claim on my behalf.</p>
-
-          <p className="font-semibold text-foreground text-xs pt-2 mt-2 border-t">Part B — Notice to Insurance Carrier</p>
-          <p><strong>B1. Policy language.</strong> Standard property policies obligate the carrier to pay the reasonable and necessary cost to repair or replace with materials of like kind and quality — they do not require pricing at any specific software default. Please identify the specific policy provision, if any, that mandates Xactimate baseline pricing on this claim.</p>
-          <p><strong>B2. Xactimate is a tool, not a ceiling.</strong> Xactimate itself publishes market-conditions modifiers and acknowledges that published unit costs are averages requiring adjustment for local labor, material availability, emergency-response conditions, and demand surges. Titan's pricing reflects these documented conditions.</p>
-          <p><strong>B3. IICRC and RSMeans basis.</strong> Titan's scope follows IICRC S500 (water), S520 (mold), and S700 (fire) protocols. Line items are supported by IICRC standards of care, RSMeans construction cost data, and manufacturer specifications — objective references the carrier can independently verify.</p>
-          <p><strong>B4. Documentation available.</strong> On request Titan will provide daily drying logs with moisture readings, equipment run-time records, time-stamped job photos, IICRC-referenced scope narrative, and supporting invoices for materials and subcontracted labor.</p>
-          <p><strong>B5. Appraisal clause.</strong> If pricing cannot be reconciled through good-faith review, the Insured reserves the right to invoke the appraisal provision of the policy.</p>
-          <p><strong>B6. Unfair claims practices.</strong> The Insured reserves all rights under S.C. Code § 38-59-20 and O.C.G.A. § 33-6-34 regarding claim-handling practices, and under S.C. Code § 38-59-20 and O.C.G.A. §§ 13-11-1 to 13-11-11 regarding prompt payment of undisputed amounts.</p>
-        </div>
-
-        {/* Signature pad */}
-        <div>
-          <Label className="text-xs font-semibold">Electronic Signature — {form.signerName || "Homeowner / Insured"}</Label>
-          <div className="mt-2">
-            <SignaturePad onSign={setSigData} onClear={() => setSigData("")} />
-          </div>
-          {sigData && (
-            <div className="mt-2 flex items-center gap-2 text-xs text-green-600">
-              <CheckCircle2 className="w-3.5 h-3.5" />Signature captured · {new Date().toLocaleString()}
-            </div>
-          )}
-        </div>
-
-        {/* Actions */}
-        <div className="flex gap-2">
-          <Button
-            className="flex-1 bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
-            onClick={() => createMutation.mutate()}
-            disabled={createMutation.isPending || !form.signerName || !sigData}
-            data-testid="button-save-custom-pricing"
-          >
-            <CheckCircle2 className="w-4 h-4 mr-2" />
-            {createMutation.isPending ? "Saving…" : "Sign & Save Acknowledgment"}
           </Button>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
         </div>
@@ -1303,11 +874,8 @@ function DocCard({
 
   const DOC_TYPE_LABELS: Record<string, { label: string; color: string; icon: any }> = {
     work_authorization: { label: "Work Authorization", color: "bg-blue-100 text-blue-700", icon: ClipboardCheck },
-    direction_to_pay_notice: { label: "Direction to Pay Notice", color: "bg-sky-100 text-sky-700", icon: ClipboardCheck },
-    custom_pricing_acknowledgment: { label: "Custom Pricing Acknowledgment", color: "bg-indigo-100 text-indigo-700", icon: ClipboardCheck },
     deviation_of_standard: { label: "Deviation of Standard", color: "bg-amber-100 text-amber-700", icon: AlertTriangle },
     right_to_renovate: { label: "Right to Renovate", color: "bg-emerald-100 text-emerald-700", icon: ShieldCheck },
-    certificate_of_completion: { label: "Certificate of Completion", color: "bg-green-100 text-green-700", icon: Award },
     pdf_upload: { label: "PDF Document", color: "bg-purple-100 text-purple-700", icon: FileText },
     other: { label: "Document", color: "bg-gray-100 text-gray-700", icon: FileText },
   };
@@ -1651,7 +1219,7 @@ function PdfUpload({ jobId, onClose, phase }: { jobId: number; onClose: () => vo
 // ─────────────────────────────────────────────────────────────────────────────
 // Main export
 // ─────────────────────────────────────────────────────────────────────────────
-type ActiveForm = "work_auth" | "direction_to_pay" | "custom_pricing" | "deviation" | "right_to_renovate" | "pdf_upload" | "completion" | null;
+type ActiveForm = "work_auth" | "deviation" | "right_to_renovate" | "pdf_upload" | "completion" | null;
 
 export default function JobDocuments({ jobId, readOnly = false, phase }: { jobId: number; readOnly?: boolean; phase?: string }) {
   const [activeForm, setActiveForm] = useState<ActiveForm>(null);
@@ -1828,8 +1396,6 @@ export default function JobDocuments({ jobId, readOnly = false, phase }: { jobId
   const unsignedCount = docs.filter(d => d.status === "unsigned").length;
 
   const hasWorkAuth = docs.some(d => d.docType === "work_authorization" && d.status === "signed");
-  const hasDirectionToPay = docs.some(d => d.docType === "direction_to_pay_notice" && d.status === "signed");
-  const hasCustomPricing = docs.some(d => d.docType === "custom_pricing_acknowledgment" && d.status === "signed");
   const hasDeviation = docs.some(d => d.docType === "deviation_of_standard");
   const hasRightToRenovate = docs.some(d => d.docType === "right_to_renovate" && d.status === "signed");
   const hasCompletion = docs.some(d => d.docType === "certificate_of_completion" && d.status === "signed");
@@ -1973,44 +1539,6 @@ export default function JobDocuments({ jobId, readOnly = false, phase }: { jobId
 
             <button
               className={`flex items-center gap-3 p-3 rounded-lg border text-left transition-colors ${
-                activeForm === "direction_to_pay" ? "border-sky-400 bg-sky-50 dark:bg-sky-950/20" :
-                hasDirectionToPay ? "border-green-300 bg-green-50 dark:bg-green-950/20" :
-                "border-border hover:border-sky-400 hover:bg-muted/40"
-              }`}
-              onClick={() => setActiveForm(activeForm === "direction_to_pay" ? null : "direction_to_pay")}
-              disabled={readOnly}
-              data-testid="button-open-direction-to-pay"
-            >
-              <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${hasDirectionToPay ? "bg-green-100 text-green-700" : "bg-sky-100 text-sky-600"}`}>
-                {hasDirectionToPay ? <CheckCircle2 className="w-4 h-4" /> : <ClipboardCheck className="w-4 h-4" />}
-              </div>
-              <div>
-                <p className="text-sm font-medium">Direction to Pay Notice</p>
-                <p className="text-xs text-muted-foreground">{hasDirectionToPay ? "Signed ✓" : "Notice to carrier — co-payee direction"}</p>
-              </div>
-            </button>
-
-            <button
-              className={`flex items-center gap-3 p-3 rounded-lg border text-left transition-colors ${
-                activeForm === "custom_pricing" ? "border-indigo-400 bg-indigo-50 dark:bg-indigo-950/20" :
-                hasCustomPricing ? "border-green-300 bg-green-50 dark:bg-green-950/20" :
-                "border-border hover:border-indigo-400 hover:bg-muted/40"
-              }`}
-              onClick={() => setActiveForm(activeForm === "custom_pricing" ? null : "custom_pricing")}
-              disabled={readOnly}
-              data-testid="button-open-custom-pricing"
-            >
-              <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${hasCustomPricing ? "bg-green-100 text-green-700" : "bg-indigo-100 text-indigo-600"}`}>
-                {hasCustomPricing ? <CheckCircle2 className="w-4 h-4" /> : <ClipboardCheck className="w-4 h-4" />}
-              </div>
-              <div>
-                <p className="text-sm font-medium">Custom Pricing Acknowledgment</p>
-                <p className="text-xs text-muted-foreground">{hasCustomPricing ? "Signed ✓" : "Owner + carrier pricing basis"}</p>
-              </div>
-            </button>
-
-            <button
-              className={`flex items-center gap-3 p-3 rounded-lg border text-left transition-colors ${
                 activeForm === "deviation" ? "border-amber-400 bg-amber-50 dark:bg-amber-950/20" :
                 hasDeviation ? "border-green-300 bg-green-50 dark:bg-green-950/20" :
                 "border-border hover:border-amber-400 hover:bg-muted/40"
@@ -2090,12 +1618,6 @@ export default function JobDocuments({ jobId, readOnly = false, phase }: { jobId
       {/* Active form */}
       {!readOnly && activeForm === "work_auth" && job && (
         <WorkAuthorizationForm job={job} contact={contact} jobId={jobId} onClose={() => setActiveForm(null)} phase={phase} />
-      )}
-      {!readOnly && activeForm === "direction_to_pay" && job && (
-        <DirectionToPayForm job={job} contact={contact} jobId={jobId} onClose={() => setActiveForm(null)} phase={phase} />
-      )}
-      {!readOnly && activeForm === "custom_pricing" && job && (
-        <CustomPricingForm job={job} contact={contact} jobId={jobId} onClose={() => setActiveForm(null)} phase={phase} />
       )}
       {!readOnly && activeForm === "deviation" && job && (
         <DeviationOfStandardForm job={job} contact={contact} jobId={jobId} onClose={() => setActiveForm(null)} phase={phase} />

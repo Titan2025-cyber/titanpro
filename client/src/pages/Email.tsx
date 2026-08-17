@@ -12,9 +12,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth";
 import type { Email } from "@shared/schema";
 import { fmtDateShort } from "@/lib/dates";
 
@@ -32,10 +32,15 @@ export default function EmailPage() {
   const [composeOpen, setComposeOpen] = useState(false);
   const [gmailSettingsOpen, setGmailSettingsOpen] = useState(false);
   const [compose, setCompose] = useState({ to: "", subject: "", body: "" });
-  const [activeEmployee, setActiveEmployee] = useState<string>("Cody Brantley");
   const [gmailInput, setGmailInput] = useState("");
   const [liveSelectedId, setLiveSelectedId] = useState<string | null>(null);
   const { toast } = useToast();
+  // The Email page is ALWAYS scoped to the signed-in user — you cannot
+  // "send as" or read another employee's mail from this UI. Owner / admin can
+  // still manage other people's Gmail linkage from the User Management page.
+  const { user: authUser } = useAuth();
+  const activeEmployee = authUser?.name || "";
+  const isPrivileged = !!authUser && ["owner", "admin", "general_manager"].includes(String(authUser.role));
 
   // ── Live Gmail (OAuth) status for the SIGNED-IN user ──────────────────────
   // configured = server has GOOGLE_CLIENT_ID/SECRET; connected = this user linked
@@ -110,12 +115,26 @@ export default function EmailPage() {
     queryFn: () => apiRequest("GET", `/api/emails?folder=${folder}`).then(r => r.json()),
   });
 
+  // Only owner/admin need the full employee list (for the User Management
+  // handoff link in the settings dialog). Regular users never fetch it — they
+  // don't need it and shouldn't see everyone else's linked Gmail addresses.
   const { data: employees = [] } = useQuery<Employee[]>({
     queryKey: ["/api/employees"],
+    enabled: isPrivileged,
   });
 
-  const currentEmployee = employees.find(e => e.name === activeEmployee);
-  const fromAddress = currentEmployee?.gmailEmail || `${activeEmployee.toLowerCase().replace(/\s/g, "")}@titanrestorationllc.com`;
+  // The "current employee" for this page is always the signed-in user.
+  // We fetch just their own record so we can read gmailEmail without
+  // pulling every employee.
+  const { data: myRecord } = useQuery<Employee>({
+    queryKey: ["/api/employees", authUser?.id],
+    queryFn: () => apiRequest("GET", `/api/employees/${authUser!.id}`).then(r => r.json()),
+    enabled: !!authUser?.id && !isPrivileged,
+  });
+  const currentEmployee: Employee | undefined = isPrivileged
+    ? employees.find(e => e.id === authUser?.id)
+    : myRecord;
+  const fromAddress = currentEmployee?.gmailEmail || (activeEmployee ? `${activeEmployee.toLowerCase().replace(/\s/g, "")}@titanrestorationllc.com` : "");
 
   const sendMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/emails", {
@@ -147,27 +166,31 @@ export default function EmailPage() {
     onError: (e: any) => toast({ title: "Delete failed", description: String(e?.message || e), variant: "destructive" }),
   });
 
+  // These only ever act on the signed-in user's own record. The server also
+  // enforces this: a non-owner/admin cannot PATCH another employee's row.
   const linkGmailMutation = useMutation({
     mutationFn: () => {
-      if (!currentEmployee) throw new Error("No employee selected");
-      return apiRequest("PATCH", `/api/employees/${currentEmployee.id}`, { gmailEmail: gmailInput });
+      if (!authUser?.id) throw new Error("Not signed in");
+      return apiRequest("PATCH", `/api/employees/${authUser.id}`, { gmailEmail: gmailInput });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
       setGmailSettingsOpen(false);
-      toast({ title: "Gmail linked", description: `${gmailInput} is now linked to ${activeEmployee}` });
+      toast({ title: "Gmail linked", description: `${gmailInput} is now linked to your account` });
     },
+    onError: (e: any) => toast({ title: "Link failed", description: String(e?.message || e), variant: "destructive" }),
   });
 
   const unlinkGmailMutation = useMutation({
     mutationFn: () => {
-      if (!currentEmployee) throw new Error("No employee selected");
-      return apiRequest("PATCH", `/api/employees/${currentEmployee.id}`, { gmailEmail: null });
+      if (!authUser?.id) throw new Error("Not signed in");
+      return apiRequest("PATCH", `/api/employees/${authUser.id}`, { gmailEmail: null });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
       toast({ title: "Gmail unlinked" });
     },
+    onError: (e: any) => toast({ title: "Unlink failed", description: String(e?.message || e), variant: "destructive" }),
   });
 
   const selected = emails.find(e => e.id === selectedId);
@@ -195,19 +218,14 @@ export default function EmailPage() {
     <div className="flex h-[calc(100vh-8rem)] gap-0 rounded-xl overflow-hidden border">
       {/* Sidebar */}
       <div className="w-52 shrink-0 bg-[hsl(220,20%,12%)] text-white flex flex-col">
-        {/* Employee selector */}
+        {/* Signed-in identity — fixed. This page never allows "sending as"
+            another employee. Each user only sees their own mailbox. */}
         <div className="px-3 py-3 border-b border-white/10">
-          <p className="font-bold text-xs uppercase tracking-wider opacity-50 mb-2">Sending as</p>
-          <Select value={activeEmployee} onValueChange={setActiveEmployee}>
-            <SelectTrigger className="h-8 text-xs bg-white/10 border-white/20 text-white">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {employees.map(e => (
-                <SelectItem key={e.id} value={e.name}>{e.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <p className="font-bold text-xs uppercase tracking-wider opacity-50 mb-2">Signed in as</p>
+          <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-white/10">
+            <User className="w-3.5 h-3.5 text-white/70 shrink-0" />
+            <span className="text-xs font-medium truncate">{activeEmployee || "—"}</span>
+          </div>
           <div className="mt-2 flex items-center gap-1.5">
             {currentEmployee?.gmailEmail ? (
               <>
@@ -261,20 +279,20 @@ export default function EmailPage() {
           </div>
         )}
 
-        {/* Gmail Settings */}
+        {/* Gmail Settings — always visible, always scoped to YOU. */}
         <div className="px-3 py-2 border-b border-white/10">
           <Dialog open={gmailSettingsOpen} onOpenChange={(o) => { setGmailSettingsOpen(o); if (o) setGmailInput(currentEmployee?.gmailEmail || ""); }}>
             <DialogTrigger asChild>
               <button className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-white/60 hover:bg-white/10 hover:text-white text-left">
                 <Settings className="w-3.5 h-3.5 shrink-0" />
-                <span className="text-xs">Gmail Settings</span>
+                <span className="text-xs">My Gmail Settings</span>
               </button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
                 <DialogTitle className="flex items-center gap-2">
                   <Mail className="w-5 h-5 text-[hsl(var(--titan-red))]" />
-                  Link Gmail — {activeEmployee}
+                  Link My Gmail — {activeEmployee}
                 </DialogTitle>
               </DialogHeader>
               <div className="space-y-4">
@@ -302,7 +320,7 @@ export default function EmailPage() {
                 )}
 
                 <div className="space-y-2">
-                  <Label>Gmail Address</Label>
+                  <Label>Your Gmail Address</Label>
                   <Input
                     data-testid="input-gmail-email"
                     type="email"
@@ -310,7 +328,7 @@ export default function EmailPage() {
                     onChange={e => setGmailInput(e.target.value)}
                     placeholder="name@gmail.com"
                   />
-                  <p className="text-xs text-muted-foreground">Enter the Gmail address you want to associate with {activeEmployee}.</p>
+                  <p className="text-xs text-muted-foreground">Enter YOUR Gmail address. Only you can see and use it here.</p>
                 </div>
 
                 <div className="flex gap-2">
@@ -331,22 +349,16 @@ export default function EmailPage() {
                   </Button>
                 </div>
 
-                <div className="border-t pt-4">
-                  <p className="text-xs font-medium mb-2">All Team Members</p>
-                  <div className="space-y-1.5">
-                    {employees.map(e => (
-                      <div key={e.id} className="flex items-center gap-2">
-                        <User className="w-3 h-3 text-muted-foreground" />
-                        <span className="text-xs font-medium w-28">{e.name}</span>
-                        {e.gmailEmail ? (
-                          <span className="text-xs text-green-600 truncate">{e.gmailEmail}</span>
-                        ) : (
-                          <span className="text-xs text-muted-foreground italic">not linked</span>
-                        )}
-                      </div>
-                    ))}
+                {/* Team-wide Gmail linkage lives in User Management (owner/admin
+                    only). We deliberately do NOT list other employees' Gmail
+                    addresses here — that would leak private linkage data. */}
+                {isPrivileged && (
+                  <div className="border-t pt-4">
+                    <p className="text-xs text-muted-foreground">
+                      Managing other team members? Open <span className="font-medium">Settings → User Management</span> to see and change each employee's Gmail linkage.
+                    </p>
                   </div>
-                </div>
+                )}
               </div>
             </DialogContent>
           </Dialog>
@@ -449,7 +461,7 @@ export default function EmailPage() {
                     </>
                   )}
                 </div>
-                {!currentEmployee?.gmailEmail && (
+                {!currentEmployee?.gmailEmail && !gmailLive && (
                   <p className="text-xs text-muted-foreground text-center">
                     <button
                       className="underline text-[hsl(var(--titan-blue))]"
@@ -662,15 +674,15 @@ export default function EmailPage() {
           <div className="text-center text-muted-foreground mt-20">
             <Inbox className="w-12 h-12 mx-auto mb-2 opacity-30" />
             <p>Select an email to read</p>
-            {employees.filter(e => !e.gmailEmail).length > 0 && (
+            {!currentEmployee?.gmailEmail && (
               <p className="text-xs mt-4 max-w-xs mx-auto">
                 <button
                   className="underline text-[hsl(var(--titan-blue))]"
                   onClick={() => setGmailSettingsOpen(true)}
                 >
-                  Link Gmail accounts
+                  Link your Gmail account
                 </button>
-                {" "}for your team to send emails directly from their real Gmail.
+                {" "}to send emails directly from your real Gmail.
               </p>
             )}
           </div>
