@@ -40,8 +40,16 @@ const GMAIL_SCOPES = [
 ];
 
 // The integration is live only when both credentials are present.
+// Accepts either the canonical GOOGLE_CLIENT_ID/SECRET names OR the common
+// GMAIL_CLIENT_ID/SECRET fallback names (many people set those by habit).
+function gmailClientId(): string {
+  return process.env.GOOGLE_CLIENT_ID || process.env.GMAIL_CLIENT_ID || "";
+}
+function gmailClientSecret(): string {
+  return process.env.GOOGLE_CLIENT_SECRET || process.env.GMAIL_CLIENT_SECRET || "";
+}
 export function gmailConfigured(): boolean {
-  return !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+  return !!(gmailClientId() && gmailClientSecret());
 }
 
 function redirectUriFor(req: any): string {
@@ -50,8 +58,8 @@ function redirectUriFor(req: any): string {
 
 function makeOAuthClient(req: any) {
   return new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
+    gmailClientId(),
+    gmailClientSecret(),
     redirectUriFor(req),
   );
 }
@@ -126,17 +134,34 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
 
   // ── STATUS: is Gmail configured, and is THIS employee connected? ───────────
   // Always safe to call. Used by the frontend to decide which UI to show.
+  // Owner / admin also get a `diag` block showing exactly which env var names
+  // the server can see — handy for debugging Railway configuration without
+  // leaking any secret values.
   app.get("/api/gmail/status", requireStaffAuth, (req: any, res) => {
     const emp = req.employee;
     const row: any = sqlite.prepare(
       "SELECT gmail_email, gmail_connected, gmail_connected_at FROM employees WHERE id = ?",
     ).get(emp.id);
-    res.json({
+    const payload: any = {
       configured: gmailConfigured(),
       connected: !!(row && row.gmail_connected && row.gmail_email),
       email: row?.gmail_email || null,
       connectedAt: row?.gmail_connected_at || null,
-    });
+    };
+    if (emp && ["owner", "admin"].includes(String(emp.role))) {
+      payload.diag = {
+        expectedRedirectUri: redirectUriFor(req),
+        env: {
+          GOOGLE_CLIENT_ID: !!process.env.GOOGLE_CLIENT_ID,
+          GOOGLE_CLIENT_SECRET: !!process.env.GOOGLE_CLIENT_SECRET,
+          GMAIL_CLIENT_ID: !!process.env.GMAIL_CLIENT_ID,
+          GMAIL_CLIENT_SECRET: !!process.env.GMAIL_CLIENT_SECRET,
+          GOOGLE_MAPS_API_KEY: !!process.env.GOOGLE_MAPS_API_KEY,
+          TITAN_ENCRYPT_KEY: !!process.env.TITAN_ENCRYPT_KEY,
+        },
+      };
+    }
+    res.json(payload);
   });
 
   // ── OAUTH START: returns the Google consent URL for the current employee ───

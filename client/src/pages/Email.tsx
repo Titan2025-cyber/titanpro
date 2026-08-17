@@ -46,7 +46,15 @@ export default function EmailPage() {
   // configured = server has GOOGLE_CLIENT_ID/SECRET; connected = this user linked
   // their Google account. When not configured/connected, the page behaves exactly
   // as before (simulated mailbox + new-tab hand-off).
-  const { data: gmailStatus } = useQuery<{ configured: boolean; connected: boolean; email: string | null }>({
+  const { data: gmailStatus } = useQuery<{
+    configured: boolean;
+    connected: boolean;
+    email: string | null;
+    diag?: {
+      expectedRedirectUri: string;
+      env: Record<string, boolean>;
+    };
+  }>({
     queryKey: ["/api/gmail/status"],
     queryFn: () => apiRequest("GET", "/api/gmail/status").then(r => r.json()),
   });
@@ -237,6 +245,32 @@ export default function EmailPage() {
             )}
           </div>
         </div>
+
+        {/* Owner / admin diagnostic block — shows exactly which env vars the
+            server sees when Gmail is NOT configured. This is the fastest way
+            to catch a Railway env-var typo. */}
+        {isPrivileged && gmailStatus && !gmailStatus.configured && gmailStatus.diag && (
+          <div className="px-3 py-3 border-b border-white/10 bg-red-900/30">
+            <p className="text-[11px] font-bold text-red-300 mb-1.5">Gmail not configured</p>
+            <p className="text-[10px] text-red-100/80 leading-snug mb-2">
+              The server does not see Google OAuth credentials. Set both variables in Railway → Variables:
+            </p>
+            <ul className="text-[10px] font-mono space-y-0.5">
+              {Object.entries(gmailStatus.diag.env).map(([k, v]) => (
+                <li key={k} className="flex items-center gap-1.5">
+                  <span className={v ? "text-green-400" : "text-red-400"}>{v ? "✓" : "✗"}</span>
+                  <span className={v ? "text-white/70" : "text-red-200"}>{k}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="text-[10px] text-white/60 mt-2 leading-snug">
+              Redirect URI expected by Google:
+            </p>
+            <p className="text-[10px] font-mono text-white/80 break-all mt-0.5">
+              {gmailStatus.diag.expectedRedirectUri}
+            </p>
+          </div>
+        )}
 
         {/* Live Gmail (OAuth) connection — for the signed-in user. Only shown
             once the server is configured with Google credentials. */}
