@@ -4526,8 +4526,15 @@ cody@titanrestorationllc.com`;
     // Technician surface). Without this fallback, notes typed on the mobile
     // tech screen posted with 'text' were rejected as 'body is required' and
     // silently dropped — the user saw the field clear and assumed it saved.
-    const { author, body, text, isPublic, tag } = req.body || {};
+    //
+    // `notify` is an optional array of employee IDs — those employees get an
+    // email + bell when the note is created. This is the explicit, chip-picker
+    // recipient list from the Add Note UI (NOT parsed from the body).
+    const { author, body, text, isPublic, tag, notify } = req.body || {};
     const noteBody = (body ?? text ?? "").toString();
+    const notifyIds: number[] = Array.isArray(notify)
+      ? notify.map((v: any) => Number(v)).filter((n: number) => Number.isFinite(n) && n > 0)
+      : [];
     if (!noteBody.trim()) return res.status(400).json({ error: "body is required" });
     try {
       const now = new Date().toISOString();
@@ -4540,34 +4547,38 @@ cody@titanrestorationllc.com`;
       ).run(jobId, author || "Titan Team", noteBody.trim(), isPublic === false ? 0 : 1, tag || null, now);
       const note = sqlite.prepare("SELECT * FROM job_notes WHERE id = ?").get(result.lastInsertRowid);
 
-      // ── In-app notification bell + email fan-out ──────────────────────
+      // ── Notify: explicit recipient fan-out (bell + email) ────────────────
+      // Recipients come from the client's Notify chip picker — no @-parsing.
       // Best-effort: any failure here must NOT break note creation.
       try {
         const job: any = storage.getJob(jobId);
         const jobNum = job?.jobNumber ? `Job ${job.jobNumber}` : `Job #${jobId}`;
         const link = `/jobs/${jobId}`;
         const roster = notifier.activeEmployeeRoster();
-        // Resolve the author's employee ID by name (best-effort). This lets
-        // the email fan-out send FROM the author's connected Gmail. If we
-        // can't match, mentions still bell but email skips silently.
+        // Resolve the author's employee ID by name (best-effort). Used to (a)
+        // strip the author from the recipient list if they picked themselves
+        // and (b) send email FROM the author's connected Gmail.
         const authorRow = author
           ? roster.find(e => e.name.toLowerCase() === String(author).toLowerCase())
           : undefined;
 
-        // 1) @-mentions in the note body — always fire the bell.
-        const mentionedIds = notifier.extractMentions(noteBody, roster);
-        // Do NOT notify the author themselves even if they typed @their-own-name.
-        const targetIds = authorRow ? mentionedIds.filter(id => id !== authorRow.id) : mentionedIds;
+        // Filter recipients: must be active, not the author, dedupe.
+        const activeIds = new Set(roster.map(e => e.id));
+        const targetIds = Array.from(new Set(notifyIds))
+          .filter(id => activeIds.has(id))
+          .filter(id => !authorRow || id !== authorRow.id);
+
         if (targetIds.length > 0) {
+          // 1) In-app bell for every recipient.
           notifier.notifyMany(targetIds, {
             type: "note_mentioned",
-            title: `${author || "Someone"} mentioned you on ${jobNum}`,
+            title: `${author || "Someone"} sent you a note on ${jobNum}`,
             body: noteBody.trim().slice(0, 240),
             jobId,
             link,
           });
 
-          // Email fan-out — fire-and-forget so slow SMTP never blocks the response.
+          // 2) Email fan-out — fire-and-forget so slow SMTP never blocks the response.
           if (authorRow) {
             const custName = (job?.customerName || job?.customer_name || null) as string | null;
             const jobAddr = (job?.serviceAddress || job?.service_address || job?.address || null) as string | null;
@@ -4588,7 +4599,9 @@ cody@titanrestorationllc.com`;
           }
         }
 
-        // 2) Assigned tech on the job — skip if they authored it themselves.
+        // 3) Fallback: assigned tech gets a bell (no email) when NOT already
+        // a recipient and NOT the author. Preserves the previous behaviour
+        // where the assigned tech got a heads-up on every new note.
         const assignedName: string | undefined = job?.assignedTech || undefined;
         if (assignedName && assignedName !== author) {
           const assigned = roster.find(e => e.name === assignedName);

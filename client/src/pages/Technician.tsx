@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { MentionTextarea } from "@/components/MentionTextarea";
+import { NotifyPicker } from "@/components/NotifyPicker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -39,6 +39,7 @@ function JobCard({ job, contacts }: { job: Job; contacts: Contact[] }) {
   const [expanded, setExpanded] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [noteTag, setNoteTag] = useState("");
+  const [noteNotify, setNoteNotify] = useState<number[]>([]);
   // Author defaults to the signed-in user's real name so the audit trail
   // shows who actually typed the note, not a generic 'Tech'. Field stays
   // editable in case a tech is logging something on someone else's behalf.
@@ -58,11 +59,11 @@ function JobCard({ job, contacts }: { job: Job; contacts: Contact[] }) {
     // payload was silently rejected as 'body is required' and the note never
     // saved). Also mark tech-entered notes as public so the whole crew sees
     // them, and invalidate the per-job notes query so JobDetail refreshes.
-    mutationFn: () => apiRequest("POST", `/api/jobs/${job.id}/notes`, { body: noteText, author: noteAuthor, tag: noteTag, isPublic: true }),
+    mutationFn: () => apiRequest("POST", `/api/jobs/${job.id}/notes`, { body: noteText, author: noteAuthor, tag: noteTag, isPublic: true, notify: noteNotify }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id, "notes"] });
-      setNoteText(""); setNoteTag("");
+      setNoteText(""); setNoteTag(""); setNoteNotify([]);
     },
   });
 
@@ -223,14 +224,19 @@ function JobCard({ job, contacts }: { job: Job; contacts: Contact[] }) {
                   />
                 </div>
               </div>
+              <Textarea
+                className="mt-2 text-sm min-h-[80px]"
+                placeholder="Enter note…"
+                value={noteText}
+                onChange={e => setNoteText(e.target.value)}
+                data-testid={`note-input-${job.id}`}
+              />
               <div className="mt-2">
-                <MentionTextarea
-                  className="text-sm"
-                  minHeight="80px"
-                  placeholder="Enter note… Type @ to tag a teammate."
-                  value={noteText}
-                  onChange={setNoteText}
-                  testId={`note-input-${job.id}`}
+                <NotifyPicker
+                  selectedIds={noteNotify}
+                  onChange={setNoteNotify}
+                  excludeName={noteAuthor}
+                  compact
                 />
               </div>
               <Button

@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { MentionTextarea } from "@/components/MentionTextarea";
+import { NotifyPicker } from "@/components/NotifyPicker";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -195,6 +195,9 @@ function NotesTab({ jobId }: { jobId: number }) {
   // avoids a stale 'Titan Team' default sticking around after a login).
   useEffect(() => { setNewAuthor(defaultAuthor); }, [defaultAuthor]);
   const [newTag, setNewTag] = useState("");
+  // Employees to email + bell when the note posts. Empty = nobody notified
+  // (the note still saves and everyone can see it in the tab).
+  const [newNotify, setNewNotify] = useState<number[]>([]);
   // Default to public so every note is visible to every employee. Cody's
   // rule: 'all employees see all notes'. The Private toggle stays available
   // for the rare owner-only comment.
@@ -219,12 +222,14 @@ function NotesTab({ jobId }: { jobId: number }) {
         body: newBody,
         isPublic: newPublic,
         tag: newTag || null,
+        notify: newNotify,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "notes"] });
       setNewBody("");
       setNewTag("");
       setNewPublic(true);
+      setNewNotify([]);
     },
   });
 
@@ -394,13 +399,21 @@ function NotesTab({ jobId }: { jobId: number }) {
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-0 space-y-3">
-          <MentionTextarea
-            className="text-sm"
-            minHeight="100px"
-            placeholder="Type your note here… Type @ to tag a teammate (they'll get an email + bell notification)."
+          <Textarea
+            className="text-sm min-h-[100px]"
+            placeholder="Type your note here…"
             value={newBody}
-            onChange={setNewBody}
-            testId="input-new-note"
+            onChange={e => setNewBody(e.target.value)}
+            data-testid="input-new-note"
+          />
+
+          {/* Notify recipient picker — chip multi-select. Each selected
+              teammate gets an email (via the author's Gmail) + a bell when
+              this note is saved. Author is excluded automatically. */}
+          <NotifyPicker
+            selectedIds={newNotify}
+            onChange={setNewNotify}
+            excludeName={newAuthor}
           />
 
           <div className="flex items-center gap-4 flex-wrap">
