@@ -59,7 +59,11 @@ function JobCard({ job, contacts }: { job: Job; contacts: Contact[] }) {
     // payload was silently rejected as 'body is required' and the note never
     // saved). Also mark tech-entered notes as public so the whole crew sees
     // them, and invalidate the per-job notes query so JobDetail refreshes.
-    mutationFn: () => apiRequest("POST", `/api/jobs/${job.id}/notes`, { body: noteText, author: noteAuthor, tag: noteTag, isPublic: true, notify: noteNotify }),
+    // Notes default to STAFF-ONLY on mobile too. The Add Note surface here
+    // is one-tap by design (no toggle) — techs writing job notes almost
+    // never mean 'share with homeowner'. If a note needs to be public, use
+    // the desktop JobDetail composer where the toggle is exposed.
+    mutationFn: () => apiRequest("POST", `/api/jobs/${job.id}/notes`, { body: noteText, author: noteAuthor, tag: noteTag, isPublic: false, notify: noteNotify }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id, "notes"] });

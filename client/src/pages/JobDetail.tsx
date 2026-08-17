@@ -198,10 +198,11 @@ function NotesTab({ jobId }: { jobId: number }) {
   // Employees to email + bell when the note posts. Empty = nobody notified
   // (the note still saves and everyone can see it in the tab).
   const [newNotify, setNewNotify] = useState<number[]>([]);
-  // Default to public so every note is visible to every employee. Cody's
-  // rule: 'all employees see all notes'. The Private toggle stays available
-  // for the rare owner-only comment.
-  const [newPublic, setNewPublic] = useState(true);
+  // Notes default to STAFF-ONLY. Every employee still sees every note in
+  // Titan Pro (that's separate from this toggle), but the Homeowner Portal
+  // only shows notes where isPublic === true. The toggle stays available
+  // when you specifically want the homeowner to see the note.
+  const [newPublic, setNewPublic] = useState(false);
   // Filter state kept for compatibility with a few downstream references,
   // but the UI no longer exposes the public/private toggle to employees.
   const [filter] = useState<"all" | "public" | "private">("all");
@@ -228,7 +229,7 @@ function NotesTab({ jobId }: { jobId: number }) {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "notes"] });
       setNewBody("");
       setNewTag("");
-      setNewPublic(true);
+      setNewPublic(false); // reset to staff-only default
       setNewNotify([]);
     },
   });
