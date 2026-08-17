@@ -683,7 +683,26 @@ export default function Jobs() {
   //      "New Customer" toggle in the New Job dialog.
   const createMutation = useMutation({
     mutationFn: async (data: any) => {
-      let contactId: number | null = data.contactId ?? null;
+      // Normalize integer-typed form fields — the form initializes yearBuilt
+      // and squareFeet to "" (so the <Input> stays controlled), but SQLite
+      // will reject an empty string on an integer column. Same for contactId
+      // when the operator picked "existing" but didn't choose a customer.
+      const toIntOrNull = (v: any) => {
+        if (v === "" || v === null || v === undefined) return null;
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.trunc(n) : null;
+      };
+      // Strip empty strings on optional fields and coerce ints/nulls so the
+      // server never sees a blank where it expects a number.
+      const normalized = {
+        ...data,
+        contactId: toIntOrNull(data.contactId),
+        yearBuilt: toIntOrNull(data.yearBuilt),
+        squareFeet: toIntOrNull(data.squareFeet),
+        leadSource: data.leadSource || null,
+        leadSourceDetail: data.leadSourceDetail || null,
+      };
+      let contactId: number | null = normalized.contactId ?? null;
       if (customerMode === "new") {
         const trimmed = newCustomer.name.trim();
         if (!trimmed) throw new Error("Customer name required");
@@ -700,7 +719,7 @@ export default function Jobs() {
         const contact = await contactRes.json();
         contactId = contact?.id ?? null;
       }
-      const jobRes = await apiRequest("POST", "/api/jobs", { ...data, contactId });
+      const jobRes = await apiRequest("POST", "/api/jobs", { ...normalized, contactId });
       return jobRes.json();
     },
     onSuccess: () => {

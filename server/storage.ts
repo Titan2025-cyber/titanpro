@@ -1274,6 +1274,22 @@ class SqliteStorage implements IStorage {
   }
   createJob(data: schema.InsertJob) {
     const d: any = { ...data, createdAt: new Date().toISOString() };
+    // Defensive coercion — the client sometimes sends "" for integer-typed
+    // columns (year_built, square_feet, contact_id, referral_partner_id)
+    // because form inputs stay controlled with an empty string. SQLite will
+    // reject those with a bind error, killing job creation. Normalize here so
+    // the server is the last line of defense regardless of caller.
+    const intCols = ["contactId", "yearBuilt", "squareFeet", "referralPartnerId", "latitude", "longitude"];
+    for (const k of intCols) {
+      if (k in d) {
+        const v = d[k];
+        if (v === "" || v === undefined) d[k] = null;
+        else if (v !== null && typeof v === "string") {
+          const n = Number(v);
+          d[k] = Number.isFinite(n) ? n : null;
+        }
+      }
+    }
     // Auto-generate a job number when one isn't supplied (e.g. blank/partial input),
     // so a valid job is still created instead of hitting a NOT NULL constraint.
     if (!d.jobNumber || String(d.jobNumber).trim() === "" || String(d.jobNumber).trim().endsWith("-")) {
@@ -1290,7 +1306,21 @@ class SqliteStorage implements IStorage {
     return db.insert(schema.jobs).values(d).returning().get();
   }
   updateJob(id: number, data: Partial<schema.InsertJob>) {
-    return db.update(schema.jobs).set(data).where(eq(schema.jobs.id, id)).returning().get();
+    // Same integer coercion as createJob — blank-string PATCH bodies from the
+    // client (e.g. clearing a numeric field) would otherwise fail bind.
+    const d: any = { ...data };
+    const intCols = ["contactId", "yearBuilt", "squareFeet", "referralPartnerId", "latitude", "longitude"];
+    for (const k of intCols) {
+      if (k in d) {
+        const v = d[k];
+        if (v === "" || v === undefined) d[k] = null;
+        else if (v !== null && typeof v === "string") {
+          const n = Number(v);
+          d[k] = Number.isFinite(n) ? n : null;
+        }
+      }
+    }
+    return db.update(schema.jobs).set(d).where(eq(schema.jobs.id, id)).returning().get();
   }
   deleteJob(id: number) { db.delete(schema.jobs).where(eq(schema.jobs.id, id)).run(); }
 
