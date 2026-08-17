@@ -933,10 +933,24 @@ export default function JobDetail() {
   const visibleInvoices = invoices.filter(i => (((i as any).phase as string) || "mitigation") === phaseFilter);
   const isRecon = phaseFilter === "reconstruction";
   const hasReferralPartner = !!job.referralPartnerId || job.leadSource === "referral";
-  const PHASES = [
+  // Job scope drives which phase buttons appear. 'mitigation' = mit-only
+  // job (no recon toggle). 'reconstruction' = recon-only job. 'both' or
+  // unset = show both (legacy behavior).
+  const jobScope = String((job as any).division || "").toLowerCase();
+  const PHASES = ([
     { value: "mitigation", label: "Mitigation" },
     { value: "reconstruction", label: "Reconstruction" },
-  ];
+  ] as const).filter(p => {
+    if (jobScope === "mitigation") return p.value === "mitigation";
+    if (jobScope === "reconstruction") return p.value === "reconstruction";
+    return true;
+  });
+  // Auto-switch phaseFilter to the only available phase for scoped jobs
+  // so the workspace doesn't render 'reconstruction' data for a mit-only job.
+  useEffect(() => {
+    if (jobScope === "mitigation" && phaseFilter !== "mitigation") setPhaseFilter("mitigation");
+    if (jobScope === "reconstruction" && phaseFilter !== "reconstruction") setPhaseFilter("reconstruction");
+  }, [jobScope, phaseFilter]);
 
   return (
     <div className="space-y-4">
@@ -1103,30 +1117,34 @@ export default function JobDetail() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Phase filter switch ── controls which phase's data is shown across the workspace */}
-      <div className="flex items-center gap-3 flex-wrap" data-testid="phase-filter-bar">
-        <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Phase view</span>
-        <div className="inline-flex rounded-lg border bg-muted/40 p-0.5">
-          {PHASES.map(p => (
-            <button
-              key={p.value}
-              type="button"
-              onClick={() => setPhaseFilter(p.value)}
-              data-testid={`phase-filter-${p.value}`}
-              className={`px-3 py-1 text-sm rounded-md transition-colors ${
-                phaseFilter === p.value
-                  ? "bg-[hsl(var(--titan-blue))] text-white shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
+      {/* ── Phase filter switch ── hidden for single-phase (mit-only or recon-only)
+          jobs since there's only one option. The scope was set at job creation and
+          drives which phase button(s) render here via PHASES. */}
+      {PHASES.length > 1 && (
+        <div className="flex items-center gap-3 flex-wrap" data-testid="phase-filter-bar">
+          <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Phase view</span>
+          <div className="inline-flex rounded-lg border bg-muted/40 p-0.5">
+            {PHASES.map(p => (
+              <button
+                key={p.value}
+                type="button"
+                onClick={() => setPhaseFilter(p.value)}
+                data-testid={`phase-filter-${p.value}`}
+                className={`px-3 py-1 text-sm rounded-md transition-colors ${
+                  phaseFilter === p.value
+                    ? "bg-[hsl(var(--titan-blue))] text-white shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-muted-foreground">
+            Showing <span className="font-medium capitalize text-foreground">{phaseFilter}</span> data only
+          </span>
         </div>
-        <span className="text-xs text-muted-foreground">
-          Showing <span className="font-medium capitalize text-foreground">{phaseFilter}</span> data only
-        </span>
-      </div>
+      )}
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="flex flex-wrap gap-1 h-auto">

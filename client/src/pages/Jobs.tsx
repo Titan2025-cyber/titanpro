@@ -80,6 +80,30 @@ function phaseValue(f: PhaseFinancials | undefined): number {
   return f.estimateTotal > 0 ? f.estimateTotal : f.invoiceTotal;
 }
 
+// Does the given job qualify as a specific phase for the phase filter?
+// Preference order:
+//   1. job.division field, if set to 'mitigation' or 'reconstruction'
+//   2. If division is 'both' or unset, fall back to financials — job matches
+//      the phase iff that phase has any estimate/invoice value AND the other
+//      phase does not.
+//   3. Legacy jobs with no division and no per-phase financials are treated
+//      as mitigation (that's the schema default and mirrors how single-phase
+//      jobs get shown elsewhere in the app).
+function jobMatchesPhase(job: Job, fin: JobFinancials | undefined, phase: "mitigation" | "reconstruction"): boolean {
+  const div = String((job as any).division || "").toLowerCase();
+  if (div === "mitigation" || div === "reconstruction") return div === phase;
+  // Division unset or 'both' — use financials as evidence of scope.
+  const mit = fin?.byPhase?.mitigation;
+  const rec = fin?.byPhase?.reconstruction;
+  const hasMit = !!mit && (mit.estimateTotal > 0 || mit.invoiceTotal > 0);
+  const hasRec = !!rec && (rec.estimateTotal > 0 || rec.invoiceTotal > 0);
+  if (hasMit && !hasRec) return phase === "mitigation";
+  if (hasRec && !hasMit) return phase === "reconstruction";
+  if (hasMit && hasRec) return true; // 'both' — shown under either filter
+  // No data — legacy mit default.
+  return phase === "mitigation";
+}
+
 // Returns { mitigation, reconstruction, total } value for a single job.
 function jobPhaseValues(f: JobFinancials | undefined): { mitigation: number; reconstruction: number; total: number } {
   if (!f) return { mitigation: 0, reconstruction: 0, total: 0 };
@@ -259,8 +283,9 @@ function JobCard({ job, contact, fin }: { job: Job; contact?: Contact; fin?: Job
 // ─────────────────────────────────────────────────────────────────────────────
 // Pipeline Board — Kanban-style columns by stage
 // ─────────────────────────────────────────────────────────────────────────────
-function PipelineBoard({ jobs, contacts, search, locationFilter, finMap, selectedStage, onStageSelect }: {
+function PipelineBoard({ jobs, contacts, search, locationFilter, phaseFilter, finMap, selectedStage, onStageSelect }: {
   jobs: Job[]; contacts: Contact[]; search: string; locationFilter: string;
+  phaseFilter: "all" | "mitigation" | "reconstruction";
   finMap: Record<number, JobFinancials>;
   selectedStage: string | null;
   onStageSelect: (stageKey: string | null) => void;
@@ -268,6 +293,7 @@ function PipelineBoard({ jobs, contacts, search, locationFilter, finMap, selecte
   const [, setBoardLocation] = useLocation();
   const filtered = jobs.filter(j => {
     if (locationFilter !== "all" && (((j as any).location as string) || "Augusta") !== locationFilter) return false;
+    if (phaseFilter !== "all" && !jobMatchesPhase(j, finMap[j.id], phaseFilter)) return false;
     if (search) {
       const q = search.toLowerCase();
       return j.jobNumber.toLowerCase().includes(q) ||
@@ -447,8 +473,9 @@ function PipelineBoard({ jobs, contacts, search, locationFilter, finMap, selecte
 // ─────────────────────────────────────────────────────────────────────────────
 // List View — filterable, sortable flat list
 // ─────────────────────────────────────────────────────────────────────────────
-function ListView({ jobs, contacts, search, stageFilter, locationFilter, selectedIds, onToggle, onToggleAll, finMap }: {
+function ListView({ jobs, contacts, search, stageFilter, locationFilter, phaseFilter, selectedIds, onToggle, onToggleAll, finMap }: {
   jobs: Job[]; contacts: Contact[]; search: string; stageFilter: string; locationFilter: string;
+  phaseFilter: "all" | "mitigation" | "reconstruction";
   selectedIds: Set<number>; onToggle: (id: number) => void; onToggleAll: (ids: number[]) => void;
   finMap: Record<number, JobFinancials>;
 }) {
@@ -459,7 +486,8 @@ function ListView({ jobs, contacts, search, stageFilter, locationFilter, selecte
       (j.insuranceCarrier || "").toLowerCase().includes(q);
     const matchStage = stageFilter === "all" || (j.progressStage || "pending_sale") === stageFilter;
     const matchLocation = locationFilter === "all" || (((j as any).location as string) || "Augusta") === locationFilter;
-    return matchSearch && matchStage && matchLocation;
+    const matchPhase = phaseFilter === "all" || jobMatchesPhase(j, finMap[j.id], phaseFilter);
+    return matchSearch && matchStage && matchLocation && matchPhase;
   });
 
   const filteredIds = filtered.map(j => j.id);
@@ -571,6 +599,11 @@ export default function Jobs() {
   const [search, setSearch] = useState("");
   const [stageFilter, setStageFilter] = useState("all");
   const [locationFilter, setLocationFilter] = useState("all");
+  // Phase filter for both Board + List views. 'all' = show everything,
+  // 'mitigation' = only jobs whose scope is mit-only, 'reconstruction' =
+  // only jobs whose scope is recon-only. Uses the job.division field first,
+  // falling back to whichever phase has estimate/invoice value in finMap.
+  const [phaseFilter, setPhaseFilter] = useState<"all" | "mitigation" | "reconstruction">("all");
   const [viewMode, setViewMode] = useState<"board" | "list">("list");
   // Which bucket the Board view is focused on. null = show all columns.
   const [boardStage, setBoardStage] = useState<string | null>(null);
@@ -583,6 +616,11 @@ export default function Jobs() {
     lossType: "water",
     status: "new",
     progressStage: "pending_sale",
+    // Job scope drives which phases the workspace exposes. 'mitigation' =
+    // mit-only job (no recon tab/phase toggle), 'reconstruction' = recon-only
+    // job (no mit tab), 'both' = full water-loss with a mit -> recon handoff.
+    // Default 'mitigation' because that's where most Titan jobs start.
+    division: "mitigation" as "mitigation" | "reconstruction" | "both",
     location: "Augusta",
     address: "",
     description: "",
@@ -645,6 +683,7 @@ export default function Jobs() {
       lossType: "water",
       status: "new",
       progressStage: "pending_sale",
+      division: "mitigation",
       location: "Augusta",
       address: "",
       description: "",
@@ -827,6 +866,36 @@ export default function Jobs() {
                         ))}
                       </SelectContent>
                     </Select>
+                  </div>
+                </div>
+
+                {/* Job scope — picks which phases the job workspace will show.
+                   Mit-only jobs won't get a Reconstruction phase toggle inside
+                   the job file; recon-only jobs won't get Mitigation or the
+                   Dry Report tab; Both is the classic mit -> recon handoff. */}
+                <div>
+                  <Label>Job Scope</Label>
+                  <div className="grid grid-cols-3 gap-2 mt-1">
+                    {([
+                      { key: "mitigation", label: "Mitigation only", desc: "Dry-out / cleanup" },
+                      { key: "reconstruction", label: "Reconstruction only", desc: "Rebuild / repairs" },
+                      { key: "both", label: "Both", desc: "Full loss" },
+                    ] as const).map(opt => (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        onClick={() => setForm(f => ({ ...f, division: opt.key }))}
+                        className={`text-left rounded border px-3 py-2 transition-colors ${
+                          form.division === opt.key
+                            ? "bg-[hsl(var(--titan-blue))] text-white border-[hsl(var(--titan-blue))]"
+                            : "hover:bg-muted border-border"
+                        }`}
+                        data-testid={`button-scope-${opt.key}`}
+                      >
+                        <div className="text-sm font-medium">{opt.label}</div>
+                        <div className={`text-[11px] ${form.division === opt.key ? "text-white/80" : "text-muted-foreground"}`}>{opt.desc}</div>
+                      </button>
+                    ))}
                   </div>
                 </div>
 
@@ -1066,6 +1135,22 @@ export default function Jobs() {
             <SelectItem value="Columbia">Columbia</SelectItem>
           </SelectContent>
         </Select>
+        {/* Phase filter — lets you focus on Mitigation-only or Reconstruction-
+            only jobs in either view. Applied in ListView + PipelineBoard. */}
+        <Select value={phaseFilter} onValueChange={v => setPhaseFilter(v as any)}>
+          <SelectTrigger className="w-44" data-testid="select-phase-filter">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Phases</SelectItem>
+            <SelectItem value="mitigation">
+              <span className="flex items-center gap-1.5"><Droplets className="w-3.5 h-3.5" />Mitigation only</span>
+            </SelectItem>
+            <SelectItem value="reconstruction">
+              <span className="flex items-center gap-1.5"><Hammer className="w-3.5 h-3.5" />Reconstruction only</span>
+            </SelectItem>
+          </SelectContent>
+        </Select>
         {viewMode === "list" && (
           <Select value={stageFilter} onValueChange={setStageFilter}>
             <SelectTrigger className="w-48" data-testid="select-stage-filter"><SelectValue /></SelectTrigger>
@@ -1088,6 +1173,7 @@ export default function Jobs() {
           contacts={contacts}
           search={search}
           locationFilter={locationFilter}
+          phaseFilter={phaseFilter}
           finMap={finMap}
           selectedStage={boardStage}
           onStageSelect={setBoardStage}
@@ -1132,6 +1218,7 @@ export default function Jobs() {
             search={search}
             stageFilter={stageFilter}
             locationFilter={locationFilter}
+            phaseFilter={phaseFilter}
             selectedIds={selectedIds}
             onToggle={toggleSelect}
             onToggleAll={toggleSelectAll}
