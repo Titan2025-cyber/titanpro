@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { MentionTextarea } from "@/components/MentionTextarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -222,13 +223,16 @@ function JobCard({ job, contacts }: { job: Job; contacts: Contact[] }) {
                   />
                 </div>
               </div>
-              <Textarea
-                className="mt-2 text-sm min-h-[80px]"
-                placeholder="Enter note…"
-                value={noteText}
-                onChange={e => setNoteText(e.target.value)}
-                data-testid={`note-input-${job.id}`}
-              />
+              <div className="mt-2">
+                <MentionTextarea
+                  className="text-sm"
+                  minHeight="80px"
+                  placeholder="Enter note… Type @ to tag a teammate."
+                  value={noteText}
+                  onChange={setNoteText}
+                  testId={`note-input-${job.id}`}
+                />
+              </div>
               <Button
                 size="sm"
                 className="mt-2 w-full bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"

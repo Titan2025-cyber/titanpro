@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { MentionTextarea } from "@/components/MentionTextarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -393,12 +394,13 @@ function NotesTab({ jobId }: { jobId: number }) {
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-0 space-y-3">
-          <Textarea
-            className="text-sm min-h-[100px]"
-            placeholder="Type your note here… (visible to team, or toggle Public to share with homeowner)"
+          <MentionTextarea
+            className="text-sm"
+            minHeight="100px"
+            placeholder="Type your note here… Type @ to tag a teammate (they'll get an email + bell notification)."
             value={newBody}
-            onChange={e => setNewBody(e.target.value)}
-            data-testid="input-new-note"
+            onChange={setNewBody}
+            testId="input-new-note"
           />
 
           <div className="flex items-center gap-4 flex-wrap">

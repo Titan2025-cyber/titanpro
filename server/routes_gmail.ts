@@ -56,12 +56,139 @@ function redirectUriFor(req: any): string {
   return `${req.protocol}://${req.get("host")}/api/gmail/oauth/callback`;
 }
 
+// Server-only redirect URI — used by fan-out senders (mention emails, etc.)
+// that have no request in scope. Prefers the explicit APP_ORIGIN env var so
+// Google's refresh flow always sees the same URI you registered.
+function serverRedirectUri(): string {
+  const origin =
+    process.env.APP_ORIGIN ||
+    process.env.PUBLIC_ORIGIN ||
+    "https://titanaugusta.pro";
+  return `${origin.replace(/\/+$/, "")}/api/gmail/oauth/callback`;
+}
+
 function makeOAuthClient(req: any) {
   return new google.auth.OAuth2(
     gmailClientId(),
     gmailClientSecret(),
     redirectUriFor(req),
   );
+}
+
+// Server-side OAuth client (no request). Only for background fan-out flows.
+function makeServerOAuthClient() {
+  return new google.auth.OAuth2(
+    gmailClientId(),
+    gmailClientSecret(),
+    serverRedirectUri(),
+  );
+}
+
+// ── EXPORTED: server-side Gmail send for background/fan-out workflows ────────
+// Sends an email from `senderEmployeeId`'s connected Gmail account. Returns
+// { ok: true, id } on success, or { ok: false, reason } if the sender has no
+// Gmail linked or the refresh token is dead. Callers should treat failure as
+// non-fatal (log + skip — do not fail the underlying write).
+export async function sendGmailAsEmployee(
+  sqlite: Database,
+  senderEmployeeId: number,
+  args: {
+    to: string | string[];
+    subject: string;
+    html?: string;
+    text?: string;
+    replyTo?: string;
+  },
+): Promise<{ ok: true; id: string | null } | { ok: false; reason: string }> {
+  if (!gmailConfigured()) return { ok: false, reason: "not_configured" };
+  const row: any = sqlite
+    .prepare(
+      "SELECT gmail_refresh_token, gmail_access_token, gmail_token_expiry, gmail_email FROM employees WHERE id = ?",
+    )
+    .get(senderEmployeeId);
+  if (!row || !row.gmail_refresh_token) return { ok: false, reason: "sender_not_connected" };
+
+  const refreshToken = decryptField(row.gmail_refresh_token);
+  if (!refreshToken) return { ok: false, reason: "refresh_token_unreadable" };
+
+  const oauth2 = makeServerOAuthClient();
+  oauth2.setCredentials({ refresh_token: refreshToken });
+
+  // Reuse cached access token when possible, otherwise refresh.
+  const expiry = row.gmail_token_expiry ? Date.parse(row.gmail_token_expiry) : 0;
+  if (row.gmail_access_token && expiry && expiry - Date.now() > 60_000) {
+    oauth2.setCredentials({
+      refresh_token: refreshToken,
+      access_token: decryptField(row.gmail_access_token) || undefined,
+      expiry_date: expiry,
+    });
+  } else {
+    try {
+      const { credentials } = await oauth2.refreshAccessToken();
+      oauth2.setCredentials(credentials);
+      sqlite
+        .prepare("UPDATE employees SET gmail_access_token = ?, gmail_token_expiry = ? WHERE id = ?")
+        .run(
+          encryptField(credentials.access_token || ""),
+          credentials.expiry_date ? new Date(credentials.expiry_date).toISOString() : null,
+          senderEmployeeId,
+        );
+    } catch (e: any) {
+      return { ok: false, reason: "refresh_failed: " + (e?.message || String(e)) };
+    }
+  }
+
+  const toList = Array.isArray(args.to) ? args.to.join(", ") : args.to;
+  const from = row.gmail_email || "";
+  const subject = args.subject || "(no subject)";
+  const boundary = "----titanpro_" + crypto.randomBytes(8).toString("hex");
+
+  // Multipart alternative so the recipient's client renders HTML but plain-text
+  // clients still get a readable fallback.
+  const textPart = args.text || (args.html ? args.html.replace(/<[^>]+>/g, "") : "");
+  const htmlPart = args.html || `<pre style="font-family:inherit">${textPart}</pre>`;
+
+  const headers = [
+    `To: ${toList}`,
+    from ? `From: ${from}` : "",
+    args.replyTo ? `Reply-To: ${args.replyTo}` : "",
+    `Subject: ${subject}`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+  ].filter(Boolean);
+
+  const body = [
+    ...headers,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: 7bit",
+    "",
+    textPart,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "Content-Transfer-Encoding: 7bit",
+    "",
+    htmlPart,
+    "",
+    `--${boundary}--`,
+    "",
+  ].join("\r\n");
+
+  const raw = Buffer.from(body)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  try {
+    const gmail = google.gmail({ version: "v1", auth: oauth2 });
+    const sent = await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
+    return { ok: true, id: sent.data.id || null };
+  } catch (e: any) {
+    return { ok: false, reason: "send_failed: " + (e?.message || String(e)) };
+  }
 }
 
 // Signed state so the tokenless callback can trust WHICH employee is connecting.

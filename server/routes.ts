@@ -8,6 +8,7 @@ import { registerCrudGapRoutes } from "./routes_crud_gaps";
 import { registerSuite4Routes } from "./routes_suite4";
 import { registerAuthRoutes, makeAuthMiddleware } from "./routes_auth";
 import { makeNotifier } from "./notify_bell";
+import { sendMentionEmails } from "./notify_email";
 import { initAuditAndTrash } from "./auditAndTrash";
 import { registerAnalyticsRoutes } from "./routes_analytics";
 import { registerSubcontractorRoutes } from "./routes_subcontractors";
@@ -4539,29 +4540,59 @@ cody@titanrestorationllc.com`;
       ).run(jobId, author || "Titan Team", noteBody.trim(), isPublic === false ? 0 : 1, tag || null, now);
       const note = sqlite.prepare("SELECT * FROM job_notes WHERE id = ?").get(result.lastInsertRowid);
 
-      // ── In-app notification bell fan-out ────────────────────────────────
+      // ── In-app notification bell + email fan-out ──────────────────────
       // Best-effort: any failure here must NOT break note creation.
       try {
         const job: any = storage.getJob(jobId);
         const jobNum = job?.jobNumber ? `Job ${job.jobNumber}` : `Job #${jobId}`;
         const link = `/jobs/${jobId}`;
         const roster = notifier.activeEmployeeRoster();
-        // 1) @-mentions in the note body — always fire.
+        // Resolve the author's employee ID by name (best-effort). This lets
+        // the email fan-out send FROM the author's connected Gmail. If we
+        // can't match, mentions still bell but email skips silently.
+        const authorRow = author
+          ? roster.find(e => e.name.toLowerCase() === String(author).toLowerCase())
+          : undefined;
+
+        // 1) @-mentions in the note body — always fire the bell.
         const mentionedIds = notifier.extractMentions(noteBody, roster);
-        if (mentionedIds.length > 0) {
-          notifier.notifyMany(mentionedIds, {
+        // Do NOT notify the author themselves even if they typed @their-own-name.
+        const targetIds = authorRow ? mentionedIds.filter(id => id !== authorRow.id) : mentionedIds;
+        if (targetIds.length > 0) {
+          notifier.notifyMany(targetIds, {
             type: "note_mentioned",
             title: `${author || "Someone"} mentioned you on ${jobNum}`,
             body: noteBody.trim().slice(0, 240),
             jobId,
             link,
           });
+
+          // Email fan-out — fire-and-forget so slow SMTP never blocks the response.
+          if (authorRow) {
+            const custName = (job?.customerName || job?.customer_name || null) as string | null;
+            const jobAddr = (job?.serviceAddress || job?.service_address || job?.address || null) as string | null;
+            void sendMentionEmails(sqlite, {
+              authorEmployeeId: authorRow.id,
+              authorName: author || authorRow.name,
+              recipientEmployeeIds: targetIds,
+              jobId,
+              jobNumber: job?.jobNumber || null,
+              jobAddress: jobAddr,
+              customerName: custName,
+              noteBody: noteBody.trim(),
+              noteIsPublic: isPublic !== false,
+              noteTag: tag || null,
+            }).catch(e => console.error("[notes] email fan-out threw:", e?.message || e));
+          } else {
+            console.log("[notes] skipping email fan-out: author name not resolved to employee:", author);
+          }
         }
+
         // 2) Assigned tech on the job — skip if they authored it themselves.
         const assignedName: string | undefined = job?.assignedTech || undefined;
         if (assignedName && assignedName !== author) {
           const assigned = roster.find(e => e.name === assignedName);
-          if (assigned && !mentionedIds.includes(assigned.id)) {
+          if (assigned && !targetIds.includes(assigned.id)) {
             notifier.notify({
               employeeId: assigned.id,
               type: "note_added",
