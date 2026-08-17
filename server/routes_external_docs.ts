@@ -24,6 +24,48 @@
 import type { Express, Request, Response } from "express";
 import type BetterSqlite3 from "better-sqlite3";
 import { writeImageFieldSafe, readImageField } from "./image_pipeline";
+import * as s3 from "./storage_s3";
+
+// Resolve an external file row to a URL the browser can open, preserving the
+// stored MIME and forcing an inline disposition so PDFs render in the tab
+// instead of showing up as a blank black screen (which is what Chrome does
+// when a signed S3 URL comes back as application/octet-stream).
+// Guess a MIME from a filename when the DB row didn't store one (legacy
+// uploads). Covers the file types Titan actually gets: PDFs from Xactimate/
+// Symbility/carriers, and phone-camera JPG/PNG/HEIC estimates.
+function guessMimeFromName(name: string | null | undefined): string | undefined {
+  const n = String(name || "").toLowerCase();
+  if (n.endsWith(".pdf")) return "application/pdf";
+  if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+  if (n.endsWith(".png")) return "image/png";
+  if (n.endsWith(".heic")) return "image/heic";
+  if (n.endsWith(".webp")) return "image/webp";
+  if (n.endsWith(".gif")) return "image/gif";
+  return undefined;
+}
+
+async function externalFileViewUrl(row: {
+  external_file_url?: string | null;
+  external_file_key?: string | null;
+  external_file_mime?: string | null;
+  external_file_name?: string | null;
+}): Promise<string> {
+  const key = row.external_file_key || "";
+  if (key && s3.isConfigured()) {
+    // Prefer the DB-stored MIME; fall back to a filename-based guess so
+    // legacy rows that never captured MIME still render (before this route
+    // was hardened, a null MIME made Chrome treat the S3 response as
+    // application/octet-stream and paint a blank/black tab).
+    const mime = row.external_file_mime || guessMimeFromName(row.external_file_name) || "application/octet-stream";
+    const safeName = (row.external_file_name || "file").replace(/"/g, "");
+    return s3.getReadUrl(key, undefined, {
+      responseContentType: mime,
+      responseContentDisposition: `inline; filename="${safeName}"`,
+    });
+  }
+  // Legacy / non-S3 fallback — hand back whatever readImageField returns.
+  return readImageField({ dataUrl: row.external_file_url, storageKey: row.external_file_key });
+}
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB — keeps SQLite fallback path sane
 
@@ -163,7 +205,7 @@ export function registerExternalDocRoutes(
         "SELECT id, external_file_url, external_file_key, external_file_mime, external_file_name FROM estimates WHERE id = ?"
       ).get(id);
       if (!row) return res.status(404).json({ error: "Not found" });
-      const url = await readImageField({ dataUrl: row.external_file_url, storageKey: row.external_file_key });
+      const url = await externalFileViewUrl(row);
       if (!url) return res.status(404).json({ error: "No file attached" });
       // If it's a data URL we can't redirect the browser to it directly for
       // download-friendly behavior; stream it back with the right headers.
@@ -191,7 +233,7 @@ export function registerExternalDocRoutes(
         "SELECT id, external_file_url, external_file_key, external_file_mime, external_file_name FROM invoices WHERE id = ?"
       ).get(id);
       if (!row) return res.status(404).json({ error: "Not found" });
-      const url = await readImageField({ dataUrl: row.external_file_url, storageKey: row.external_file_key });
+      const url = await externalFileViewUrl(row);
       if (!url) return res.status(404).json({ error: "No file attached" });
       if (url.startsWith("data:")) {
         const m = /^data:([^;]+);base64,(.+)$/.exec(url);

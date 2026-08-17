@@ -128,11 +128,22 @@ export async function putObject(
 export async function getReadUrl(
   key: string,
   ttlSeconds: number = DEFAULT_SIGNED_URL_TTL_SECONDS,
+  opts?: { responseContentType?: string; responseContentDisposition?: string },
 ): Promise<string> {
   const client = getClient();
   return getSignedUrl(
     client,
-    new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }),
+    new GetObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      // Force S3 to return these headers on the response. Without this an
+      // uploaded PDF can come back as application/octet-stream and render
+      // as a blank black tab in Chrome/Safari. We pass the caller's known
+      // MIME through, and default the disposition to 'inline' so PDFs open
+      // in the browser's viewer instead of triggering a download.
+      ResponseContentType: opts?.responseContentType,
+      ResponseContentDisposition: opts?.responseContentDisposition,
+    }),
     { expiresIn: ttlSeconds },
   );
 }
