@@ -5,7 +5,7 @@
  */
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { Camera, Upload, Trash2, FolderOpen, X, ZoomIn, CloudUpload, AlertTriangle, RefreshCw, FileText, CheckSquare, Square, MapPin, Sparkles, Pencil, Share2, Mic, MicOff, Video } from "lucide-react";
+import { Camera, Upload, Trash2, FolderOpen, X, ZoomIn, CloudUpload, AlertTriangle, RefreshCw, FileText, CheckSquare, Square, MapPin, Sparkles, Pencil, Share2, Mic, MicOff, Video, ChevronLeft, ChevronRight } from "lucide-react";
 import LiveCameraCapture from "@/components/LiveCameraCapture";
 import { extractExif } from "@/lib/photoExif";
 import { generatePhotoReport } from "@/lib/photoReport";
@@ -64,6 +64,10 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
   const [bulkProgress, setBulkProgress] = useState<{ name: string; status: "pending"|"uploading"|"done"|"failed"; error?: string }[]>([]);
   const [activeFilter, setActiveFilter] = useState("all");
   const [lightbox, setLightbox] = useState<Photo | null>(null);
+  // Ref for the touch-swipe tracking on the lightbox image. Populated by
+  // handleTouchStart, consumed by handleTouchEnd. Kept in a ref so we don't
+  // trigger re-renders on every touchmove event.
+  const swipeStartXRef = useRef<number | null>(null);
   // Photo report mode: when true, tiles become selectable (checkbox in the
   // corner) and clicking toggles selection instead of opening the lightbox.
   const [selectMode, setSelectMode] = useState(false);
@@ -378,6 +382,51 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
   }, {});
 
   const filtered = activeFilter === "all" ? phaseScoped : phaseScoped.filter(p => p.category === activeFilter);
+
+  // ── Lightbox navigation ───────────────────────────────────────────────
+  // Find the current photo's index in the filtered list so prev/next arrows
+  // step through every visible photo (respecting the active category filter).
+  const lightboxIndex = lightbox ? filtered.findIndex(p => p.id === lightbox.id) : -1;
+  const canPrev = lightboxIndex > 0;
+  const canNext = lightboxIndex >= 0 && lightboxIndex < filtered.length - 1;
+  const showPrev = () => { if (canPrev) setLightbox(filtered[lightboxIndex - 1]); };
+  const showNext = () => { if (canNext) setLightbox(filtered[lightboxIndex + 1]); };
+
+  // Global keyboard shortcuts while the lightbox is open: ←/→ to navigate,
+  // Esc to close. Listener is cleaned up when the lightbox closes or the
+  // component unmounts to avoid stealing arrow keys elsewhere.
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => {
+      // Ignore when the user is typing in an input (e.g. editing the room
+      // label field inside the lightbox itself).
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === "ArrowLeft") { e.preventDefault(); showPrev(); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); showNext(); }
+      else if (e.key === "Escape") { setLightbox(null); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lightbox, filtered]);
+
+  // Touch-swipe: left swipe = next, right swipe = prev. 60px threshold so an
+  // accidental scroll doesn't count as a swipe.
+  const handleTouchStart = (e: React.TouchEvent) => {
+    swipeStartXRef.current = e.touches[0]?.clientX ?? null;
+  };
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    const startX = swipeStartXRef.current;
+    if (startX === null) return;
+    const endX = e.changedTouches[0]?.clientX ?? startX;
+    const dx = endX - startX;
+    if (Math.abs(dx) > 60) {
+      if (dx < 0) showNext();
+      else showPrev();
+    }
+    swipeStartXRef.current = null;
+  };
 
   // ── Photo report (PDF) helpers ───────────────────────────────────────
   // Tap a tile in select mode to add/remove it from the report. All selected
@@ -967,17 +1016,54 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
           className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
           onClick={() => setLightbox(null)}
         >
-          <div className="relative max-w-3xl w-full" onClick={e => e.stopPropagation()}>
+          {/* Left / right navigation arrows — large, edge-hugging so they're
+              easy to hit on mobile without covering the image. Rendered
+              OUTSIDE the inner content wrapper so clicks on them don't get
+              swallowed by the stopPropagation() below. */}
+          {canPrev && (
             <button
-              className="absolute -top-10 right-0 text-white hover:text-gray-300 transition-colors"
-              onClick={() => setLightbox(null)}
+              type="button"
+              onClick={e => { e.stopPropagation(); showPrev(); }}
+              className="absolute left-2 md:left-6 top-1/2 -translate-y-1/2 z-10 w-11 h-11 md:w-14 md:h-14 rounded-full bg-white/10 hover:bg-white/25 text-white flex items-center justify-center backdrop-blur-sm transition-colors"
+              aria-label="Previous photo"
+              data-testid="button-lightbox-prev"
             >
-              <X className="w-6 h-6" />
+              <ChevronLeft className="w-6 h-6 md:w-7 md:h-7" />
             </button>
+          )}
+          {canNext && (
+            <button
+              type="button"
+              onClick={e => { e.stopPropagation(); showNext(); }}
+              className="absolute right-2 md:right-6 top-1/2 -translate-y-1/2 z-10 w-11 h-11 md:w-14 md:h-14 rounded-full bg-white/10 hover:bg-white/25 text-white flex items-center justify-center backdrop-blur-sm transition-colors"
+              aria-label="Next photo"
+              data-testid="button-lightbox-next"
+            >
+              <ChevronRight className="w-6 h-6 md:w-7 md:h-7" />
+            </button>
+          )}
+
+          <div className="relative max-w-3xl w-full" onClick={e => e.stopPropagation()}>
+            {/* Top row: position counter + close */}
+            <div className="absolute -top-10 left-0 right-0 flex items-center justify-between">
+              <div className="text-white/80 text-xs font-medium tabular-nums bg-white/10 rounded px-2 py-1 backdrop-blur-sm">
+                {lightboxIndex + 1} / {filtered.length}
+              </div>
+              <button
+                className="text-white hover:text-gray-300 transition-colors"
+                onClick={() => setLightbox(null)}
+                aria-label="Close"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
             <img
               src={lightbox.dataUrl}
               alt={lightbox.caption || lightbox.filename}
-              className="w-full rounded-lg max-h-[75vh] object-contain"
+              className="w-full rounded-lg max-h-[75vh] object-contain select-none"
+              draggable={false}
+              onTouchStart={handleTouchStart}
+              onTouchEnd={handleTouchEnd}
             />
             <div className="mt-3 flex items-center justify-between">
               <div>
