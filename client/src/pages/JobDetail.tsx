@@ -287,7 +287,90 @@ function NotesTab({ jobId }: { jobId: number }) {
         )}
       </div>
 
-      {/* Notes list */}
+      {/* Add new note — lives at the TOP of the tab so the compose area is
+          the first thing you land on when you switch to Notes. The list of
+          existing notes follows below in newest-first order. */}
+      <Card className="border-dashed border-2 border-border">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Plus className="w-4 h-4" />Add Note
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0 space-y-3">
+          <Textarea
+            className="text-sm min-h-[100px]"
+            placeholder="Type your note here…"
+            value={newBody}
+            onChange={e => setNewBody(e.target.value)}
+            data-testid="input-new-note"
+          />
+
+          {/* Notify recipient picker — chip multi-select. Each selected
+              teammate gets an email (via the author's Gmail) + a bell when
+              this note is saved. Author is excluded automatically. */}
+          <NotifyPicker
+            selectedIds={newNotify}
+            onChange={setNewNotify}
+            excludeName={newAuthor}
+          />
+
+          <div className="flex items-center gap-4 flex-wrap">
+            <div>
+              <Label className="text-xs mb-1 block">Author</Label>
+              <Input
+                className="h-7 text-xs w-36"
+                value={newAuthor}
+                onChange={e => setNewAuthor(e.target.value)}
+                placeholder="Your name"
+                data-testid="input-note-author"
+              />
+            </div>
+            <div>
+              <Label className="text-xs mb-1 block">Tag (optional)</Label>
+              <Input
+                className="h-7 text-xs w-32"
+                placeholder="e.g. mason"
+                value={newTag}
+                onChange={e => setNewTag(e.target.value)}
+                data-testid="input-note-tag"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs">Homeowner Portal</Label>
+              <div className="flex items-center gap-2 h-7">
+                <Switch
+                  checked={newPublic}
+                  onCheckedChange={setNewPublic}
+                  data-testid="switch-new-note-public"
+                />
+                <span className={`text-xs font-medium flex items-center gap-1 ${newPublic ? "text-green-600" : "text-muted-foreground"}`}>
+                  {newPublic
+                    ? <><Globe className="w-3 h-3" />Share with homeowner</>
+                    : <><Lock className="w-3 h-3" />Staff only (homeowner won't see)</>}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="text-xs bg-muted/50 border border-border rounded px-3 py-2 text-muted-foreground">
+            <strong className="text-foreground">Every employee sees every note.</strong>{" "}
+            The toggle above only controls whether the homeowner sees it in their Customer Portal.
+          </div>
+
+          <Button
+            size="sm"
+            className="bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
+            onClick={() => createNote.mutate()}
+            disabled={createNote.isPending || !newBody.trim()}
+            data-testid="button-add-note"
+          >
+            <Plus className="w-4 h-4 mr-1" />
+            {createNote.isPending ? "Saving…" : "Add Note"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Notes list — newest first (client-side sort in `filtered`). */}
       {isLoading && <p className="text-sm text-muted-foreground text-center py-6">Loading notes…</p>}
 
       {!isLoading && filtered.length === 0 && (
@@ -391,87 +474,6 @@ function NotesTab({ jobId }: { jobId: number }) {
           </Card>
         ))}
       </div>
-
-      {/* ── Add new note ── */}
-      <Card className="border-dashed border-2 border-border">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <Plus className="w-4 h-4" />Add Note
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0 space-y-3">
-          <Textarea
-            className="text-sm min-h-[100px]"
-            placeholder="Type your note here…"
-            value={newBody}
-            onChange={e => setNewBody(e.target.value)}
-            data-testid="input-new-note"
-          />
-
-          {/* Notify recipient picker — chip multi-select. Each selected
-              teammate gets an email (via the author's Gmail) + a bell when
-              this note is saved. Author is excluded automatically. */}
-          <NotifyPicker
-            selectedIds={newNotify}
-            onChange={setNewNotify}
-            excludeName={newAuthor}
-          />
-
-          <div className="flex items-center gap-4 flex-wrap">
-            <div>
-              <Label className="text-xs mb-1 block">Author</Label>
-              <Input
-                className="h-7 text-xs w-36"
-                value={newAuthor}
-                onChange={e => setNewAuthor(e.target.value)}
-                placeholder="Your name"
-                data-testid="input-note-author"
-              />
-            </div>
-            <div>
-              <Label className="text-xs mb-1 block">Tag (optional)</Label>
-              <Input
-                className="h-7 text-xs w-32"
-                placeholder="e.g. mason"
-                value={newTag}
-                onChange={e => setNewTag(e.target.value)}
-                data-testid="input-note-tag"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label className="text-xs">Homeowner Portal</Label>
-              <div className="flex items-center gap-2 h-7">
-                <Switch
-                  checked={newPublic}
-                  onCheckedChange={setNewPublic}
-                  data-testid="switch-new-note-public"
-                />
-                <span className={`text-xs font-medium flex items-center gap-1 ${newPublic ? "text-green-600" : "text-muted-foreground"}`}>
-                  {newPublic
-                    ? <><Globe className="w-3 h-3" />Share with homeowner</>
-                    : <><Lock className="w-3 h-3" />Staff only (homeowner won't see)</>}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div className="text-xs bg-muted/50 border border-border rounded px-3 py-2 text-muted-foreground">
-            <strong className="text-foreground">Every employee sees every note.</strong>{" "}
-            The toggle above only controls whether the homeowner sees it in their Customer Portal.
-          </div>
-
-          <Button
-            size="sm"
-            className="bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
-            onClick={() => createNote.mutate()}
-            disabled={createNote.isPending || !newBody.trim()}
-            data-testid="button-add-note"
-          >
-            <Plus className="w-4 h-4 mr-1" />
-            {createNote.isPending ? "Saving…" : "Add Note"}
-          </Button>
-        </CardContent>
-      </Card>
     </div>
   );
 }
