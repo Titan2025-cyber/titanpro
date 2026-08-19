@@ -5290,6 +5290,10 @@ Approve in Partner Portal → Admin View.
   try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN latitude REAL`); } catch(_) {}
   try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN longitude REAL`); } catch(_) {}
   try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN geocoded_at TEXT`); } catch(_) {}
+  // Division / job scope column. Drives the 3-way scope selector on New Job
+  // and the Mitigation / Reconstruction phase filter on JobDetail + Buckets.
+  // Existing rows default to NULL (= 'both', legacy behavior).
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN division TEXT`); } catch(_) {}
 
   // Live tech location fixes (owner/admin map overlay). One row per employee;
   // upserted on every geolocation ping and deleted on clock-out so techs
