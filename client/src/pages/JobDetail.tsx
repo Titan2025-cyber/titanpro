@@ -926,7 +926,20 @@ export default function JobDetail() {
   const statutes = isGA ? GA_STATUTES : SC_STATUTES;
   const stateLabel = isGA ? "Georgia" : "South Carolina";
 
-  const legacyNotes = JSON.parse(job.notes || "[]") as any[];
+  // job.notes is a legacy free-form column. Historically it held a JSON
+  // string of [{ author, body, ... }] before the job_notes table existed.
+  // On older rows it may be plain text (or corrupted JSON), which used to
+  // throw here and take down the whole page as "JobDetail failed to load".
+  // Anything non-parseable is treated as "no legacy notes" — the current
+  // notes table is the source of truth.
+  let legacyNotes: any[] = [];
+  try {
+    const raw = job.notes;
+    if (raw && typeof raw === "string" && raw.trim().startsWith("[")) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) legacyNotes = parsed;
+    }
+  } catch { /* legacy plain-text or garbage — ignore */ }
   const notesCount = notes.length + legacyNotes.length;
 
   // Phase-filtered views — strictly independent per phase (null/undefined phase
