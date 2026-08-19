@@ -233,7 +233,42 @@ function PsychrometricGrid({
   );
 }
 
-function MoistureTable({ rows, onChange, readOnly }: { rows: MoistureRow[]; onChange: (r: MoistureRow[]) => void; readOnly?: boolean }) {
+// History map: "location|material" -> chronological list of prior readings
+// (oldest first) plus the day number they were captured on. Used to render an
+// inline trend under each moisture row so the tech can see "where this point
+// started and where it is trending" without opening older records.
+export type MoistureHistory = Record<string, Array<{ day: number; reading: number; date: string }>>;
+
+function moistureKey(location: string, material: string) {
+  return `${(location || "").trim().toLowerCase()}|${(material || "").trim().toLowerCase()}`;
+}
+
+// Build a MoistureHistory from prior drying records. Missed-day records have
+// no moisture readings and are skipped. Records are walked oldest-first so the
+// resulting trend array is in chronological order.
+function buildMoistureHistory(priorRecords: DryingRecord[]): MoistureHistory {
+  const history: MoistureHistory = {};
+  const chronological = [...priorRecords]
+    .filter(r => (r as any).recordType !== "missed")
+    .sort((a, b) => {
+      const da = a.readingDate || "";
+      const dbb = b.readingDate || "";
+      if (da !== dbb) return da.localeCompare(dbb);
+      return (a.dayNumber || 0) - (b.dayNumber || 0);
+    });
+  for (const r of chronological) {
+    let rows: MoistureRow[] = [];
+    try { rows = JSON.parse(r.moistureReadings || "[]"); } catch { rows = []; }
+    for (const row of rows) {
+      if (!row || (!row.location && !row.material)) continue;
+      const key = moistureKey(row.location, row.material);
+      (history[key] ||= []).push({ day: r.dayNumber || 0, reading: Number(row.reading) || 0, date: r.readingDate || "" });
+    }
+  }
+  return history;
+}
+
+function MoistureTable({ rows, onChange, readOnly, history }: { rows: MoistureRow[]; onChange: (r: MoistureRow[]) => void; readOnly?: boolean; history?: MoistureHistory }) {
   const add = () => onChange([...rows, { id: Date.now(), location: "", material: "Drywall", reading: 0, target: 17 }]);
   const del = (id: number) => onChange(rows.filter(r => r.id !== id));
   const upd = (id: number, field: keyof MoistureRow, val: any) =>
@@ -248,29 +283,59 @@ function MoistureTable({ rows, onChange, readOnly }: { rows: MoistureRow[]; onCh
       <div className="space-y-1.5">
         {rows.map(row => {
           const over = row.reading > row.target;
+          const trend = history?.[moistureKey(row.location, row.material)] || [];
+          // Trend line: show day-1 (initial) plus up to the last 3 readings so
+          // the tech can see "started at 32%, now trending 24 -> 21 -> 19".
+          const day1 = trend[0];
+          const recent = trend.slice(-3);
+          const showDay1Separately = day1 && !recent.includes(day1);
+          const target = row.target || 0;
           return (
-            <div key={row.id} className="grid grid-cols-12 gap-1 items-center">
-              <Input className="col-span-3 h-7 text-xs" placeholder="Location" value={row.location} disabled={readOnly}
-                onChange={e => upd(row.id, "location", e.target.value)} />
-              <Select value={row.material} onValueChange={v => upd(row.id, "material", v)} disabled={readOnly}>
-                <SelectTrigger className="col-span-3 h-7 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>{MATERIAL_TYPES.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
-              </Select>
-              <div className="col-span-2 relative">
-                <Input className={`h-7 text-xs pr-6 ${over ? "border-red-400 bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300" : ""}`}
-                  type="number" placeholder="Reading" value={row.reading || ""} disabled={readOnly}
-                  onChange={e => upd(row.id, "reading", Number(e.target.value))} />
-                {over && <AlertTriangle className="absolute right-1 top-1.5 w-3.5 h-3.5 text-red-500" />}
+            <div key={row.id} className="space-y-0.5">
+              <div className="grid grid-cols-12 gap-1 items-center">
+                <Input className="col-span-3 h-7 text-xs" placeholder="Location" value={row.location} disabled={readOnly}
+                  onChange={e => upd(row.id, "location", e.target.value)} />
+                <Select value={row.material} onValueChange={v => upd(row.id, "material", v)} disabled={readOnly}>
+                  <SelectTrigger className="col-span-3 h-7 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>{MATERIAL_TYPES.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
+                </Select>
+                <div className="col-span-2 relative">
+                  <Input className={`h-7 text-xs pr-6 ${over ? "border-red-400 bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300" : ""}`}
+                    type="number" placeholder="Reading" value={row.reading || ""} disabled={readOnly}
+                    onChange={e => upd(row.id, "reading", Number(e.target.value))} />
+                  {over && <AlertTriangle className="absolute right-1 top-1.5 w-3.5 h-3.5 text-red-500" />}
+                </div>
+                <Input className="col-span-2 h-7 text-xs" type="number" placeholder="Target" value={row.target || ""}
+                  disabled={readOnly} onChange={e => upd(row.id, "target", Number(e.target.value))} />
+                <div className="col-span-1 flex justify-center">
+                  {over
+                    ? <Badge className="text-xs h-5 bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-200 border-0">WET</Badge>
+                    : <Badge className="text-xs h-5 bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-200 border-0">DRY</Badge>
+                  }
+                </div>
+                {!readOnly && <Button size="sm" variant="ghost" className="col-span-1 h-7 px-1 text-destructive" onClick={() => del(row.id)}><Trash2 className="w-3 h-3" /></Button>}
               </div>
-              <Input className="col-span-2 h-7 text-xs" type="number" placeholder="Target" value={row.target || ""}
-                disabled={readOnly} onChange={e => upd(row.id, "target", Number(e.target.value))} />
-              <div className="col-span-1 flex justify-center">
-                {over
-                  ? <Badge className="text-xs h-5 bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-200 border-0">WET</Badge>
-                  : <Badge className="text-xs h-5 bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-200 border-0">DRY</Badge>
-                }
-              </div>
-              {!readOnly && <Button size="sm" variant="ghost" className="col-span-1 h-7 px-1 text-destructive" onClick={() => del(row.id)}><Trash2 className="w-3 h-3" /></Button>}
+              {trend.length > 0 && (
+                <div className="col-span-12 pl-1 flex items-center gap-1.5 text-[10px] text-muted-foreground flex-wrap">
+                  <span className="uppercase tracking-wide">Prior:</span>
+                  {showDay1Separately && day1 && (
+                    <>
+                      <span className={day1.reading > target ? "text-red-600 dark:text-red-400 font-medium" : "text-green-700 dark:text-green-400"}>
+                        D{day1.day}: {day1.reading}%
+                      </span>
+                      <span className="opacity-40">…</span>
+                    </>
+                  )}
+                  {recent.map((t, i) => (
+                    <span key={i} className={t.reading > target ? "text-red-600 dark:text-red-400 font-medium" : "text-green-700 dark:text-green-400"}>
+                      D{t.day}: {t.reading}%{i < recent.length - 1 ? " →" : ""}
+                    </span>
+                  ))}
+                  {day1 && recent.length > 0 && recent[recent.length - 1].reading < day1.reading && (
+                    <span className="text-green-700 dark:text-green-400 font-medium">(↓ {day1.reading - recent[recent.length - 1].reading}% since D{day1.day})</span>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}
@@ -448,7 +513,7 @@ function AffectedAreasTable({ rows, onChange, readOnly }: { rows: AreaRow[]; onC
 }
 
 // ── Single Record Card ────────────────────────────────────────────────────────
-function RecordCard({ record, jobId, readOnly }: { record: DryingRecord; jobId: number; readOnly?: boolean }) {
+function RecordCard({ record, jobId, readOnly, priorRecords = [] }: { record: DryingRecord; jobId: number; readOnly?: boolean; priorRecords?: DryingRecord[] }) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const { toast } = useToast();
@@ -663,7 +728,7 @@ function RecordCard({ record, jobId, readOnly }: { record: DryingRecord; jobId: 
             )}
 
             {/* Moisture readings */}
-            <MoistureTable rows={moistureRows} onChange={setMoistureRows} readOnly={!editing} />
+            <MoistureTable rows={moistureRows} onChange={setMoistureRows} readOnly={!editing} history={buildMoistureHistory(priorRecords)} />
 
             {/* Equipment */}
             <EquipmentTable rows={equipRows} onChange={setEquipRows} readOnly={!editing} />
@@ -886,20 +951,75 @@ function MissedDayCard({ record, jobId, readOnly }: { record: DryingRecord; jobI
 }
 
 // ── New Record Form ─────────────────────────────────────────────────────
-function NewRecordForm({ jobId, onClose }: { jobId: number; onClose: () => void }) {
+function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; onClose: () => void; priorRecords?: DryingRecord[] }) {
   const { toast } = useToast();
+
+  // Prior-record carry-forward. When the tech opens a new drying record we
+  // don't want them to have to remember which moisture points they took
+  // yesterday, what materials they were on, or which dehus/air movers are
+  // installed at what serial numbers. So we pre-seed the form from the most
+  // recent visit record (readings blanked out so they type today's number)
+  // and default the day number to the next-in-sequence value.
+  //
+  // Non-missed prior records only — missed-day placeholders have no data.
+  const visitPrior = priorRecords.filter(r => (r as any).recordType !== "missed");
+  const chronoAsc = [...visitPrior].sort((a, b) => (a.dayNumber || 0) - (b.dayNumber || 0));
+  const chronoDesc = [...visitPrior].sort((a, b) => (b.dayNumber || 0) - (a.dayNumber || 0));
+  const lastVisit = chronoDesc[0];
+  const day1Visit = chronoAsc[0];
+  const nextDay = (priorRecords.reduce((max, r) => Math.max(max, r.dayNumber || 0), 0)) + 1;
+
+  const seededMoisture: MoistureRow[] = (() => {
+    if (!lastVisit) return [];
+    let rows: MoistureRow[] = [];
+    try { rows = JSON.parse(lastVisit.moistureReadings || "[]"); } catch { rows = []; }
+    // Preserve location, material, and target; blank the reading so the tech
+    // has to actively enter today's value (no accidental duplicate readings).
+    return rows.filter(r => r && (r.location || r.material)).map(r => ({
+      id: Date.now() + Math.random(),
+      location: r.location || "",
+      material: r.material || "Drywall",
+      reading: 0,
+      target: Number(r.target) || 17,
+    })) as MoistureRow[];
+  })();
+
+  const seededEquip: EquipRow[] = (() => {
+    // Equipment stays installed across visits, so carry forward the most
+    // recent record's equipment list wholesale (including serial numbers and
+    // placement). Techs can then delete anything that was pulled that day.
+    if (!lastVisit) return [];
+    let rows: EquipRow[] = [];
+    try { rows = JSON.parse(lastVisit.equipment || "[]"); } catch { rows = []; }
+    return rows.filter(Boolean).map(r => ({
+      ...r,
+      id: Date.now() + Math.random(),
+      // Drop yesterday's daily readings — those are per-visit.
+      dailyReadings: [],
+    })) as EquipRow[];
+  })();
+
+  const seededAreas: AreaRow[] = (() => {
+    if (!lastVisit) return [];
+    let rows: AreaRow[] = [];
+    try { rows = JSON.parse(lastVisit.affectedAreas || "[]"); } catch { rows = []; }
+    return rows.filter(Boolean).map(r => ({ ...r, id: Date.now() + Math.random() })) as AreaRow[];
+  })();
+
+  const moistureHistory = buildMoistureHistory(priorRecords);
+
   const [form, setForm] = useState({
     readingDate: todayLocalISO(),
     readingTime: new Date().toTimeString().slice(0, 5),
     techName: "",
-    dayNumber: 1,
-    waterCategory: "category2",
-    waterClass: "class2",
+    dayNumber: nextDay,
+    waterCategory: lastVisit?.waterCategory || "category2",
+    waterClass: lastVisit?.waterClass || "class2",
     observations: "",
   });
-  const [moistureRows, setMoistureRows] = useState<MoistureRow[]>([]);
-  const [equipRows, setEquipRows] = useState<EquipRow[]>([]);
-  const [areaRows, setAreaRows] = useState<AreaRow[]>([]);
+  const [moistureRows, setMoistureRows] = useState<MoistureRow[]>(seededMoisture);
+  const [equipRows, setEquipRows] = useState<EquipRow[]>(seededEquip);
+  const [areaRows, setAreaRows] = useState<AreaRow[]>(seededAreas);
   const [psychroReadings, setPsychroReadings] = useState<PsychroReading[]>(
     hydratePsychroReadings(null, null, null)
   );
@@ -998,7 +1118,20 @@ function NewRecordForm({ jobId, onClose }: { jobId: number; onClose: () => void 
 
         <PsychrometricGrid readings={psychroReadings} onChange={setPsychroReadings} />
 
-        <MoistureTable rows={moistureRows} onChange={setMoistureRows} />
+        {lastVisit && (moistureRows.length + equipRows.length + areaRows.length) > 0 && (
+          <div className="rounded-md border border-[hsl(var(--titan-blue)/0.35)] bg-[hsl(var(--titan-blue)/0.05)] px-3 py-2 text-[11px] text-[hsl(var(--titan-blue))] flex items-start gap-2">
+            <Droplets className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+            <div>
+              <span className="font-medium">Carried forward from Day {lastVisit.dayNumber}</span>
+              {day1Visit && day1Visit !== lastVisit && (
+                <span className="opacity-80"> (installed Day {day1Visit.dayNumber})</span>
+              )}
+              <span className="opacity-80"> — moisture points, targets, materials, and equipment. Readings are blank so you enter today's numbers. Remove any equipment that was pulled today.</span>
+            </div>
+          </div>
+        )}
+
+        <MoistureTable rows={moistureRows} onChange={setMoistureRows} history={moistureHistory} />
         <EquipmentTable rows={equipRows} onChange={setEquipRows} />
         <AffectedAreasTable rows={areaRows} onChange={setAreaRows} />
 
@@ -1134,7 +1267,7 @@ export default function DryingRecords({ jobId, readOnly = false }: { jobId: numb
         </div>
       )}
 
-      {showNew && <NewRecordForm jobId={jobId} onClose={() => setShowNew(false)} />}
+      {showNew && <NewRecordForm jobId={jobId} onClose={() => setShowNew(false)} priorRecords={records} />}
       {showMissed && <MissedDayForm jobId={jobId} defaultDay={nextDay} onClose={() => setShowMissed(false)} />}
 
       {isLoading ? (
@@ -1178,7 +1311,7 @@ export default function DryingRecords({ jobId, readOnly = false }: { jobId: numb
           {sortedRecords.map(r => (
             (r as any).recordType === "missed"
               ? <MissedDayCard key={r.id} record={r} jobId={jobId} readOnly={readOnly} />
-              : <RecordCard key={r.id} record={r} jobId={jobId} readOnly={readOnly} />
+              : <RecordCard key={r.id} record={r} jobId={jobId} readOnly={readOnly} priorRecords={records.filter(x => (x.dayNumber || 0) < (r.dayNumber || 0))} />
           ))}
         </div>
       )}
