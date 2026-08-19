@@ -914,6 +914,24 @@ export default function JobDetail() {
   const [jobNumberDraft, setJobNumberDraft] = useState("");
   const [propRefresh, setPropRefresh] = useState<{ status: "idle" | "loading" | "done" | "empty" | "error"; note: string }>({ status: "idle", note: "" });
 
+  // ⚠️ Any hook (useState / useEffect / useMutation / useMemo / etc.) that
+  // this component needs MUST live above the early returns below. React
+  // requires the same set of hooks to be called on every render — adding a
+  // hook after `if (isLoading) return ...` causes "Rendered more hooks than
+  // during the previous render" (minified React error #310) on the render
+  // that resolves the job. If you need to add a new effect, hoist it here
+  // and guard the body with an early `if (!job) return;` inside the effect.
+
+  // Job scope auto-switch. Kept up here (before early returns) so the hook
+  // order stays stable across the loading -> loaded transition. The effect
+  // body reads `job` defensively — it's undefined during the loading render.
+  const jobScopeForEffect = String(((job as any)?.division) || "").toLowerCase();
+  useEffect(() => {
+    if (!job) return;
+    if (jobScopeForEffect === "mitigation" && phaseFilter !== "mitigation") setPhaseFilter("mitigation");
+    if (jobScopeForEffect === "reconstruction" && phaseFilter !== "reconstruction") setPhaseFilter("reconstruction");
+  }, [job, jobScopeForEffect, phaseFilter]);
+
   if (isLoading) return <div className="p-6 text-muted-foreground">Loading…</div>;
   if (!job) return <div className="p-6 text-destructive">Job not found.</div>;
 
@@ -960,12 +978,10 @@ export default function JobDetail() {
     if (jobScope === "reconstruction") return p.value === "reconstruction";
     return true;
   });
-  // Auto-switch phaseFilter to the only available phase for scoped jobs
-  // so the workspace doesn't render 'reconstruction' data for a mit-only job.
-  useEffect(() => {
-    if (jobScope === "mitigation" && phaseFilter !== "mitigation") setPhaseFilter("mitigation");
-    if (jobScope === "reconstruction" && phaseFilter !== "reconstruction") setPhaseFilter("reconstruction");
-  }, [jobScope, phaseFilter]);
+  // Auto-switch effect for jobScope is hoisted above the early returns
+  // (see `jobScopeForEffect` block near the top of the component). Do NOT
+  // add a useEffect here — hooks after an early return break rules-of-hooks
+  // and cause React error #310 on the loading → loaded transition.
 
   return (
     <div className="space-y-4">
