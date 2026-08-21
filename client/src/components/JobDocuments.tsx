@@ -1671,10 +1671,20 @@ export default function JobDocuments({ jobId, readOnly = false, phase }: { jobId
     ? allDocs
     : allDocs.filter(d => ((d as any).phase || "mitigation") === phase);
 
-  const { data: jobs = [] } = useQuery<Job[]>({ queryKey: ["/api/jobs"] });
+  // Fetch THIS job directly. Previously we did jobs.find(j => j.id === jobId)
+  // on the whole /api/jobs list, but that endpoint filters out closed jobs on
+  // the server, so the Work Authorization / Direction to Pay / Custom Pricing
+  // buttons became silent no-ops on any job whose status transitioned to
+  // 'closed' — the outer conditional `activeForm === 'work_auth' && job`
+  // failed because `job` was undefined. Using /api/jobs/:id (which does not
+  // filter by status) means the Documents tab works consistently on both
+  // open and closed jobs.
+  const { data: job } = useQuery<Job>({
+    queryKey: ["/api/jobs", jobId],
+    queryFn: () => apiRequest("GET", `/api/jobs/${jobId}`).then(r => r.json()),
+  });
   const { data: contacts = [] } = useQuery<any[]>({ queryKey: ["/api/contacts"] });
-  const job = jobs.find(j => j.id === jobId);
-  const contact = job ? contacts.find((c: any) => c.id === job.contactId) : undefined;
+  const contact = job ? contacts.find((c: any) => c.id === (job as any).contactId) : undefined;
 
   const toggleSelect = useCallback((id: number) => {
     setSelectedIds(prev => {
