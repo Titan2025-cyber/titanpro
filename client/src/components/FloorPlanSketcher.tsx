@@ -35,6 +35,65 @@ import { Textarea } from "@/components/ui/textarea";
 
 const CANVAS_W = 1000;
 const CANVAS_H = 700;
+// Default drawing scale when a plan doesn't specify one. 10 viewbox units per
+// foot means a 200-unit-wide room reads as 20 ft — comfortable for typical
+// residential rooms on the 1000×700 canvas. Users can override this from the
+// Scale field in the toolbar (e.g. bump to 15 to fit a larger house without
+// blowing off the canvas).
+const DEFAULT_PIXELS_PER_FOOT = 10;
+
+// Format a viewbox-unit length (pixels) as an architect-style feet-inches
+// string, e.g. 246 units at 10 px/ft → "20' 6\"". Sub-inch remainders are
+// rounded to the nearest inch — techs sketch at foot-inch resolution, not
+// 1/16ths. Zero inches collapse to just the foot value, and sub-1ft rounds
+// up to nearest inch. Handles NaN / undefined safely for the render path.
+export function formatFtIn(units: number, pxPerFt: number): string {
+  if (!Number.isFinite(units) || !Number.isFinite(pxPerFt) || pxPerFt <= 0) return "";
+  const totalInches = Math.max(0, Math.round((units / pxPerFt) * 12));
+  const ft = Math.floor(totalInches / 12);
+  const inches = totalInches - ft * 12;
+  if (ft === 0) return `${inches}"`;
+  if (inches === 0) return `${ft}'`;
+  return `${ft}' ${inches}"`;
+}
+
+// Parse a user-typed dimension into viewbox units. Accepts:
+//   "20' 6\"" | "20'6\"" | "20' 6" | "20ft 6in" | "20 6"  (feet + inches)
+//   "20'" | "20 ft" | "20"                                (feet only)
+//   "246\"" | "246 in" | "246in"                          (inches only)
+//   "20.5" | "20.5'"                                     (decimal feet)
+// Returns NaN if it can't extract any numbers, so callers can fall back to
+// the original value instead of writing garbage.
+export function parseFtIn(raw: string, pxPerFt: number): number {
+  if (!raw || pxPerFt <= 0) return NaN;
+  const s = String(raw).trim().toLowerCase();
+
+  // Pure inches: "246\"" or "246in"
+  const inchOnly = s.match(/^(-?\d+(?:\.\d+)?)\s*(?:"|in|inch|inches)$/);
+  if (inchOnly) return (parseFloat(inchOnly[1]) / 12) * pxPerFt;
+
+  // Feet + inches with symbols: "20' 6\"" / "20'6" / "20 ft 6 in"
+  const ftIn = s.match(/^(-?\d+(?:\.\d+)?)\s*(?:'|ft|feet)\s*(\d+(?:\.\d+)?)?\s*(?:"|in|inch|inches)?$/);
+  if (ftIn) {
+    const ft = parseFloat(ftIn[1]);
+    const inches = ftIn[2] ? parseFloat(ftIn[2]) : 0;
+    return (ft + inches / 12) * pxPerFt;
+  }
+
+  // Two bare numbers = feet then inches ("20 6")
+  const twoNums = s.match(/^(-?\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$/);
+  if (twoNums) {
+    const ft = parseFloat(twoNums[1]);
+    const inches = parseFloat(twoNums[2]);
+    return (ft + inches / 12) * pxPerFt;
+  }
+
+  // Single bare number = decimal feet ("20" or "20.5")
+  const singleNum = s.match(/^(-?\d+(?:\.\d+)?)$/);
+  if (singleNum) return parseFloat(singleNum[1]) * pxPerFt;
+
+  return NaN;
+}
 
 // A tasteful default palette for room fills. Users can pick any of these from
 // the room inspector; the swatches double as accessibility-safe visual codes.
@@ -108,6 +167,19 @@ export default function FloorPlanSketcher({
     if (suppressHistoryRef.current) return;
     historyRef.current.push(JSON.parse(JSON.stringify(value)));
     if (historyRef.current.length > 30) historyRef.current.shift();
+  };
+
+  // Drawing scale — viewbox units per real-world foot. Persisted on the plan
+  // so different jobs can use different scales (a warehouse job wants a much
+  // higher px/ft than a bathroom). Falls back to the default when the plan
+  // was saved before scale existed.
+  const pxPerFt = value.scale?.pixelsPerFoot && value.scale.pixelsPerFoot > 0
+    ? value.scale.pixelsPerFoot
+    : DEFAULT_PIXELS_PER_FOOT;
+  const setPxPerFt = (n: number) => {
+    if (!Number.isFinite(n) || n <= 0) return;
+    pushHistory();
+    onChange({ ...value, scale: { ...(value.scale || {}), pixelsPerFoot: n } });
   };
   const undo = () => {
     const prev = historyRef.current.pop();
@@ -270,6 +342,21 @@ export default function FloorPlanSketcher({
           <Button size="sm" variant={showGrid ? "default" : "outline"} onClick={() => setShowGrid(v => !v)}>
             <Grid3x3 className="w-4 h-4 mr-1"/>Grid
           </Button>
+          <label className="flex items-center gap-1 text-xs text-muted-foreground ml-1" title="Viewbox units per foot. Higher = smaller rooms.">
+            Scale
+            <Input
+              type="number"
+              min={1}
+              max={200}
+              step={1}
+              value={pxPerFt}
+              disabled={readOnly}
+              onChange={(e) => setPxPerFt(Number(e.target.value))}
+              className="h-7 w-16 text-xs"
+              data-testid="input-plan-scale"
+            />
+            <span>px/ft</span>
+          </label>
           {onSave && !readOnly && (
             <Button size="sm" onClick={onSave} disabled={saving} className="ml-auto">
               <Save className="w-4 h-4 mr-1"/>{saving ? "Saving…" : "Save plan"}
@@ -337,7 +424,8 @@ export default function FloorPlanSketcher({
                     fill="#475569"
                     style={{ pointerEvents: "none", userSelect: "none" }}
                   >
-                    {`${Math.round(r.w)}×${Math.round(r.h)}`}
+                    {`${formatFtIn(r.w, pxPerFt)} × ${formatFtIn(r.h, pxPerFt)}`}
+                    {` · ${Math.round(sqft(r, pxPerFt))} sf`}
                     {count > 0 ? ` · ${count} photo${count===1?"":"s"}` : ""}
                   </text>
                   {/* Resize handles — only on the selected room, and only in edit mode. */}
@@ -389,25 +477,44 @@ export default function FloorPlanSketcher({
                      onChange={e => updateRoom(selected.id, { name: e.target.value })}/>
             </div>
             <div className="grid grid-cols-2 gap-2">
+              <div className="col-span-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs">Dimensions</Label>
+                  <span className="text-[11px] text-muted-foreground tabular-nums">
+                    {Math.round(sqft(selected, pxPerFt))} sf
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 mt-1">
+                  <FtInInput
+                    label="Width"
+                    units={selected.w}
+                    pxPerFt={pxPerFt}
+                    disabled={readOnly}
+                    onCommit={(nextUnits) => updateRoom(selected.id, { w: Math.max(20, nextUnits) })}
+                    testId="input-room-width"
+                  />
+                  <FtInInput
+                    label="Height"
+                    units={selected.h}
+                    pxPerFt={pxPerFt}
+                    disabled={readOnly}
+                    onCommit={(nextUnits) => updateRoom(selected.id, { h: Math.max(20, nextUnits) })}
+                    testId="input-room-height"
+                  />
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  Accepts <code>20' 6"</code>, <code>20.5</code>, <code>246"</code>, or <code>20 6</code>.
+                </p>
+              </div>
               <div>
-                <Label className="text-xs">X</Label>
+                <Label className="text-xs">X (position)</Label>
                 <Input type="number" value={Math.round(selected.x)} disabled={readOnly}
                        onChange={e => updateRoom(selected.id, { x: Number(e.target.value) })}/>
               </div>
               <div>
-                <Label className="text-xs">Y</Label>
+                <Label className="text-xs">Y (position)</Label>
                 <Input type="number" value={Math.round(selected.y)} disabled={readOnly}
                        onChange={e => updateRoom(selected.id, { y: Number(e.target.value) })}/>
-              </div>
-              <div>
-                <Label className="text-xs">Width</Label>
-                <Input type="number" value={Math.round(selected.w)} disabled={readOnly}
-                       onChange={e => updateRoom(selected.id, { w: Math.max(20, Number(e.target.value)) })}/>
-              </div>
-              <div>
-                <Label className="text-xs">Height</Label>
-                <Input type="number" value={Math.round(selected.h)} disabled={readOnly}
-                       onChange={e => updateRoom(selected.id, { h: Math.max(20, Number(e.target.value)) })}/>
               </div>
             </div>
             <div>
@@ -436,6 +543,71 @@ export default function FloorPlanSketcher({
 
 // ── Geometry helpers ────────────────────────────────────────────────────────
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
+
+// Room footprint in real-world square feet, using the plan's current scale.
+function sqft(r: { w: number; h: number }, pxPerFt: number): number {
+  if (pxPerFt <= 0) return 0;
+  const wFt = r.w / pxPerFt;
+  const hFt = r.h / pxPerFt;
+  return wFt * hFt;
+}
+
+// A small controlled input that displays a length in feet-inches and only
+// commits the parsed value on blur or Enter. Committing on every keystroke
+// would make partial input like "20' " (before the inches are typed) snap
+// the room back to a rounded 20', which feels janky. Keeping local state
+// while the field is focused lets users type freely; onCommit fires with
+// the parsed viewbox units, or is a no-op if the parse fails.
+function FtInInput({
+  label, units, pxPerFt, disabled, onCommit, testId,
+}: {
+  label: string;
+  units: number;
+  pxPerFt: number;
+  disabled?: boolean;
+  onCommit: (nextUnits: number) => void;
+  testId?: string;
+}) {
+  const external = formatFtIn(units, pxPerFt);
+  const [draft, setDraft] = useState(external);
+  const [focused, setFocused] = useState(false);
+
+  // Re-sync when the room changes (e.g. drag-resize on canvas) unless the
+  // user is mid-edit — don't stomp their in-progress typing.
+  useEffect(() => {
+    if (!focused) setDraft(external);
+  }, [external, focused]);
+
+  const commit = () => {
+    const parsed = parseFtIn(draft, pxPerFt);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      onCommit(parsed);
+      setDraft(formatFtIn(parsed, pxPerFt));
+    } else {
+      setDraft(external);
+    }
+  };
+
+  return (
+    <div>
+      <Label className="text-xs">{label}</Label>
+      <Input
+        value={draft}
+        disabled={disabled}
+        onChange={(e) => setDraft(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => { setFocused(false); commit(); }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); }
+          if (e.key === "Escape") { setDraft(external); (e.target as HTMLInputElement).blur(); }
+        }}
+        placeholder={`e.g. 20' 6"`}
+        data-testid={testId}
+        className="tabular-nums"
+      />
+    </div>
+  );
+}
 
 function handlePositions(r: FloorRoom): Array<[string, number, number]> {
   const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
