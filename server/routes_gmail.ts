@@ -89,6 +89,58 @@ function makeServerOAuthClient() {
 // { ok: true, id } on success, or { ok: false, reason } if the sender has no
 // Gmail linked or the refresh token is dead. Callers should treat failure as
 // non-fatal (log + skip — do not fail the underlying write).
+// Attachments are optional; pass a base64 data URI OR raw base64. Filename &
+// contentType are used verbatim in the MIME part header.
+export type GmailAttachment = {
+  filename: string;
+  contentType?: string;
+  // Either a data URI ("data:application/pdf;base64,...") or raw base64.
+  content: string;
+};
+
+// Encode a Buffer as base64 with 76-char line breaks (RFC 2045 §6.8).
+function base64Mime(buf: Buffer): string {
+  const b64 = buf.toString("base64");
+  return b64.match(/.{1,76}/g)?.join("\r\n") || b64;
+}
+
+// Given the loose input (data URI or bare base64), return a Buffer + inferred
+// content type. If the caller supplied a contentType, prefer it.
+function attachmentBuffer(att: GmailAttachment): { buf: Buffer; contentType: string } {
+  let b64 = att.content || "";
+  let contentType = att.contentType || "";
+  const m = /^data:([^;]+);base64,(.*)$/s.exec(b64);
+  if (m) {
+    if (!contentType) contentType = m[1];
+    b64 = m[2];
+  }
+  if (!contentType) contentType = "application/octet-stream";
+  const buf = Buffer.from(b64, "base64");
+  return { buf, contentType };
+}
+
+// Pick a connected employee to send system emails as. Prefers the owner /
+// admin so recipients see the company principal. Falls back to any employee
+// with a valid refresh token. Returns null when nobody is connected.
+export function pickCompanyGmailSender(sqlite: Database): { id: number; email: string } | null {
+  if (!gmailConfigured()) return null;
+  // 1) Try owner / admin employees first
+  const preferred: any = sqlite
+    .prepare(
+      "SELECT id, gmail_email FROM employees WHERE gmail_refresh_token IS NOT NULL AND gmail_refresh_token != '' AND role IN ('owner','admin') ORDER BY id ASC LIMIT 1",
+    )
+    .get();
+  if (preferred && preferred.id) return { id: preferred.id, email: preferred.gmail_email || "" };
+  // 2) Any connected employee
+  const any: any = sqlite
+    .prepare(
+      "SELECT id, gmail_email FROM employees WHERE gmail_refresh_token IS NOT NULL AND gmail_refresh_token != '' ORDER BY id ASC LIMIT 1",
+    )
+    .get();
+  if (any && any.id) return { id: any.id, email: any.gmail_email || "" };
+  return null;
+}
+
 export async function sendGmailAsEmployee(
   sqlite: Database,
   senderEmployeeId: number,
@@ -98,6 +150,7 @@ export async function sendGmailAsEmployee(
     html?: string;
     text?: string;
     replyTo?: string;
+    attachments?: GmailAttachment[];
   },
 ): Promise<{ ok: true; id: string | null } | { ok: false; reason: string }> {
   if (!gmailConfigured()) return { ok: false, reason: "not_configured" };
@@ -141,12 +194,21 @@ export async function sendGmailAsEmployee(
   const toList = Array.isArray(args.to) ? args.to.join(", ") : args.to;
   const from = row.gmail_email || "";
   const subject = args.subject || "(no subject)";
-  const boundary = "----titanpro_" + crypto.randomBytes(8).toString("hex");
+  const hasAttachments = Array.isArray(args.attachments) && args.attachments.length > 0;
+  const altBoundary = "----titanpro_alt_" + crypto.randomBytes(8).toString("hex");
+  const mixedBoundary = "----titanpro_mix_" + crypto.randomBytes(8).toString("hex");
 
   // Multipart alternative so the recipient's client renders HTML but plain-text
   // clients still get a readable fallback.
   const textPart = args.text || (args.html ? args.html.replace(/<[^>]+>/g, "") : "");
   const htmlPart = args.html || `<pre style="font-family:inherit">${textPart}</pre>`;
+
+  // Top-level headers. When attachments exist the outer type is multipart/mixed
+  // and the alternative pair is nested inside; without attachments the outer
+  // type is multipart/alternative directly.
+  const outerContentType = hasAttachments
+    ? `multipart/mixed; boundary="${mixedBoundary}"`
+    : `multipart/alternative; boundary="${altBoundary}"`;
 
   const headers = [
     `To: ${toList}`,
@@ -154,27 +216,61 @@ export async function sendGmailAsEmployee(
     args.replyTo ? `Reply-To: ${args.replyTo}` : "",
     `Subject: ${subject}`,
     "MIME-Version: 1.0",
-    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    `Content-Type: ${outerContentType}`,
   ].filter(Boolean);
 
-  const body = [
-    ...headers,
-    "",
-    `--${boundary}`,
+  const alternativeBlock = [
+    `--${altBoundary}`,
     "Content-Type: text/plain; charset=UTF-8",
     "Content-Transfer-Encoding: 7bit",
     "",
     textPart,
     "",
-    `--${boundary}`,
+    `--${altBoundary}`,
     "Content-Type: text/html; charset=UTF-8",
     "Content-Transfer-Encoding: 7bit",
     "",
     htmlPart,
     "",
-    `--${boundary}--`,
+    `--${altBoundary}--`,
     "",
   ].join("\r\n");
+
+  let body: string;
+  if (hasAttachments) {
+    const attachmentBlocks: string[] = [];
+    for (const att of args.attachments!) {
+      const { buf, contentType } = attachmentBuffer(att);
+      attachmentBlocks.push(
+        [
+          `--${mixedBoundary}`,
+          `Content-Type: ${contentType}; name="${att.filename}"`,
+          `Content-Disposition: attachment; filename="${att.filename}"`,
+          "Content-Transfer-Encoding: base64",
+          "",
+          base64Mime(buf),
+          "",
+        ].join("\r\n"),
+      );
+    }
+    body = [
+      ...headers,
+      "",
+      `--${mixedBoundary}`,
+      `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+      "",
+      alternativeBlock,
+      ...attachmentBlocks,
+      `--${mixedBoundary}--`,
+      "",
+    ].join("\r\n");
+  } else {
+    body = [
+      ...headers,
+      "",
+      alternativeBlock,
+    ].join("\r\n");
+  }
 
   const raw = Buffer.from(body)
     .toString("base64")

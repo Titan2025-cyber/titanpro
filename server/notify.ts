@@ -12,6 +12,13 @@
 
 import nodemailer from "nodemailer";
 import type Database from "better-sqlite3";
+import {
+  gmailConfigured,
+  pickCompanyGmailSender,
+  sendGmailAsEmployee,
+  type GmailAttachment,
+} from "./routes_gmail";
+import { sqlite as sharedSqlite } from "./storage";
 
 export type NotifyChannel = "email" | "sms";
 
@@ -73,23 +80,88 @@ export interface SendResult {
 }
 
 // ── Email ────────────────────────────────────────────────────────────────────
+// Email attachments — shape mirrors nodemailer's for convenience; when the send
+// happens over Gmail the same shape is translated into a Gmail MIME part.
+export type EmailAttachment = {
+  filename: string;
+  contentType?: string;
+  // Either a base64 data URI ("data:application/pdf;base64,…") OR raw base64.
+  content: string;
+};
+
+// Force a specific transport. When omitted, sendEmail picks the best available:
+//   1. Gmail (if configured AND an employee is connected)
+//   2. SMTP / SendGrid (if credentials present)
+//   3. Simulated logging fallback
+// Callers that must not send from a personal mailbox (e.g. transactional receipts
+// where a shared no-reply address is desired) can pass transport: "smtp".
 export async function sendEmail(opts: {
   to: string | string[];
   subject: string;
   text?: string;
   html?: string;
+  attachments?: EmailAttachment[];
+  replyTo?: string;
+  transport?: "auto" | "gmail" | "smtp";
 }): Promise<SendResult[]> {
   const tos = (Array.isArray(opts.to) ? opts.to : [opts.to]).filter(Boolean);
   if (!tos.length) return [];
+
+  const wantGmail = opts.transport !== "smtp";
+  const sender = wantGmail && gmailConfigured() ? pickCompanyGmailSender(sharedSqlite) : null;
+
+  // ── 1) Gmail path ─────────────────────────────────────────────────────────
+  if (sender) {
+    const attachments: GmailAttachment[] | undefined = opts.attachments?.map(a => ({
+      filename: a.filename,
+      contentType: a.contentType,
+      content: a.content,
+    }));
+    const out: SendResult[] = [];
+    for (const to of tos) {
+      const result = await sendGmailAsEmployee(sharedSqlite, sender.id, {
+        to,
+        subject: opts.subject,
+        html: opts.html,
+        text: opts.text,
+        replyTo: opts.replyTo,
+        attachments,
+      });
+      if (result.ok) {
+        out.push({ channel: "email", to, status: "sent", simulated: false, id: result.id || undefined });
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn(`[notify:gmail] send failed to=${to} reason=${result.reason}`);
+        out.push({ channel: "email", to, status: "error", simulated: false, error: result.reason });
+      }
+    }
+    // If every Gmail send failed, drop through to SMTP so we don't lose the mail.
+    if (out.some(r => r.status === "sent")) return out;
+  }
+
+  // ── 2) SMTP / SendGrid path ───────────────────────────────────────────────
   const t = transport();
   if (!t) {
-    // Fallback: log only (simulated) so the flow is testable without SMTP creds.
+    // Fallback: log only (simulated) so the flow is testable without creds.
     for (const to of tos) {
       // eslint-disable-next-line no-console
       console.log(`[notify:email SIMULATED] to=${to} subject="${opts.subject}"`);
     }
     return tos.map((to) => ({ channel: "email" as const, to, status: "logged" as const, simulated: true }));
   }
+
+  // Translate our attachment shape to nodemailer's.
+  const nmAttachments = opts.attachments?.map(a => {
+    const m = /^data:([^;]+);base64,(.*)$/s.exec(a.content);
+    const contentType = a.contentType || (m ? m[1] : "application/octet-stream");
+    const raw = m ? m[2] : a.content;
+    return {
+      filename: a.filename,
+      contentType,
+      content: Buffer.from(raw, "base64"),
+    };
+  });
+
   const out: SendResult[] = [];
   for (const to of tos) {
     try {
@@ -99,6 +171,8 @@ export async function sendEmail(opts: {
         subject: opts.subject,
         text: opts.text,
         html: opts.html || (opts.text ? `<pre style="font-family:inherit">${escapeHtml(opts.text)}</pre>` : undefined),
+        attachments: nmAttachments,
+        replyTo: opts.replyTo,
       });
       out.push({ channel: "email", to, status: "sent", simulated: false, id: info.messageId });
     } catch (e: any) {
@@ -106,6 +180,11 @@ export async function sendEmail(opts: {
     }
   }
   return out;
+}
+
+// Small helper: is *any* email transport live (Gmail OR SMTP)?
+export function anyEmailTransportLive(): boolean {
+  return emailLive || (gmailConfigured() && !!pickCompanyGmailSender(sharedSqlite));
 }
 
 // ── SMS (Twilio REST) ────────────────────────────────────────────────────────

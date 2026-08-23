@@ -12,6 +12,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { generateInvoicePDF, downloadPDF } from "@/lib/pdfEngine";
+import { SendAndSavePanel } from "@/components/SendAndSavePanel";
 import type { Invoice, Job, Contact } from "@shared/schema";
 import { fmtDate, fmtDateShort } from "@/lib/dates";
 
@@ -77,6 +78,10 @@ export default function Invoices() {
     setItems([blankRow()]);
   }
 
+  // handleDownloadPDF is now inlined inside SendAndSavePanel's buildPdf so that
+  // download / save-to-file / email all pull from the same PDF payload. Kept a
+  // slim shim so the outer invoice-list card can still expose a one-click
+  // download without opening the view dialog.
   function handleDownloadPDF(inv: Invoice) {
     const job = jobs.find(j => j.id === inv.jobId);
     const contact = contacts.find(c => c.id === inv.contactId);
@@ -116,6 +121,8 @@ export default function Invoices() {
     });
     downloadPDF(uri, `${inv.invoiceNumber}.pdf`);
   }
+  // Silence "unused" lint until we surface the shortcut button.
+  void handleDownloadPDF;
 
   const { toast } = useToast();
   const { user } = useAuth();
@@ -599,10 +606,68 @@ export default function Invoices() {
                     </div>
                   )}
 
+                  {/* Send + save panel replaces the standalone Download button.
+                      Same PDF payload used by handleDownloadPDF is passed to
+                      SendAndSavePanel so download / save / email all use
+                      identical output. */}
+                  {(() => {
+                    const job = jobs.find(j => j.id === inv.jobId);
+                    const contact = contacts.find(c => c.id === inv.contactId);
+                    let li: any[] = [];
+                    try { li = JSON.parse(inv.lineItems || "[]"); } catch { li = []; }
+                    const normalized = li.map((it: any) => {
+                      const qty = Number(it.quantity ?? it.qty ?? 1);
+                      const price = Number(it.unitPrice ?? it.price ?? it.rate ?? it.amount ?? 0);
+                      return {
+                        description: it.description ?? it.name ?? it.desc ?? "Item",
+                        quantity: qty,
+                        unitPrice: price,
+                        total: Number(it.total ?? qty * price),
+                      };
+                    });
+                    return (
+                      <SendAndSavePanel
+                        jobId={inv.jobId}
+                        docType="invoice"
+                        title={`Invoice — ${inv.invoiceNumber}`}
+                        defaultTo={(contact as any)?.email || ""}
+                        defaultSubject={`Your invoice from Titan Restoration — ${inv.invoiceNumber}`}
+                        defaultBody={
+                          `Hi ${contact?.name || "there"},\n\n` +
+                          `Attached is your invoice (${inv.invoiceNumber}). ` +
+                          `Please review and reply here with any questions or to pay by card.\n\n` +
+                          `Thanks,\nTitan Restoration`
+                        }
+                        buildPdf={() =>
+                          generateInvoicePDF({
+                            invoiceNumber: inv.invoiceNumber,
+                            status: inv.status,
+                            jobNumber: job?.jobNumber,
+                            dueDate: inv.dueDate || undefined,
+                            paidAt: inv.paidAt || undefined,
+                            createdAt: (inv as any).createdAt || undefined,
+                            billTo: {
+                              name: contact?.name,
+                              phone: contact?.phone || undefined,
+                              email: (contact as any)?.email || undefined,
+                              address: (contact as any)?.address || undefined,
+                            },
+                            lineItems: normalized,
+                            subtotal: inv.subtotal || 0,
+                            tax: inv.tax || 0,
+                            total: inv.total || 0,
+                            originalTotal:
+                              (inv as any).originalTotal != null ? Number((inv as any).originalTotal) : undefined,
+                            adjustment: Number((inv as any).adjustment) || 0,
+                            adjustmentReason: (inv as any).adjustmentReason || undefined,
+                            notes: inv.notes || undefined,
+                          })
+                        }
+                      />
+                    );
+                  })()}
+
                   <div className="flex gap-2 pt-2">
-                    <Button size="sm" variant="outline" className="flex-1" data-testid="button-download-invoice-pdf" onClick={() => handleDownloadPDF(inv)}>
-                      <Download className="w-3 h-3 mr-1" />Download PDF
-                    </Button>
                     {inv.status !== "paid" && (
                       <Button size="sm" className="flex-1" onClick={() => { setPayOpen(inv.id); setPayAmount(String(inv.total || "")); setViewId(null); }}>
                         <DollarSign className="w-3 h-3 mr-1" />Record Payment

@@ -13,7 +13,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Estimate, Job } from "@shared/schema";
+import type { Estimate, Job, Contact } from "@shared/schema";
+import { SendAndSavePanel } from "@/components/SendAndSavePanel";
+import { generateEstimatePDF } from "@/lib/pdfEngine";
 
 const IICRC_QUICK_ADD = [
   { description: "Emergency Response/Mobilization", category: "emergency", unit: "LS", unitPrice: 450 },
@@ -93,6 +95,7 @@ export default function EstimateDetail() {
   const { id } = useParams();
   const { data: estimate, isLoading } = useQuery<Estimate>({ queryKey: ["/api/estimates", id] });
   const { data: jobs = [] } = useQuery<Job[]>({ queryKey: ["/api/jobs"] });
+  const { data: contacts = [] } = useQuery<Contact[]>({ queryKey: ["/api/contacts"] });
   const [rebuttal, setRebuttal] = useState("");
   const [rebuttalMeta, setRebuttalMeta] = useState<{ state: string; stateName: string; statutesUsed: { code: string; topic: string; rebuttalHook: string }[] } | null>(null);
 
@@ -460,6 +463,64 @@ export default function EstimateDetail() {
           </Button>
         )}
       </div>
+
+      {/* ── Send + save actions ───────────────────────────────────────────────
+          Download PDF, save a copy to the job file, or email it to the
+          customer with the PDF attached. Server picks Gmail (if any employee
+          is connected) or SMTP. See SendAndSavePanel. */}
+      {(() => {
+        const contact = contacts.find((c: any) => c.id === (job as any)?.contactId);
+        const jobAddress =
+          (job as any)?.address ||
+          [(job as any)?.streetAddress, (job as any)?.city, (job as any)?.state, (job as any)?.zip]
+            .filter(Boolean)
+            .join(", ");
+        const estNumber = estimate.title || `Estimate #${estimate.id}`;
+        return (
+          <SendAndSavePanel
+            jobId={estimate.jobId}
+            docType="estimate"
+            title={`Estimate — ${estNumber}`}
+            defaultTo={(contact as any)?.email || ""}
+            defaultSubject={`Your estimate from Titan Restoration — ${estNumber}`}
+            defaultBody={
+              `Hi ${contact?.name || "there"},\n\n` +
+              `Attached is your estimate for the work at ${jobAddress || "your property"}. ` +
+              `Please review and reply here with any questions or approval.\n\n` +
+              `Thanks,\nTitan Restoration`
+            }
+            buildPdf={() =>
+              generateEstimatePDF({
+                estimateNumber: estNumber,
+                status: estimate.status || "draft",
+                jobNumber: job?.jobNumber,
+                createdAt: (estimate as any).createdAt || undefined,
+                billTo: {
+                  name: (contact as any)?.name,
+                  phone: (contact as any)?.phone || undefined,
+                  email: (contact as any)?.email || undefined,
+                  address: jobAddress || (contact as any)?.address || undefined,
+                },
+                lineItems: lineItems.map(it => ({
+                  description: it.description || "Item",
+                  quantity: Number(it.quantity) || 1,
+                  unitPrice: Number(it.unitPrice) || 0,
+                  total: Number(it.total) || 0,
+                  unit: (it as any).unit || undefined,
+                  category: (it as any).category || undefined,
+                  notes: (it as any).notes || undefined,
+                })),
+                subtotal: Number((estimate as any).subtotal) || lineItems.reduce((s, i) => s + (Number(i.total) || 0), 0),
+                tax: Number((estimate as any).tax) || 0,
+                total:
+                  Number((estimate as any).total) ||
+                  lineItems.reduce((s, i) => s + (Number(i.total) || 0), 0),
+                notes: (estimate as any).notes || undefined,
+              })
+            }
+          />
+        );
+      })()}
 
       <Tabs defaultValue="lineitems">
         <TabsList className="flex-wrap h-auto gap-1">

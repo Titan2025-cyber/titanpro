@@ -420,6 +420,87 @@ export function registerQuickAddAndESignRoutes(
 
     res.json({ ok: true, documentId: Number(docInfo.lastInsertRowid) });
   });
+
+  // ── Send an already-generated PDF to a customer, optionally saving a copy
+  // ── into the job's document library. Used by SendAndSavePanel for estimate
+  // ── + invoice emails so we only have ONE server path for "send + archive".
+  app.post("/api/send-document-email", requireAuth, async (req, res) => {
+    const {
+      jobId,
+      docType,
+      title,
+      to,
+      subject,
+      body,
+      pdfDataUri,
+      saveToJob,
+    } = req.body || {};
+
+    if (!to || !pdfDataUri || !title) {
+      return res.status(400).json({ error: "to, title, and pdfDataUri are required" });
+    }
+
+    // Strip the data URI header for the filename — body always keeps the URI
+    // intact for both the email attachment path and the saved job document.
+    const safeName = String(title).replace(/[^\w.\-]+/g, "_") + ".pdf";
+    const textBody = String(body || "Please find your document attached.").trim();
+    const htmlBody = `<div style="font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.55;color:#111">${escapeHtml(
+      textBody,
+    ).replace(/\n/g, "<br>")}</div>`;
+
+    // Attempt to send — sendEmail auto-picks Gmail then falls back to SMTP.
+    const results = await sendEmail({
+      to: String(to).trim(),
+      subject: String(subject || title).trim(),
+      text: textBody,
+      html: htmlBody,
+      attachments: [{ filename: safeName, contentType: "application/pdf", content: pdfDataUri }],
+    });
+
+    // Optionally record a copy in the job's document library so ops can always
+    // pull up "what did we send to whom, when?" without digging into email.
+    let savedDocumentId: number | null = null;
+    const jid = Number(jobId);
+    if (saveToJob && Number.isFinite(jid) && jid > 0) {
+      try {
+        const now = new Date().toISOString();
+        const info = sqlite
+          .prepare(
+            `INSERT INTO job_documents (
+               job_id, doc_type, title, form_data, file_data,
+               status, signer_name, created_by, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            jid,
+            String(docType || "document"),
+            String(title),
+            JSON.stringify({ source: "emailed-to-customer", to: String(to).trim(), subject, sentAt: now }),
+            pdfDataUri,
+            "sent",
+            null,
+            `emailed-to:${String(to).trim()}`,
+            now,
+            now,
+          );
+        savedDocumentId = Number(info.lastInsertRowid) || null;
+      } catch (e: any) {
+        // Non-fatal — email still went. Log so ops can find the issue.
+        // eslint-disable-next-line no-console
+        console.warn("[send-document-email] job-file save failed:", e?.message || e);
+      }
+    }
+
+    // Provider label for the toast: whichever transport actually delivered.
+    const first = results[0];
+    const provider = first?.simulated
+      ? "simulated (no transport configured)"
+      : first?.id?.includes("@")
+        ? "SMTP"
+        : "Gmail";
+
+    res.json({ ok: true, email: results, provider, savedDocumentId });
+  });
 }
 
 function escapeHtml(s: string): string {

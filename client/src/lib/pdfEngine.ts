@@ -1153,6 +1153,174 @@ function fmtDateOrDash(v?: string | number | Date | null): string {
   return v ? (fmtDate(v) || "—") : "—";
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ESTIMATE PDF — same visual language as the invoice, different header wording
+// and no due-date / paid-at row. Line-item shape allows an optional `unit`,
+// `category`, and `notes` field so estimates can carry richer context than
+// the flat invoice line items.
+// ─────────────────────────────────────────────────────────────────────────────
+export interface EstimateLineItem {
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+  unit?: string;
+  category?: string;
+  notes?: string;
+}
+
+export interface EstimatePDFData {
+  estimateNumber: string;           // e.g. "EST-2026-001" or the estimate title
+  status: string;                   // draft | sent | approved | rejected
+  jobNumber?: string;
+  createdAt?: string;
+  billTo: { name?: string; phone?: string; email?: string; address?: string };
+  lineItems: EstimateLineItem[];
+  subtotal: number;
+  tax: number;
+  total: number;
+  notes?: string;                   // estimate-level notes (renders under totals)
+  scopeOfWork?: string;             // optional intro paragraph above line items
+}
+
+export function generateEstimatePDF(data: EstimatePDFData): string {
+  const doc = new jsPDF({ unit: "mm", format: "letter" });
+
+  const statusColors: Record<string, readonly [number, number, number]> = {
+    draft: GRAY, sent: BLUE, approved: [0, 150, 80], rejected: RED,
+  };
+
+  let y = drawHeader(doc, "ESTIMATE", data.estimateNumber, data.jobNumber ? `Job File: ${data.jobNumber}` : "");
+
+  // ── Estimate number + status badge + date row ────────────────────────────
+  setFont(doc, "bold", 11, DARK);
+  doc.text(data.estimateNumber, 14, y + 3);
+  badge(doc, (data.status || "draft").toUpperCase(), 14, y + 10, statusColors[data.status] || GRAY);
+  setFont(doc, "normal", 8, GRAY);
+  doc.text(`Estimate Date: ${fmtDateOrDash(data.createdAt)}`, 196, y, { align: "right" });
+  if (data.jobNumber) doc.text(`Job File: ${data.jobNumber}`, 196, y + 4.5, { align: "right" });
+  y += 18;
+
+  // ── Prepared For ─────────────────────────────────────────────────────────
+  setFont(doc, "bold", 9, BLUE);
+  doc.text("PREPARED FOR", 14, y);
+  hRule(doc, y + 2, BLUE, 0.5);
+  y += 7;
+  setFont(doc, "bold", 10, DARK);
+  doc.text(data.billTo.name || "—", 14, y);
+  y += 5;
+  setFont(doc, "normal", 8.5, GRAY);
+  if (data.billTo.address) { doc.text(doc.splitTextToSize(data.billTo.address, 120), 14, y); y += 4.5; }
+  if (data.billTo.phone)   { doc.text(data.billTo.phone, 14, y); y += 4.5; }
+  if (data.billTo.email)   { doc.text(data.billTo.email, 14, y); y += 4.5; }
+  y += 4;
+
+  // ── Optional scope-of-work paragraph ─────────────────────────────────────
+  if (data.scopeOfWork && data.scopeOfWork.trim()) {
+    setFont(doc, "bold", 9, BLUE);
+    doc.text("SCOPE OF WORK", 14, y);
+    hRule(doc, y + 2, BLUE, 0.5);
+    y += 6;
+    setFont(doc, "normal", 8.5, DARK);
+    const lines = doc.splitTextToSize(data.scopeOfWork, 178);
+    doc.text(lines, 14, y + 3);
+    y += lines.length * 4.2 + 6;
+  }
+
+  // ── Line items table ─────────────────────────────────────────────────────
+  setFont(doc, "bold", 9, BLUE);
+  doc.text("LINE ITEMS", 14, y);
+  hRule(doc, y + 2, BLUE, 0.5);
+  y += 6;
+
+  doc.setFillColor(...BLUE);
+  doc.rect(14, y, 182, 7, "F");
+  setFont(doc, "bold", 8, WHITE);
+  doc.text("DESCRIPTION", 17, y + 4.7);
+  doc.text("QTY", 124, y + 4.7, { align: "right" });
+  doc.text("UNIT", 140, y + 4.7, { align: "right" });
+  doc.text("UNIT PRICE", 168, y + 4.7, { align: "right" });
+  doc.text("AMOUNT", 193, y + 4.7, { align: "right" });
+  y += 7;
+
+  const items = data.lineItems && data.lineItems.length > 0
+    ? data.lineItems
+    : [{ description: "Restoration services", quantity: 1, unitPrice: data.subtotal || data.total, total: data.subtotal || data.total }];
+
+  items.forEach((it, idx) => {
+    const descLines = doc.splitTextToSize(it.description || "Item", 98);
+    const noteLines = it.notes ? doc.splitTextToSize(`— ${it.notes}`, 98) : [];
+    const rowH = Math.max(7, (descLines.length + noteLines.length) * 4.2 + 3);
+    if (y + rowH > 250) { drawFooter(doc, 1, 1); doc.addPage(); y = 20; }
+    if (idx % 2 === 1) { doc.setFillColor(...OFFWHITE); doc.rect(14, y, 182, rowH, "F"); }
+    setFont(doc, "normal", 8.5, DARK);
+    doc.text(descLines, 17, y + 4.7);
+    if (noteLines.length) {
+      setFont(doc, "italic", 7.5, GRAY);
+      doc.text(noteLines, 17, y + 4.7 + descLines.length * 4.2);
+    }
+    setFont(doc, "normal", 8.5, DARK);
+    doc.text(String(it.quantity ?? 1), 124, y + 4.7, { align: "right" });
+    doc.text(it.unit || "—", 140, y + 4.7, { align: "right" });
+    doc.text(money(it.unitPrice ?? 0), 168, y + 4.7, { align: "right" });
+    doc.text(money(it.total ?? 0), 193, y + 4.7, { align: "right" });
+    y += rowH;
+    hRule(doc, y, LGRAY, 0.2);
+  });
+  y += 6;
+
+  // ── Totals ───────────────────────────────────────────────────────────────
+  const totalsX = 130, valX = 193;
+  const rowLine = (label: string, value: string, color = DARK, bold = false) => {
+    setFont(doc, bold ? "bold" : "normal", bold ? 9.5 : 8.5, color);
+    doc.text(label, totalsX, y);
+    doc.text(value, valX, y, { align: "right" });
+    y += 5.5;
+  };
+  rowLine("Subtotal", money(data.subtotal), GRAY);
+  if (Number(data.tax) > 0) rowLine("Tax", money(data.tax), GRAY);
+  hRule(doc, y - 1, DARK, 0.4);
+  y += 2;
+  rowLine("ESTIMATE TOTAL", money(data.total), BLUE, true);
+  y += 4;
+
+  // ── Notes ────────────────────────────────────────────────────────────────
+  if (data.notes && data.notes.trim()) {
+    if (y > 235) { doc.addPage(); y = 20; }
+    setFont(doc, "bold", 9, BLUE);
+    doc.text("NOTES", 14, y);
+    hRule(doc, y + 2, BLUE, 0.5);
+    y += 6;
+    const nlines = doc.splitTextToSize(data.notes, 178);
+    doc.setFillColor(...OFFWHITE);
+    doc.roundedRect(14, y - 2, 182, nlines.length * 4.2 + 6, 2, 2, "F");
+    setFont(doc, "normal", 8.5, DARK);
+    doc.text(nlines, 18, y + 3);
+    y += nlines.length * 4.2 + 10;
+  }
+
+  // ── Terms box ────────────────────────────────────────────────────────────
+  if (y > 245) { doc.addPage(); y = 20; }
+  doc.setFillColor(240, 245, 255);
+  doc.roundedRect(14, y, 182, 20, 2, 2, "F");
+  setFont(doc, "bold", 7.5, GRAY);
+  doc.text("TERMS", 18, y + 5);
+  setFont(doc, "normal", 7.5, DARK);
+  doc.text("Estimate valid for 30 days from date above. Prices reflect current materials and labor costs", 18, y + 9.5);
+  doc.text("and may adjust with insurance-approved scope. Actual work billed on invoice at completion.", 18, y + 13);
+  setFont(doc, "normal", 7.5, RED);
+  doc.text("Questions? Call 706-922-0154 or email cody@titanaugusta.com", 18, y + 17);
+
+  // Footer on all pages
+  const totalPages = (doc as any).internal.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+    drawFooter(doc, i, totalPages);
+  }
+
+  return doc.output("datauristring");
+}
+
 export function generateInvoicePDF(data: InvoicePDFData): string {
   const doc = new jsPDF({ unit: "mm", format: "letter" });
 
