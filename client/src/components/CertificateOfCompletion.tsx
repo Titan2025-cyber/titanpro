@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { SendForSignature } from "@/components/SendForSignature";
 import {
   Select, SelectContent, SelectItem,
   SelectTrigger, SelectValue
@@ -173,7 +174,7 @@ function SignaturePad({
 // ─────────────────────────────────────────────────────────────────────────────
 // PDF generator
 // ─────────────────────────────────────────────────────────────────────────────
-interface CertPDFData {
+export interface CertPDFData {
   jobNumber: string;
   address: string;
   completionDate: string;
@@ -192,7 +193,7 @@ interface CertPDFData {
   documentId: string;
 }
 
-async function generateCertPDF(data: CertPDFData): Promise<string> {
+export async function generateCertPDF(data: CertPDFData): Promise<string> {
   const jsPDF = await loadJsPDF();
   const doc: JsPDFDoc = new jsPDF({ orientation: "portrait", unit: "mm", format: "letter" });
   const PW = 215.9;
@@ -505,6 +506,15 @@ export function CertificateOfCompletion({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
+        <SendForSignature
+          jobId={jobId}
+          docType="certificate_of_completion"
+          title={`Certificate of Completion — ${job.jobNumber}`}
+          getFormData={() => form}
+          defaultEmail={contact?.email || (job as any).customerEmail || ""}
+          defaultName={form.signerName}
+          defaultRole="homeowner"
+        />
         {/* Document header preview */}
         <div className="border rounded-lg p-4 bg-muted/20 space-y-1 text-xs">
           <div className="flex items-center justify-between">

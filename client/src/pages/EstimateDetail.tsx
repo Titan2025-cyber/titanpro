@@ -333,6 +333,32 @@ export default function EstimateDetail() {
     if (template?.notes) setExpandedNoteIds(prev => new Set(prev).add(newItem.id));
   };
 
+  // Auto-learn: whenever a line item is saved with a real description AND a
+  // real unit price, upsert it into the shared org-wide Quick Add library so
+  // future estimates can one-tap it. Server dedupes by normalized description
+  // and silently no-ops for empty/$0 rows, so we can fire on every keystroke
+  // debounce cycle without worrying about pollution. Errors are silent —
+  // the library is a nice-to-have and shouldn't block estimate saves.
+  const learnItem = (it: Partial<LineItem>) => {
+    const desc = String(it.description || "").trim();
+    const price = Number(it.unitPrice) || 0;
+    if (!desc || price <= 0) return;
+    fetch("/api/quick-add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        description: desc,
+        unitPrice: price,
+        unit: it.unit || "EA",
+        category: it.category || "general",
+        kind: it.kind || null,
+      }),
+    })
+      .then(() => queryClient.invalidateQueries({ queryKey: ["/api/quick-add"] }))
+      .catch(() => {});
+  };
+
   const updateItem = (idx: number, field: keyof LineItem, val: any) => {
     const items = lineItems.map((it, i) => {
       if (i !== idx) return it;
@@ -346,8 +372,18 @@ export default function EstimateDetail() {
     saveItems(items, false);
   };
 
-  // Structural change — save immediately.
+  // Structural change — save immediately. On remove, no learning needed.
   const removeItem = (idx: number) => saveItems(lineItems.filter((_, i) => i !== idx), true);
+
+  // Whenever local items settle (debounce completed), teach any "complete"
+  // rows to the Quick Add library. This runs after every state settle, so
+  // duplicating a row and editing the copy also learns the copy — without
+  // us having to sprinkle learnItem calls through every code path.
+  useEffect(() => {
+    if (pendingSaveRef.current) return; // wait for saves to flush
+    for (const it of lineItems) learnItem(it);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(lineItems.map(i => `${i.description}|${i.unitPrice}|${i.unit}|${i.category}|${i.kind}`))]);
 
   // Duplicate a row — handy when building a repeated set of items with only
   // the description or qty changing between them (three sizes of the same
@@ -431,7 +467,7 @@ export default function EstimateDetail() {
           <TabsTrigger value="scope" className="flex items-center gap-1">
             <Sparkles className="w-3 h-3" />AI Scope Engine
           </TabsTrigger>
-          <TabsTrigger value="quickadd">IICRC Quick Add</TabsTrigger>
+          <TabsTrigger value="quickadd">Quick Add</TabsTrigger>
           <TabsTrigger value="negotiation">Negotiation Tool</TabsTrigger>
         </TabsList>
 
@@ -1030,21 +1066,9 @@ export default function EstimateDetail() {
           )}
         </TabsContent>
 
-        {/* ── IICRC QUICK ADD ── */}
-        <TabsContent value="quickadd" className="mt-4">
-          <p className="text-sm text-muted-foreground mb-3">IICRC-compliant quick-add items based on industry standards and Xactimate pricing.</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {IICRC_QUICK_ADD.map((item, i) => (
-              <button
-                key={i}
-                className="text-left p-3 rounded-lg border hover:border-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue)/0.05)] transition-colors"
-                onClick={() => addItem(item)}
-              >
-                <p className="text-sm font-medium leading-snug">{item.description}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">${item.unitPrice} / {item.unit} · {item.category}</p>
-              </button>
-            ))}
-          </div>
+        {/* ── IICRC QUICK ADD (built-in) + LEARNED library ── */}
+        <TabsContent value="quickadd" className="mt-4 space-y-6">
+          <QuickAddPanel onPick={(t) => addItem(t)} />
         </TabsContent>
 
         {/* ── NEGOTIATION TOOL ── */}
@@ -1121,6 +1145,132 @@ export default function EstimateDetail() {
           )}
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+// ── Quick Add panel ──────────────────────────────────────────────────────────
+// Two-tier picker: the built-in IICRC catalog (always shown) plus the shared
+// org-wide learned library that grows every time a tech saves a manual line
+// item on any estimate. Filtered by a single search box.
+type QuickAddLearned = {
+  id: number;
+  description: string;
+  category: string;
+  kind: string | null;
+  unit: string;
+  unitPrice: number;
+  useCount: number;
+  lastUsedAt: string | null;
+};
+
+function QuickAddPanel({ onPick }: { onPick: (t: Partial<LineItem>) => void }) {
+  const [q, setQ] = useState("");
+  const { data: learned = [], isLoading } = useQuery<QuickAddLearned[]>({
+    queryKey: ["/api/quick-add"],
+  });
+
+  const norm = (s: string) => s.toLowerCase().trim();
+  const query = norm(q);
+
+  // Merge on normalized description so learned rows override built-in pricing
+  // (org's real pricing wins over the seeded defaults).
+  const learnedIndex = new Set(learned.map(l => norm(l.description)));
+  const iicrcVisible = IICRC_QUICK_ADD.filter(i =>
+    !learnedIndex.has(norm(i.description)) &&
+    (!query || i.description.toLowerCase().includes(query) || i.category.toLowerCase().includes(query)),
+  );
+  const learnedVisible = learned.filter(l =>
+    !query || l.description.toLowerCase().includes(query) || (l.category || "").toLowerCase().includes(query),
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-2">
+        <Input
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          placeholder="Search Quick Add… (description or category)"
+          className="max-w-md"
+          data-testid="input-quickadd-search"
+        />
+        <p className="text-xs text-muted-foreground">
+          {learnedVisible.length} learned · {iicrcVisible.length} built-in
+        </p>
+      </div>
+
+      {/* Learned first — these are YOUR items, always more relevant. */}
+      <section>
+        <div className="flex items-baseline justify-between mb-2">
+          <h3 className="text-sm font-semibold">Your learned items</h3>
+          <p className="text-xs text-muted-foreground">Grows automatically. New line items you build get added here for the whole team.</p>
+        </div>
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : learnedVisible.length === 0 ? (
+          <p className="text-sm text-muted-foreground italic">
+            {query
+              ? "No learned items match that search yet."
+              : "Nothing here yet. When you manually add a line item with a description and price, it'll show up here so anyone on the team can one-tap it on the next estimate."}
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {learnedVisible.map(item => (
+              <button
+                key={item.id}
+                className="text-left p-3 rounded-lg border border-[hsl(var(--titan-blue)/0.3)] hover:border-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue)/0.05)] transition-colors"
+                onClick={() => onPick({
+                  description: item.description,
+                  category: item.category || "general",
+                  unit: item.unit || "EA",
+                  unitPrice: item.unitPrice,
+                  kind: (item.kind as any) || undefined,
+                })}
+                data-testid={`button-quickadd-learned-${item.id}`}
+              >
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium leading-snug">{item.description}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      ${item.unitPrice.toFixed(2)} / {item.unit} · {item.category || "general"}
+                    </p>
+                  </div>
+                  {item.useCount > 1 && (
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
+                      used {item.useCount}×
+                    </Badge>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Built-in seed catalog. Kept for jobs where the org hasn't estimated
+          this kind of work yet. */}
+      <section>
+        <div className="flex items-baseline justify-between mb-2">
+          <h3 className="text-sm font-semibold">IICRC + Xactimate reference</h3>
+          <p className="text-xs text-muted-foreground">Built-in starter catalog. Prices are ballpark — edit after adding.</p>
+        </div>
+        {iicrcVisible.length === 0 ? (
+          <p className="text-sm text-muted-foreground italic">All built-in items are already in your learned library.</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {iicrcVisible.map((item, i) => (
+              <button
+                key={i}
+                className="text-left p-3 rounded-lg border hover:border-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue)/0.05)] transition-colors"
+                onClick={() => onPick(item)}
+              >
+                <p className="text-sm font-medium leading-snug">{item.description}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">${item.unitPrice} / {item.unit} · {item.category}</p>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

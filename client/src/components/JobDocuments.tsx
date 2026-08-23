@@ -1140,6 +1140,15 @@ function DeviationOfStandardForm({
           <p className="font-semibold text-sm mt-2 pt-2 border-t border-amber-200">DEVIATION FROM IICRC STANDARDS — WRITTEN AUTHORIZATION</p>
           <p className="text-amber-700 dark:text-amber-400">This document records a requested or required deviation from IICRC industry standards. Per IICRC protocol, any deviation must be documented in writing and signed by all parties.</p>
         </div>
+        <SendForSignature
+          jobId={jobId}
+          docType="deviation_of_standard"
+          title={`Deviation of Standard — ${job.jobNumber}`}
+          getFormData={() => form}
+          defaultEmail={contact?.email || (job as any).customerEmail || ""}
+          defaultName={form.signerName}
+          defaultRole="homeowner"
+        />
 
         {/* Fields */}
         <div className="grid grid-cols-2 gap-3">

@@ -6,6 +6,7 @@ import crypto from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { registerCrudGapRoutes } from "./routes_crud_gaps";
 import { registerSuite4Routes } from "./routes_suite4";
+import { registerQuickAddAndESignRoutes } from "./routes_quickadd_esign";
 import { registerAuthRoutes, makeAuthMiddleware } from "./routes_auth";
 import { makeNotifier } from "./notify_bell";
 import { sendMentionEmails } from "./notify_email";
@@ -4717,6 +4718,7 @@ cody@titanrestorationllc.com`;
 
   // ── Suite 4 Routes ─────────────────────────────────────────────────────────
   registerSuite4Routes(app, sqlite, { requireRole });
+  registerQuickAddAndESignRoutes(app, sqlite, { requireRole });
 
   // ── Route Planner Routes ───────────────────────────────────────────────────
   registerRoutePlannerRoutes(app, sqlite);

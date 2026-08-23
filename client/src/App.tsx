@@ -54,6 +54,7 @@ const PartnerPortal = lazy(() => import("@/pages/PartnerPortal"));
 const PartnerPortalSetup = lazy(() => import("@/pages/PartnerPortalSetup"));
 const CustomerPortal = lazy(() => import("@/pages/CustomerPortal"));
 const PublicReport = lazy(() => import("@/pages/PublicReport"));
+const SignDocument = lazy(() => import("@/pages/SignDocument"));
 const PortalQR = lazy(() => import("@/pages/PortalQR"));
 const Equipment = lazy(() => import("@/pages/Equipment"));
 const JobCosting = lazy(() => import("@/pages/JobCosting"));
@@ -254,6 +255,10 @@ function AppRoutes() {
          the token endpoint returns. */}
       <Route path="/public/reports/:token" component={() => (
         <Suspense fallback={<PageLoader />}><Page component={PublicReport} name="PublicReport" /></Suspense>
+      )} />
+      {/* Remote e-signature link — opened from email. NO staff auth required. */}
+      <Route path="/sign/:token" component={() => (
+        <Suspense fallback={<PageLoader />}><Page component={SignDocument} name="SignDocument" /></Suspense>
       )} />
       <Route>
         <AuthenticatedRoutes />
