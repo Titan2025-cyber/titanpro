@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useParams, Link } from "wouter";
+import { useParams, Link, useLocation } from "wouter";
 import { useState, lazy, Suspense, useEffect, useRef } from "react";
 import { ArrowLeft, MapPin, Phone, Mail, Shield, FileText, Receipt, Droplets, Camera, FolderOpen, TrendingUp, StickyNote, Lock, Globe, Pencil, Trash2, Plus, Check, X, Wrench, MessageSquare, Star, Send, KeyRound, Copy, RefreshCw, ExternalLink, ShieldCheck, HandCoins, Upload, Paperclip } from "lucide-react";
 import UploadExternalDocDialog from "@/components/UploadExternalDocDialog";
@@ -863,6 +863,47 @@ export default function JobDetail() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/jobs"] }),
   });
 
+  // Programmatic navigator for wouter — used after duplicating an estimate
+  // to jump straight into the fresh draft.
+  const [, navigate] = useLocation();
+
+  // "Copy this estimate" — clones an existing estimate on this job into a
+  // brand-new draft on the same job. Carries line items, notes, and phase.
+  // Status is forced to "draft" (never carry over sent/approved/rejected).
+  // Totals are re-derived server-side from the copied lineItems by the
+  // POST /api/estimates handler, so we don't need to send them.
+  const duplicateEstimate = useMutation({
+    mutationFn: async (source: Estimate) => {
+      const body = {
+        jobId: source.jobId,
+        title: /\(copy( \d+)?\)$/i.test(source.title || "")
+          ? source.title
+          : `${source.title || "Estimate"} (copy)`,
+        status: "draft",
+        phase: (source as any).phase || "mitigation",
+        lineItems: (source as any).lineItems || "[]",
+        notes: (source as any).notes || null,
+      };
+      const r = await apiRequest("POST", "/api/estimates", body);
+      return r.json() as Promise<Estimate>;
+    },
+    onSuccess: (created) => {
+      // Refresh both the per-job estimates list and the global one so the
+      // new draft appears immediately on the Estimates tab and the /estimates
+      // page. Financial totals are re-derived from lineItems on the server.
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", id, "estimates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/estimates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
+      toast({ title: "Estimate duplicated", description: `Opened ${created.title} as a new draft.` });
+      navigate(`/estimates/${created.id}`);
+    },
+    onError: (e: any) => toast({
+      title: "Could not duplicate",
+      description: e?.message || "Try again in a moment.",
+      variant: "destructive",
+    }),
+  });
+
   // Close / reopen state. UI is open to everyone — the server enforces
   // owner+admin at /api/jobs/:id/close (a non-admin click just gets a 403
   // toast). This keeps role-gate breakage from ever silently hiding the
@@ -1549,36 +1590,61 @@ export default function JobDetail() {
           <div className="space-y-2">
             {visibleEstimates.map(e => {
               const isExternal = (e as any).source === "external";
-              const inner = (
-                <Card className="hover:shadow-md transition-shadow cursor-pointer">
-                  <CardContent className="p-3 flex items-center justify-between">
-                    <div className="min-w-0">
-                      <p className="font-semibold text-sm truncate flex items-center gap-1.5">
-                        {isExternal && <Paperclip className="w-3 h-3 shrink-0 text-muted-foreground" />}
-                        {e.title}
-                      </p>
-                      <p className="text-xs text-muted-foreground truncate">
-                        {e.status}
-                        {isExternal && (e as any).externalVendor ? ` · ${(e as any).externalVendor}` : ""}
-                        {isExternal ? " · external" : ""}
-                      </p>
+              // Internal estimates get a "Duplicate" action so users can
+              // start a new estimate seeded with the line items / notes
+              // from an existing one on the same job. External estimates
+              // (uploaded PDFs) can't be duplicated — there's no line-item
+              // data to copy, they're just attached files.
+              const openHref = isExternal ? `/api/estimates/${e.id}/external-file` : `/estimates/${e.id}`;
+              return (
+                <Card key={e.id} className="hover:shadow-md transition-shadow">
+                  <CardContent className="p-3 flex items-center justify-between gap-3">
+                    {isExternal ? (
+                      <a
+                        href={openHref}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Open external estimate"
+                        className="min-w-0 flex-1 cursor-pointer"
+                      >
+                        <p className="font-semibold text-sm truncate flex items-center gap-1.5">
+                          <Paperclip className="w-3 h-3 shrink-0 text-muted-foreground" />
+                          {e.title}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {e.status}
+                          {(e as any).externalVendor ? ` · ${(e as any).externalVendor}` : ""}
+                          {" · external"}
+                        </p>
+                      </a>
+                    ) : (
+                      <Link href={openHref} className="min-w-0 flex-1 cursor-pointer">
+                        <p className="font-semibold text-sm truncate">{e.title}</p>
+                        <p className="text-xs text-muted-foreground truncate">{e.status}</p>
+                      </Link>
+                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <p className="font-bold text-[hsl(var(--titan-blue))]">${(e.total || 0).toLocaleString()}</p>
+                      {!isExternal && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 w-8 p-0"
+                          title="Duplicate as new draft on this job"
+                          disabled={duplicateEstimate.isPending}
+                          onClick={(ev) => {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            duplicateEstimate.mutate(e);
+                          }}
+                          data-testid={`button-duplicate-estimate-${e.id}`}
+                        >
+                          <Copy className="w-4 h-4" />
+                        </Button>
+                      )}
                     </div>
-                    <p className="font-bold text-[hsl(var(--titan-blue))]">${(e.total || 0).toLocaleString()}</p>
                   </CardContent>
                 </Card>
-              );
-              return isExternal ? (
-                <a
-                  key={e.id}
-                  href={`/api/estimates/${e.id}/external-file`}
-                  target="_blank"
-                  rel="noreferrer"
-                  title="Open external estimate"
-                >
-                  {inner}
-                </a>
-              ) : (
-                <Link key={e.id} href={`/estimates/${e.id}`}>{inner}</Link>
               );
             })}
             {visibleEstimates.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">No estimates for {phaseFilter} yet.</p>}
