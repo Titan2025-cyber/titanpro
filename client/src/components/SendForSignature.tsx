@@ -24,15 +24,21 @@ export type SendForSignatureProps = {
   defaultEmail?: string;
   defaultName?: string;
   defaultRole?: "homeowner" | "insured" | "tenant" | "other";
+  // When true, mount already-expanded (skip the collapsed "Send to customer
+  // for signature" button). Used by DocCard where the surrounding wrapper is
+  // already the reveal affordance.
+  initiallyOpen?: boolean;
 };
 
 export function SendForSignature(props: SendForSignatureProps) {
   const { toast } = useToast();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(!!props.initiallyOpen);
   const [email, setEmail] = useState(props.defaultEmail || "");
   const [name, setName] = useState(props.defaultName || "");
   const [role, setRole] = useState<string>(props.defaultRole || "homeowner");
   const [busy, setBusy] = useState(false);
+  const [emailStatus, setEmailStatus] = useState<"sent" | "simulated" | "error" | null>(null);
+  const [emailErrorText, setEmailErrorText] = useState<string>("");
   const [link, setLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -60,11 +66,13 @@ export function SendForSignature(props: SendForSignatureProps) {
       if (!res.ok) throw new Error((await res.json())?.error || `HTTP ${res.status}`);
       const data = await res.json();
       setLink(data.link);
+      setEmailStatus(data.emailSent ? "sent" : (data.emailProvider === "simulated" ? "simulated" : "error"));
+      setEmailErrorText(data.emailError || "");
       toast({
-        title: data.emailSent ? "✉️ Sign link emailed" : "Sign link created",
+        title: data.emailSent ? "✉️ Sign link emailed" : "Sign link ready — copy & send manually",
         description: data.emailSent
           ? `Sent to ${email}. Link expires in 7 days.`
-          : `Email couldn't be sent (${data.emailError || "unknown"}). Copy the link and text it.`,
+          : `Email couldn't be sent automatically. The link is ready below — copy it and text/paste it to the customer.`,
         variant: data.emailSent ? "default" : "destructive",
       });
     } catch (e: any) {
@@ -160,8 +168,26 @@ export function SendForSignature(props: SendForSignatureProps) {
       </div>
 
       {link && (
-        <div className="pt-3 border-t space-y-1.5">
-          <p className="text-xs text-muted-foreground">Sign link (also emailed to the customer):</p>
+        <div className="pt-3 border-t space-y-2">
+          {emailStatus === "sent" && (
+            <div className="rounded-md border border-green-200 bg-green-50 text-green-800 text-xs px-2.5 py-1.5">
+              <Check className="w-3 h-3 inline-block mr-1" />
+              Email sent to {email}. Link expires in 7 days.
+            </div>
+          )}
+          {emailStatus === "simulated" && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 text-amber-900 text-xs px-2.5 py-2 space-y-1">
+              <p className="font-semibold">Email transport not configured on the server.</p>
+              <p>The link below is valid — copy it and text/paste it to {email}. To enable direct sending, add GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET in Railway and connect an employee's Gmail from Settings (or set SMTP env vars).</p>
+            </div>
+          )}
+          {emailStatus === "error" && (
+            <div className="rounded-md border border-red-200 bg-red-50 text-red-800 text-xs px-2.5 py-2 space-y-1">
+              <p className="font-semibold">Email send failed: {emailErrorText || "unknown error"}</p>
+              <p>The link below is valid — copy it and text/paste it to {email}.</p>
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">Signing link (valid 7 days):</p>
           <div className="flex gap-2">
             <Input className="text-xs font-mono" value={link} readOnly />
             <Button type="button" variant="outline" size="sm" onClick={copy}>

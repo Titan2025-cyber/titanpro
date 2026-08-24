@@ -217,9 +217,13 @@ export function registerQuickAddAndESignRoutes(
     const link = `${APP_ORIGIN}/#/sign/${token}`;
     let emailSent = false;
     let emailError: string | null = null;
+    let emailProvider: string = "none";
     try {
       const nameLine = recipientName ? `Hi ${recipientName},` : "Hello,";
-      await sendEmail({
+      // sendEmail() returns per-recipient SendResult[] rather than throwing on
+      // simulated / provider errors, so we must inspect the result to decide
+      // whether the email actually left the building.
+      const results = await sendEmail({
         to: recipientEmail,
         subject: `Titan Restoration — ${title} ready to sign`,
         text:
@@ -241,7 +245,19 @@ export function registerQuickAddAndESignRoutes(
              <p style="font-size:12px;color:#888">Titan Restoration · (803) 528-8683 · <a href="https://titanaugusta.pro" style="color:#888">titanaugusta.pro</a></p>
            </div>`,
       });
-      emailSent = true;
+      const first = results[0];
+      if (first?.status === "sent") {
+        emailSent = true;
+        emailProvider = "live";
+      } else if (first?.status === "logged" && first?.simulated) {
+        emailSent = false;
+        emailError = "No email transport configured on the server. Copy the link and text or paste it to the customer, then set GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (Gmail) or SMTP_HOST/SMTP_USER/SMTP_PASS (SMTP) in Railway to enable direct sends.";
+        emailProvider = "simulated";
+      } else {
+        emailSent = false;
+        emailError = first?.error || "unknown";
+        emailProvider = "error";
+      }
     } catch (e: any) {
       emailError = e?.message || "email send failed";
     }
@@ -254,6 +270,7 @@ export function registerQuickAddAndESignRoutes(
       expiresAt: expires.toISOString(),
       emailSent,
       emailError,
+      emailProvider,
     });
   });
 

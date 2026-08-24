@@ -1712,6 +1712,7 @@ function DocCard({
                     defaultEmail={contact?.email || (job as any)?.customerEmail || ""}
                     defaultName={doc.signerName || contact?.name || ""}
                     defaultRole="homeowner"
+                    initiallyOpen
                   />
                 )}
               </div>
