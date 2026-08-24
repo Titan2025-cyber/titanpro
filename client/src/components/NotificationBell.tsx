@@ -79,23 +79,80 @@ export function NotificationBell() {
     refetchInterval: open ? 15_000 : false,
   });
 
+  // Optimistic mark-read: flip the row + drop the count immediately, then
+  // reconcile with the server. If the PATCH fails the onError rollback
+  // restores the previous cache so the badge doesn't lie. Previously we only
+  // invalidated on success — if the offline queue swallowed the request or
+  // the server errored quietly, the row and badge would sit there forever.
   const markRead = useMutation({
     mutationFn: (id: number) => apiRequest("PATCH", `/api/notifications/${id}/read`, {}),
-    onSuccess: () => {
+    onMutate: async (id: number) => {
+      await qc.cancelQueries({ queryKey: ["/api/notifications/me"] });
+      await qc.cancelQueries({ queryKey: ["/api/notifications/me/unread-count"] });
+      const prevItems = qc.getQueryData<Notification[]>(["/api/notifications/me"]);
+      const prevCount = qc.getQueryData<{ count: number }>(["/api/notifications/me/unread-count"]);
+      qc.setQueryData<Notification[]>(["/api/notifications/me"], (old) =>
+        (old || []).map((n) => (n.id === id ? { ...n, read: true } : n)),
+      );
+      qc.setQueryData<{ count: number }>(["/api/notifications/me/unread-count"], (old) => ({
+        count: Math.max(0, (old?.count || 0) - 1),
+      }));
+      return { prevItems, prevCount };
+    },
+    onError: (_e, _id, ctx) => {
+      if (ctx?.prevItems) qc.setQueryData(["/api/notifications/me"], ctx.prevItems);
+      if (ctx?.prevCount) qc.setQueryData(["/api/notifications/me/unread-count"], ctx.prevCount);
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["/api/notifications/me"] });
       qc.invalidateQueries({ queryKey: ["/api/notifications/me/unread-count"] });
     },
   });
   const markAll = useMutation({
     mutationFn: () => apiRequest("PATCH", "/api/notifications/me/read-all", {}),
-    onSuccess: () => {
+    onMutate: async () => {
+      await qc.cancelQueries({ queryKey: ["/api/notifications/me"] });
+      await qc.cancelQueries({ queryKey: ["/api/notifications/me/unread-count"] });
+      const prevItems = qc.getQueryData<Notification[]>(["/api/notifications/me"]);
+      const prevCount = qc.getQueryData<{ count: number }>(["/api/notifications/me/unread-count"]);
+      qc.setQueryData<Notification[]>(["/api/notifications/me"], (old) =>
+        (old || []).map((n) => ({ ...n, read: true })),
+      );
+      qc.setQueryData(["/api/notifications/me/unread-count"], { count: 0 });
+      return { prevItems, prevCount };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prevItems) qc.setQueryData(["/api/notifications/me"], ctx.prevItems);
+      if (ctx?.prevCount) qc.setQueryData(["/api/notifications/me/unread-count"], ctx.prevCount);
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["/api/notifications/me"] });
       qc.invalidateQueries({ queryKey: ["/api/notifications/me/unread-count"] });
     },
   });
   const remove = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/notifications/${id}`),
-    onSuccess: () => {
+    onMutate: async (id: number) => {
+      await qc.cancelQueries({ queryKey: ["/api/notifications/me"] });
+      await qc.cancelQueries({ queryKey: ["/api/notifications/me/unread-count"] });
+      const prevItems = qc.getQueryData<Notification[]>(["/api/notifications/me"]);
+      const prevCount = qc.getQueryData<{ count: number }>(["/api/notifications/me/unread-count"]);
+      const removed = prevItems?.find((n) => n.id === id);
+      qc.setQueryData<Notification[]>(["/api/notifications/me"], (old) =>
+        (old || []).filter((n) => n.id !== id),
+      );
+      if (removed && !removed.read) {
+        qc.setQueryData<{ count: number }>(["/api/notifications/me/unread-count"], (old) => ({
+          count: Math.max(0, (old?.count || 0) - 1),
+        }));
+      }
+      return { prevItems, prevCount };
+    },
+    onError: (_e, _id, ctx) => {
+      if (ctx?.prevItems) qc.setQueryData(["/api/notifications/me"], ctx.prevItems);
+      if (ctx?.prevCount) qc.setQueryData(["/api/notifications/me/unread-count"], ctx.prevCount);
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["/api/notifications/me"] });
       qc.invalidateQueries({ queryKey: ["/api/notifications/me/unread-count"] });
     },
