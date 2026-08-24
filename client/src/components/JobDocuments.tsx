@@ -11,7 +11,7 @@ import { useRef, useState, useEffect, useCallback } from "react";
 import {
   FileText, Upload, Pen, CheckCircle2, Trash2, Download,
   ChevronDown, ChevronUp, X, Eye, FileUp, AlertTriangle,
-  ClipboardCheck, FilePen, Award, Printer, Package, CheckSquare, Square, Loader2, ShieldCheck
+  ClipboardCheck, FilePen, Award, Printer, Package, CheckSquare, Square, Loader2, ShieldCheck, Send
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +30,7 @@ const loadPdfEngine = () => import("@/lib/pdfEngine");
 // packet — loaded on demand so it never slows the initial page render.
 const loadDocumentPacket = () => import("@/lib/documentPacket");
 import { CertificateOfCompletion } from "@/components/CertificateOfCompletion";
+import { SendForSignature } from "@/components/SendForSignature";
 import type { JobDocument, Job, Contact } from "@shared/schema";
 import { fmtDateShort, todayLocalISO } from "@/lib/dates";
 
@@ -303,6 +304,17 @@ function WorkAuthorizationForm({
           <p className="font-semibold text-sm mt-2 pt-2 border-t">AUTHORIZATION TO PERFORM RESTORATION SERVICES</p>
         </div>
 
+        {/* Send to customer for remote signature (email link with sign page). */}
+        <SendForSignature
+          jobId={jobId}
+          docType="work_authorization"
+          title={`Work Authorization — ${job.jobNumber}`}
+          getFormData={() => form}
+          defaultEmail={contact?.email || (job as any).customerEmail || ""}
+          defaultName={form.signerName}
+          defaultRole="homeowner"
+        />
+
         {/* Fields */}
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -510,6 +522,17 @@ function DirectionToPayForm({
           </div>
           <p className="font-semibold text-sm mt-2 pt-2 border-t">DIRECTION TO PAY — NOTICE TO INSURANCE CARRIER</p>
         </div>
+
+        {/* Send to customer for remote signature. */}
+        <SendForSignature
+          jobId={jobId}
+          docType="direction_to_pay_notice"
+          title={`Direction to Pay — ${job.jobNumber}`}
+          getFormData={() => form}
+          defaultEmail={contact?.email || (job as any).customerEmail || ""}
+          defaultName={form.signerName}
+          defaultRole="insured"
+        />
 
         {/* Insured / property */}
         <div className="grid grid-cols-2 gap-3">
@@ -734,6 +757,17 @@ function CustomPricingForm({
           <p className="font-semibold text-sm mt-2 pt-2 border-t">CUSTOM PRICING ACKNOWLEDGMENT & CARRIER PRICING NOTICE</p>
         </div>
 
+        {/* Send to customer for remote signature. */}
+        <SendForSignature
+          jobId={jobId}
+          docType="custom_pricing_acknowledgment"
+          title={`Custom Pricing Acknowledgment — ${job.jobNumber}`}
+          getFormData={() => form}
+          defaultEmail={contact?.email || (job as any).customerEmail || ""}
+          defaultName={form.signerName}
+          defaultRole="homeowner"
+        />
+
         {/* Fields */}
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -918,6 +952,17 @@ function RightToRenovateForm({
           </div>
           <p className="font-semibold text-sm mt-2 pt-2 border-t">RECEIPT OF EPA "RENOVATE RIGHT" LEAD-HAZARD PAMPHLET</p>
         </div>
+
+        {/* Send to customer for remote signature. */}
+        <SendForSignature
+          jobId={jobId}
+          docType="right_to_renovate"
+          title={`Right to Renovate — ${job.jobNumber}`}
+          getFormData={() => form}
+          defaultEmail={contact?.email || (job as any).customerEmail || ""}
+          defaultName={form.signerName}
+          defaultRole="homeowner"
+        />
 
         {/* Fields */}
         <div className="grid grid-cols-2 gap-3">
@@ -1297,6 +1342,14 @@ function DocCard({
 }) {
   const [printing, setPrinting] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  // Inline sign-now flow: capture signature with SignaturePad and PATCH it
+  // onto the existing doc record. Set when the user clicks "Sign now".
+  const [signMode, setSignMode] = useState(false);
+  const [inlineSig, setInlineSig] = useState<string>("");
+  const [inlineSignerName, setInlineSignerName] = useState<string>(doc.signerName || contact?.name || "");
+  const [savingSig, setSavingSig] = useState(false);
+  // Send-for-signature flow: reveal the SendForSignature dialog inline.
+  const [sendMode, setSendMode] = useState(false);
   const { toast } = useToast();
 
   const deleteMutation = useMutation({
@@ -1369,6 +1422,67 @@ function DocCard({
       await printSingleDocument(doc, job, contact);
     } finally {
       setPrinting(false);
+    }
+  };
+
+  // Persist an in-person signature onto the existing doc. For form-backed
+  // docs (work_authorization, direction_to_pay_notice, etc.) we also try to
+  // regenerate the branded PDF so the freshly signed copy has the signature
+  // baked in — falling back gracefully if the generator isn't found.
+  const saveInlineSignature = async () => {
+    if (!inlineSig) {
+      toast({ title: "Draw a signature first", variant: "destructive" });
+      return;
+    }
+    if (!inlineSignerName.trim()) {
+      toast({ title: "Enter the signer's name", variant: "destructive" });
+      return;
+    }
+    setSavingSig(true);
+    const signedAt = new Date().toISOString();
+    // Try to regenerate the PDF with the signature embedded, if possible.
+    let regeneratedPdf: string | undefined;
+    try {
+      const engine: any = await loadPdfEngine();
+      const fd = formData || {};
+      if (doc.docType === "work_authorization" && engine.generateWorkAuthPDF) {
+        regeneratedPdf = engine.generateWorkAuthPDF({
+          jobNumber: job?.jobNumber, signerName: inlineSignerName,
+          relationship: fd.relationship, propertyAddress: fd.propertyAddress,
+          authorizationScope: fd.authorizationScope, startDate: fd.startDate,
+          insuranceCarrier: fd.insuranceCarrier, claimNumber: fd.claimNumber,
+          policyNumber: fd.policyNumber, specialInstructions: fd.specialInstructions,
+          signatureDataUrl: inlineSig, signedAt,
+          lossType: (job as any)?.lossType, assignedTech: (job as any)?.assignedTech,
+        });
+      } else if (doc.docType === "direction_to_pay_notice" && engine.generateDirectionToPayPDF) {
+        regeneratedPdf = engine.generateDirectionToPayPDF({ ...fd, jobNumber: job?.jobNumber, signerName: inlineSignerName, signatureDataUrl: inlineSig, signedAt });
+      } else if (doc.docType === "custom_pricing_acknowledgment" && engine.generateCustomPricingPDF) {
+        regeneratedPdf = engine.generateCustomPricingPDF({ ...fd, jobNumber: job?.jobNumber, signerName: inlineSignerName, signatureDataUrl: inlineSig, signedAt });
+      } else if (doc.docType === "right_to_renovate" && engine.generateRightToRenovatePDF) {
+        regeneratedPdf = engine.generateRightToRenovatePDF({ ...fd, jobNumber: job?.jobNumber, signerName: inlineSignerName, signatureDataUrl: inlineSig, signedAt });
+      } else if (doc.docType === "deviation_of_standard" && engine.generateDeviationPDF) {
+        regeneratedPdf = engine.generateDeviationPDF({ ...fd, jobNumber: job?.jobNumber, signerName: inlineSignerName, signatureDataUrl: inlineSig, signedAt });
+      }
+    } catch (e) {
+      console.warn("[sign-now] pdf regeneration skipped:", e);
+    }
+    try {
+      await apiRequest("PATCH", `/api/documents/${doc.id}`, {
+        signatureData: inlineSig,
+        signerName: inlineSignerName,
+        signedAt,
+        status: "signed",
+        ...(regeneratedPdf ? { fileData: regeneratedPdf, fileMimeType: "application/pdf" } : {}),
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "documents"] });
+      toast({ title: "✅ Signed and saved" });
+      setSignMode(false);
+      setInlineSig("");
+    } catch (err: any) {
+      toast({ title: "Save failed", description: err?.message || "try again", variant: "destructive" });
+    } finally {
+      setSavingSig(false);
     }
   };
 
@@ -1526,6 +1640,80 @@ function DocCard({
                     <Download className="w-3 h-3" />Download PDF
                   </Button>
                 </div>
+              </div>
+            )}
+
+            {/* ── Sign / send actions ─────────────────────────────────────────────
+                Any doc: Sign now (in-person, captures signature and PATCHes
+                onto the record) or Send for signing (emails a signing link
+                to the customer via /api/signature-requests). Works for
+                unsigned form docs and uploaded PDFs alike. */}
+            {doc.status !== "signed" && doc.docType !== "pdf_upload" && (
+              <div className="border rounded-lg p-3 bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-blue-900 dark:text-blue-100">Signature needed</p>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant={signMode ? "secondary" : "outline"}
+                      className="h-7 text-xs gap-1"
+                      onClick={() => { setSignMode(v => !v); setSendMode(false); }}
+                      data-testid={`button-sign-now-${doc.id}`}
+                    >
+                      <FileText className="w-3 h-3" />
+                      {signMode ? "Cancel" : "Sign now"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="h-7 text-xs gap-1 bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
+                      onClick={() => { setSendMode(v => !v); setSignMode(false); }}
+                      data-testid={`button-send-signing-${doc.id}`}
+                    >
+                      <Send className="w-3 h-3" />
+                      {sendMode ? "Hide" : "Send for signing"}
+                    </Button>
+                  </div>
+                </div>
+
+                {signMode && (
+                  <div className="space-y-2">
+                    <div>
+                      <Label className="text-xs">Signer's Name</Label>
+                      <Input
+                        className="mt-1 h-8 text-sm"
+                        value={inlineSignerName}
+                        onChange={e => setInlineSignerName(e.target.value)}
+                        placeholder="Full legal name"
+                      />
+                    </div>
+                    <SignaturePad
+                      onSign={setInlineSig}
+                      onClear={() => setInlineSig("")}
+                    />
+                    <Button
+                      size="sm"
+                      className="w-full h-8 text-xs gap-1 bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red-dark))] text-white"
+                      onClick={saveInlineSignature}
+                      disabled={!inlineSig || savingSig}
+                      data-testid={`button-save-inline-sig-${doc.id}`}
+                    >
+                      {savingSig ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
+                      Save signature
+                    </Button>
+                  </div>
+                )}
+
+                {sendMode && (
+                  <SendForSignature
+                    jobId={jobId}
+                    docType={doc.docType}
+                    title={doc.title}
+                    getFormData={() => formData || {}}
+                    defaultEmail={contact?.email || (job as any)?.customerEmail || ""}
+                    defaultName={doc.signerName || contact?.name || ""}
+                    defaultRole="homeowner"
+                  />
+                )}
               </div>
             )}
 
