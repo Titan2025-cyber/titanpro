@@ -9,7 +9,7 @@
  *   - Save / load per job from backend
  *   - Export sketch as PNG
  */
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -19,9 +19,10 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
   Square, Pen, Type, Droplets, Eraser, Download,
-  Save, Trash2, RotateCcw, ZoomIn, ZoomOut, MousePointer,
-  Ruler, PenLine, Circle
+  Trash2, RotateCcw, ZoomIn, ZoomOut, MousePointer,
+  Ruler, PenLine, Circle, Check, CloudUpload, AlertCircle
 } from "lucide-react";
+import { useAutoSave, autoSaveLabel } from "@/hooks/useAutoSave";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ToolMode = "select" | "room" | "freehand" | "text" | "moisture" | "eraser" | "circle" | "arrow";
@@ -346,13 +347,19 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
   const isPanning = useRef(false);
 
   // ── Load from backend ─────────────────────────────────────────────────────
-  const { data: saved } = useQuery({
+  const { data: saved, isFetched } = useQuery({
     queryKey: ["/api/jobs", String(jobId), "sketch"],
     queryFn: () => apiRequest("GET", `/api/jobs/${jobId}/sketch`).then(r => r.json()),
     retry: false,
   });
 
+  // `hydrated` guards autosave: don't run the debounced save hook until
+  // we know whether the server already has a sketch and (if so) have
+  // loaded it into local state. Otherwise the very first render would
+  // race hydration and overwrite the server copy with the empty default.
+  const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
+    if (!isFetched) return;
     if (saved?.sketchData) {
       try {
         const parsed: SketchData = JSON.parse(saved.sketchData);
@@ -361,19 +368,47 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
         setHistIdx(0);
       } catch {}
     }
-  }, [saved]);
+    setHydrated(true);
+  }, [saved, isFetched]);
 
   // ── Save to backend ───────────────────────────────────────────────────────
+  // Autosave replaces the manual save workflow. This mutation is still
+  // exposed via `saveMutation.mutate` for the "Save now" fallback button,
+  // but the success toast is gone — the pill in the toolbar shows status
+  // continuously, and a modal toast on every debounced write would be
+  // noise. Errors still toast so a failure can't be missed silently.
   const saveMutation = useMutation({
     mutationFn: (data: SketchData) =>
       apiRequest("POST", `/api/jobs/${jobId}/sketch`, { sketchData: JSON.stringify(data) }).then(r => r.json()),
     onSuccess: () => {
       setDirty(false);
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "sketch"] });
-      toast({ title: "Sketch saved" });
     },
-    onError: () => toast({ title: "Save failed", variant: "destructive" }),
+    onError: () => toast({ title: "Save failed \u2014 will retry", variant: "destructive" }),
   });
+
+  // Debounced autosave — fires ~1.2s after the last edit, and also on
+  // tab blur / hide so a half-typed room label isn't lost if the user
+  // closes the tab before the debounce fires.
+  const { status: autoSaveStatus, lastSavedAt, saveNow } = useAutoSave<SketchData>({
+    value: sketch,
+    ready: hydrated,
+    save: (v) => new Promise((resolve, reject) => {
+      saveMutation.mutate(v, { onSuccess: () => resolve(undefined), onError: (e) => reject(e) });
+    }),
+  });
+  // Ticks the 'Saved 12s ago' clock upward every 15s while the user
+  // is just looking at the canvas without editing.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (autoSaveStatus !== "saved") return;
+    const t = setInterval(() => setTick(x => x + 1), 15000);
+    return () => clearInterval(t);
+  }, [autoSaveStatus]);
+  const autoSaveText = useMemo(
+    () => autoSaveLabel(autoSaveStatus, lastSavedAt),
+    [autoSaveStatus, lastSavedAt],
+  );
 
   // ── History ───────────────────────────────────────────────────────────────
   const pushHistory = useCallback((s: SketchData) => {
@@ -725,7 +760,39 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
               {roomShapes.length} {roomShapes.length === 1 ? "room" : "rooms"} · {Math.round(totalSqft).toLocaleString()} sq ft total
             </Badge>
           )}
-          {dirty && <Badge variant="outline" className="text-xs text-orange-500 border-orange-300">Unsaved</Badge>}
+          {/* Live autosave status pill. Replaces the old Unsaved badge +
+              manual Save button. Icon + color encode state at a glance:
+                • spinner + blue      = saving
+                • cloud arrow + amber = dirty (about to save)
+                • check + muted       = saved N seconds ago
+                • alert + red         = save failed — will retry on next edit
+              Clicking the pill fires an immediate saveNow() so a user who
+              wants the reassurance doesn't have to wait for the debounce. */}
+          {!readOnly && autoSaveText && (
+            <button
+              type="button"
+              onClick={() => { saveNow(); }}
+              title="Autosave status — click to save immediately"
+              className={
+                "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors "
+                + (autoSaveStatus === "saving"
+                  ? "border-[hsl(var(--titan-blue))]/40 text-[hsl(var(--titan-blue))] bg-[hsl(var(--titan-blue))]/10"
+                  : autoSaveStatus === "dirty"
+                  ? "border-amber-300 text-amber-600 bg-amber-50"
+                  : autoSaveStatus === "error"
+                  ? "border-red-300 text-red-600 bg-red-50"
+                  : "border-muted-foreground/20 text-muted-foreground hover:bg-muted")
+              }
+              data-testid="sketch-autosave-pill"
+            >
+              {autoSaveStatus === "saving"    ? <CloudUpload className="w-3 h-3 animate-pulse" />
+              : autoSaveStatus === "dirty"     ? <CloudUpload className="w-3 h-3" />
+              : autoSaveStatus === "error"     ? <AlertCircle className="w-3 h-3" />
+              : autoSaveStatus === "saved"     ? <Check className="w-3 h-3" />
+              : null}
+              <span>{autoSaveText}</span>
+            </button>
+          )}
         </div>
         {!readOnly && (
           <div className="flex items-center gap-1.5">
@@ -737,16 +804,6 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
             </Button>
             <Button size="sm" variant="outline" onClick={clearAll} className="text-red-500" title="Clear all" data-testid="button-sketch-clear">
               <Trash2 className="w-3.5 h-3.5" />
-            </Button>
-            <Button
-              size="sm"
-              className="bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
-              onClick={() => saveMutation.mutate(sketch)}
-              disabled={saveMutation.isPending || !dirty}
-              data-testid="button-sketch-save"
-            >
-              <Save className="w-3.5 h-3.5 mr-1" />
-              {saveMutation.isPending ? "Saving…" : "Save"}
             </Button>
           </div>
         )}
