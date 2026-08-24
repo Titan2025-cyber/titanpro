@@ -527,6 +527,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ── Jobs ──────────────────────────────────────────────────────────────────
   app.get("/api/jobs", (_req, res) => { res.json(storage.getJobs()); });
 
+  // Search-scoped job list: returns EVERY non-deleted job — open, closed,
+  // completed, pending — with the customer contact hydrated. Used by the
+  // top-nav Global Search so a user can jump to any job by number, address,
+  // or customer regardless of its current pipeline stage. Distinct from
+  // /api/jobs, which hides closed jobs to keep the primary jobs list clean.
+  app.get("/api/jobs/search-index", requireStaffAuth, (_req, res) => {
+    res.json(storage.getJobs(true));
+  });
+
   // Property record lookup by address — called from the New Job form and
   // JobDetail address editor to auto-prefill year_built and square_feet from
   // OpenStreetMap. Always resolves to JSON, never 500s on upstream failure.
