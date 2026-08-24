@@ -532,7 +532,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // top-nav Global Search so a user can jump to any job by number, address,
   // or customer regardless of its current pipeline stage. Distinct from
   // /api/jobs, which hides closed jobs to keep the primary jobs list clean.
-  app.get("/api/jobs/search-index", requireStaffAuth, (_req, res) => {
+  // Global auth gate above already protects this path; no explicit middleware
+  // needed here (and referencing requireStaffAuth before its later
+  // destructuring would trip a TDZ ReferenceError at boot).
+  app.get("/api/jobs/search-index", (_req, res) => {
     res.json(storage.getJobs(true));
   });
 
