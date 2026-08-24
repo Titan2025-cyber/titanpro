@@ -823,7 +823,16 @@ export default function JobDetail() {
     queryFn: () => apiRequest("GET", "/api/jobs/financials").then(r => r.json()),
   });
 
-  const [activeTab, setActiveTab] = useState("activity");
+  const [activeTab, setActiveTab] = useState(() => {
+    // Respect ?tab=documents (or any tab name) from deep-links — used by
+    // notification-bell / pending-signatures-badge navigation so a click on
+    // "Jane signed the Work Auth" lands directly on the Documents tab.
+    try {
+      const p = new URLSearchParams(window.location.search).get("tab");
+      if (p) return p;
+    } catch { /* ignore SSR / bad url */ }
+    return "activity";
+  });
 
   // Phase filter — controls which phase's data is shown across the job workspace.
   // Mitigation and Reconstruction are fully independent data sets on the same job:

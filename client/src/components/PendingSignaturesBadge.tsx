@@ -70,7 +70,7 @@ export function PendingSignaturesBadge() {
 
   function onOpenRequest(req: PendingRequest) {
     setOpen(false);
-    setLocation(`/jobs/${req.jobId}#documents`);
+    setLocation(`/jobs/${req.jobId}?tab=documents`);
   }
 
   return (

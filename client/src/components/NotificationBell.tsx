@@ -7,7 +7,7 @@
 // Click a notification → marks it read + navigates to its `link` (usually the
 // linked job's detail page). "Mark all read" + per-row delete supported.
 // ─────────────────────────────────────────────────────────────────────────────
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Bell, Check, CheckCheck, Trash2, X } from "lucide-react";
@@ -54,6 +54,21 @@ export function NotificationBell() {
     enabled: !!user,
   });
   const unread = countData?.count || 0;
+
+  // When the unread count *rises*, something new arrived on the server — most
+  // likely a signature-completed event that just flipped a job's stage or
+  // added a signed doc. Invalidate the jobs + documents caches so the
+  // pipeline board, Pending Sales list, and open Job Detail page all reflect
+  // real-time without waiting on their own stale timers.
+  const prevUnreadRef = useRef<number>(0);
+  useEffect(() => {
+    if (unread > prevUnreadRef.current) {
+      qc.invalidateQueries({ queryKey: ["/api/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
+      qc.invalidateQueries({ queryKey: ["/api/signature-requests/pending"] });
+    }
+    prevUnreadRef.current = unread;
+  }, [unread, qc]);
 
   // Full list — only fetched when the popover is open, but kept fresh at 15s
   // intervals while open.

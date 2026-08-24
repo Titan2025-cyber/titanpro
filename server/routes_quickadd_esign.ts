@@ -437,10 +437,47 @@ export function registerQuickAddAndESignRoutes(
       )
       .run(now, Number(docInfo.lastInsertRowid), updatedFormData, row.id);
 
+    // ── Auto-advance job stage on Work Authorization signature. ────────────────
+    // A signed Work Auth is the contractual green-light: the customer has
+    // committed to the scope. Any job still sitting in 'pending_sale' should
+    // move to 'wip' the moment we see that signature, and its salesDate +
+    // wipDate should stamp real-time so the pipeline dashboard reflects the
+    // change without waiting on a human to click through. Jobs that have
+    // already advanced past pending_sale (pre_production, wip, invoice_pending,
+    // AR, complete) are left alone — we don't want to *undo* progress a PM has
+    // already recorded.
+    let stageAdvanced = false;
+    try {
+      if (row.doc_type === "work_authorization") {
+        const jobRow = sqlite
+          .prepare(`SELECT progress_stage, sales_date, wip_date FROM jobs WHERE id = ?`)
+          .get(row.job_id) as any;
+        if (jobRow && (jobRow.progress_stage === "pending_sale" || !jobRow.progress_stage)) {
+          // Only stamp salesDate/wipDate that aren't already set — preserves any
+          // manual back-date a PM may have entered.
+          const salesDate = jobRow.sales_date || now;
+          const wipDate = jobRow.wip_date || now;
+          sqlite
+            .prepare(
+              `UPDATE jobs
+                 SET progress_stage = 'wip',
+                     sales_date = ?,
+                     wip_date = ?
+               WHERE id = ?`,
+            )
+            .run(salesDate, wipDate, row.job_id);
+          stageAdvanced = true;
+        }
+      }
+    } catch (e: any) {
+      console.error("[signature] stage-advance failed:", e?.message || e);
+    }
+
     // ── Post-sign notifications (fire-and-forget so a mail/notify failure never
     // ── prevents the customer from seeing 'you're all set'). ───────────────────
     const documentId = Number(docInfo.lastInsertRowid);
     void notifyOnSignatureCompleted({
+      stageAdvanced,
       sqlite,
       notifier,
       jobId: row.job_id,
@@ -593,6 +630,7 @@ async function notifyOnSignatureCompleted(args: {
   recipientName: string | null;
   pdfDataUrl: string;
   signedAt: string;
+  stageAdvanced?: boolean;
 }): Promise<void> {
   const {
     sqlite,
@@ -607,6 +645,7 @@ async function notifyOnSignatureCompleted(args: {
     recipientName,
     pdfDataUrl,
     signedAt,
+    stageAdvanced,
   } = args;
 
   // Look up job context (address / job number / assigned tech).
@@ -636,10 +675,14 @@ async function notifyOnSignatureCompleted(args: {
     try {
       notifier.notifyOwnersAndAdmins({
         type: "signature_completed",
-        title: `✓ ${signerName} signed the ${title}`,
-        body: `${signerName} completed the ${title} for ${jobLabel} at ${signedAtDisplay}. The signed PDF is now in the job's Documents tab.`,
+        title: stageAdvanced
+          ? `✓ ${signerName} signed the ${title} — job moved to WIP`
+          : `✓ ${signerName} signed the ${title}`,
+        body: stageAdvanced
+          ? `${signerName} completed the ${title} for ${jobLabel} at ${signedAtDisplay}. Job auto-advanced to WIP with sales date + wip date stamped. Signed PDF is in the job's Documents tab.`
+          : `${signerName} completed the ${title} for ${jobLabel} at ${signedAtDisplay}. The signed PDF is now in the job's Documents tab.`,
         jobId,
-        link: `/jobs/${jobId}#documents`,
+        link: `/jobs/${jobId}?tab=documents`,
       });
     } catch (e: any) {
       console.error("[signature] bell notify failed:", e?.message || e);
