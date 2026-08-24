@@ -437,24 +437,51 @@ export function registerQuickAddAndESignRoutes(
       )
       .run(now, Number(docInfo.lastInsertRowid), updatedFormData, row.id);
 
-    // ── Auto-advance job stage on Work Authorization signature. ────────────────
-    // A signed Work Auth is the contractual green-light: the customer has
-    // committed to the scope. Any job still sitting in 'pending_sale' should
-    // move to 'wip' the moment we see that signature, and its salesDate +
-    // wipDate should stamp real-time so the pipeline dashboard reflects the
-    // change without waiting on a human to click through. Jobs that have
-    // already advanced past pending_sale (pre_production, wip, invoice_pending,
-    // AR, complete) are left alone — we don't want to *undo* progress a PM has
-    // already recorded.
+    // ── Auto-advance job stage on customer signature. ────────────────────────
+    // Certain signed docs are pipeline gates. The signature itself IS the
+    // event that advances the job, so we do it here instead of waiting for
+    // a human to click the stage selector.
+    //
+    //   Work Authorization signed   → progress_stage 'wip'
+    //                                 stamps sales_date + wip_date if unset
+    //     (customer has committed to scope, production may begin)
+    //
+    //   Certificate of Completion signed → progress_stage 'invoice_pending'
+    //                                 stamps invoice_sent_date if unset
+    //     (customer has confirmed the work is complete, we can now invoice)
+    //
+    // A stage advance is one-way — we never move a job BACKWARDS. If a PM
+    // has already dragged a Work Auth-signed job to invoice_pending or
+    // beyond, a re-signed Work Auth won't drop it back to WIP. And a CoC
+    // signed on a job still stuck in pending_sale still advances it (the
+    // scope must have been done, otherwise the CoC wouldn't exist).
+    //
+    // BACKWARD_FROM tables encode "which stages does a signature promote
+    // FROM" — anything not listed is already at-or-past the target.
+    const STAGE_RANK: Record<string, number> = {
+      pending_sale: 0,
+      pre_production: 1,
+      wip: 2,
+      invoice_pending: 3,
+      accounts_receivable: 4,
+      complete: 5,
+    };
     let stageAdvanced = false;
+    let stageAdvancedLabel: string | null = null;
     try {
-      if (row.doc_type === "work_authorization") {
-        const jobRow = sqlite
-          .prepare(`SELECT progress_stage, sales_date, wip_date FROM jobs WHERE id = ?`)
-          .get(row.job_id) as any;
-        if (jobRow && (jobRow.progress_stage === "pending_sale" || !jobRow.progress_stage)) {
-          // Only stamp salesDate/wipDate that aren't already set — preserves any
-          // manual back-date a PM may have entered.
+      const jobRow = sqlite
+        .prepare(
+          `SELECT progress_stage, sales_date, wip_date, invoice_sent_date
+             FROM jobs WHERE id = ?`,
+        )
+        .get(row.job_id) as any;
+
+      if (jobRow) {
+        const currentRank = STAGE_RANK[jobRow.progress_stage ?? "pending_sale"] ?? 0;
+
+        if (row.doc_type === "work_authorization" && currentRank < STAGE_RANK.wip) {
+          // Only stamp salesDate/wipDate that aren't already set — preserves
+          // any manual back-date a PM may have entered.
           const salesDate = jobRow.sales_date || now;
           const wipDate = jobRow.wip_date || now;
           sqlite
@@ -467,6 +494,24 @@ export function registerQuickAddAndESignRoutes(
             )
             .run(salesDate, wipDate, row.job_id);
           stageAdvanced = true;
+          stageAdvancedLabel = "WIP";
+        } else if (
+          row.doc_type === "certificate_of_completion"
+          && currentRank < STAGE_RANK.invoice_pending
+        ) {
+          // Preserve any pre-existing invoice_sent_date the PM back-dated;
+          // otherwise stamp real-time.
+          const invoiceSentDate = jobRow.invoice_sent_date || now;
+          sqlite
+            .prepare(
+              `UPDATE jobs
+                 SET progress_stage = 'invoice_pending',
+                     invoice_sent_date = ?
+               WHERE id = ?`,
+            )
+            .run(invoiceSentDate, row.job_id);
+          stageAdvanced = true;
+          stageAdvancedLabel = "Invoice Pending";
         }
       }
     } catch (e: any) {
@@ -478,6 +523,7 @@ export function registerQuickAddAndESignRoutes(
     const documentId = Number(docInfo.lastInsertRowid);
     void notifyOnSignatureCompleted({
       stageAdvanced,
+      stageAdvancedLabel,
       sqlite,
       notifier,
       jobId: row.job_id,
@@ -631,6 +677,7 @@ async function notifyOnSignatureCompleted(args: {
   pdfDataUrl: string;
   signedAt: string;
   stageAdvanced?: boolean;
+  stageAdvancedLabel?: string | null;
 }): Promise<void> {
   const {
     sqlite,
@@ -646,7 +693,9 @@ async function notifyOnSignatureCompleted(args: {
     pdfDataUrl,
     signedAt,
     stageAdvanced,
+    stageAdvancedLabel,
   } = args;
+  const stageLabel = stageAdvancedLabel || "WIP";
 
   // Look up job context (address / job number / assigned tech).
   const job: any = sqlite
@@ -676,10 +725,10 @@ async function notifyOnSignatureCompleted(args: {
       notifier.notifyOwnersAndAdmins({
         type: "signature_completed",
         title: stageAdvanced
-          ? `✓ ${signerName} signed the ${title} — job moved to WIP`
+          ? `✓ ${signerName} signed the ${title} — job moved to ${stageLabel}`
           : `✓ ${signerName} signed the ${title}`,
         body: stageAdvanced
-          ? `${signerName} completed the ${title} for ${jobLabel} at ${signedAtDisplay}. Job auto-advanced to WIP with sales date + wip date stamped. Signed PDF is in the job's Documents tab.`
+          ? `${signerName} completed the ${title} for ${jobLabel} at ${signedAtDisplay}. Job auto-advanced to ${stageLabel}. Signed PDF is in the job's Documents tab.`
           : `${signerName} completed the ${title} for ${jobLabel} at ${signedAtDisplay}. The signed PDF is now in the job's Documents tab.`,
         jobId,
         link: `/jobs/${jobId}?tab=documents`,
