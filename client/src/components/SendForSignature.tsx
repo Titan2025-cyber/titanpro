@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 
 export type SendForSignatureProps = {
   jobId: number;
@@ -49,21 +50,25 @@ export function SendForSignature(props: SendForSignatureProps) {
     }
     setBusy(true);
     try {
-      const res = await fetch("/api/signature-requests", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          jobId: props.jobId,
-          docType: props.docType,
-          title: props.title,
-          formData: props.getFormData(),
-          recipientEmail: email,
-          recipientName: name || null,
-          recipientRole: role,
-        }),
+      // apiRequest attaches the staff Bearer token from window.__titanToken__
+      // automatically; raw fetch() bypassed that and produced a 401
+      // "Authentication required." response.
+      const res = await apiRequest("POST", "/api/signature-requests", {
+        jobId: props.jobId,
+        docType: props.docType,
+        title: props.title,
+        formData: props.getFormData(),
+        recipientEmail: email,
+        recipientName: name || null,
+        recipientRole: role,
       });
-      if (!res.ok) throw new Error((await res.json())?.error || `HTTP ${res.status}`);
+      if (!res.ok) {
+        // apiRequest doesn't throw on non-2xx; surface the server error text.
+        let errMsg = `HTTP ${res.status}`;
+        try { errMsg = (await res.json())?.error || errMsg; } catch {}
+        if (res.status === 401) errMsg = "Session expired — please sign in again, then retry.";
+        throw new Error(errMsg);
+      }
       const data = await res.json();
       setLink(data.link);
       setEmailStatus(data.emailSent ? "sent" : (data.emailProvider === "simulated" ? "simulated" : "error"));
