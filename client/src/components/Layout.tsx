@@ -27,6 +27,7 @@ import MyAccountDialog from "@/components/MyAccountDialog";
 import InstallPrompt from "@/components/InstallPrompt";
 import { useAuth } from "@/lib/auth";
 import { NotificationBell } from "@/components/NotificationBell";
+import { PendingSignaturesBadge } from "@/components/PendingSignaturesBadge";
 
 interface NavItem {
   href: string;
@@ -495,6 +496,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex-1 flex justify-end lg:justify-start">
             <GlobalSearch />
           </div>
+          {/* Pending-signatures counter — outstanding customer signatures across all jobs. */}
+          {user && <PendingSignaturesBadge />}
           {/* Notification bell — available whenever a user is signed in. */}
           {user && <NotificationBell />}
           {/* Auth user chip — desktop only (sidebar already shows user) */}

@@ -6,6 +6,7 @@ import { Express, RequestHandler } from "express";
 import Database from "better-sqlite3";
 import crypto from "crypto";
 import { sendEmail } from "./notify";
+import type { Notifier } from "./notify_bell";
 
 type Auth = { requireRole: (...roles: string[]) => RequestHandler };
 type SqliteDb = InstanceType<typeof Database>;
@@ -26,6 +27,7 @@ export function registerQuickAddAndESignRoutes(
   app: Express,
   sqlite: SqliteDb,
   auth?: Auth,
+  notifier?: Notifier,
 ) {
   const requireAuth: RequestHandler = auth
     ? auth.requireRole(
@@ -435,7 +437,47 @@ export function registerQuickAddAndESignRoutes(
       )
       .run(now, Number(docInfo.lastInsertRowid), updatedFormData, row.id);
 
-    res.json({ ok: true, documentId: Number(docInfo.lastInsertRowid) });
+    // ── Post-sign notifications (fire-and-forget so a mail/notify failure never
+    // ── prevents the customer from seeing 'you're all set'). ───────────────────
+    const documentId = Number(docInfo.lastInsertRowid);
+    void notifyOnSignatureCompleted({
+      sqlite,
+      notifier,
+      jobId: row.job_id,
+      documentId,
+      docType: row.doc_type,
+      title: row.title,
+      signerName,
+      signerRole,
+      recipientEmail: row.recipient_email,
+      recipientName: row.recipient_name || null,
+      pdfDataUrl,
+      signedAt: now,
+    }).catch((e) => console.error("[signature] notify failed:", e?.message || e));
+
+    res.json({ ok: true, documentId });
+  });
+
+  // ── Pending signatures across all jobs (for header badge + dashboard). ─────
+  // Returns a lightweight summary: total pending count + a preview of the
+  // three most-recent so the bell can show a badge without hitting the docs
+  // table. Only 'pending' and 'viewed' rows count — signed/expired/cancelled
+  // don't. Requires staff auth (same as the rest of /api).
+  app.get("/api/signature-requests/pending", requireAuth, (_req, res) => {
+    const rows = sqlite
+      .prepare(
+        `SELECT s.id, s.job_id AS jobId, s.title, s.recipient_name AS recipientName,
+                s.recipient_email AS recipientEmail, s.status, s.created_at AS createdAt,
+                s.expires_at AS expiresAt, s.viewed_at AS viewedAt,
+                j.job_number AS jobNumber, j.address AS jobAddress
+           FROM signature_requests s
+           LEFT JOIN jobs j ON j.id = s.job_id
+          WHERE s.status IN ('pending', 'viewed')
+            AND datetime(s.expires_at) > datetime('now')
+          ORDER BY s.created_at DESC`,
+      )
+      .all();
+    res.json({ count: rows.length, requests: rows });
   });
 
   // ── Send an already-generated PDF to a customer, optionally saving a copy
@@ -527,4 +569,180 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+// ── Signature-completion notifications ─────────────────────────────────────────
+//
+// Fanout when a customer completes a remote signature:
+//   1. Owner + admin + GM in-app bell notifications (deep-link to the job)
+//   2. Team email to the assigned tech (if any) with the signed PDF attached,
+//      cc'd to every owner/admin (best-effort — falls back to logging)
+//   3. Confirmation email to the customer with their signed PDF for records
+// The DocCard "Signed by {name}" pill (#4) is already rendered client-side
+// from the job_documents row we just inserted — no server change needed there.
+async function notifyOnSignatureCompleted(args: {
+  sqlite: SqliteDb;
+  notifier?: Notifier;
+  jobId: number;
+  documentId: number;
+  docType: string;
+  title: string;
+  signerName: string;
+  signerRole: string;
+  recipientEmail: string;
+  recipientName: string | null;
+  pdfDataUrl: string;
+  signedAt: string;
+}): Promise<void> {
+  const {
+    sqlite,
+    notifier,
+    jobId,
+    documentId,
+    docType,
+    title,
+    signerName,
+    signerRole,
+    recipientEmail,
+    recipientName,
+    pdfDataUrl,
+    signedAt,
+  } = args;
+
+  // Look up job context (address / job number / assigned tech).
+  const job: any = sqlite
+    .prepare(
+      `SELECT j.id, j.job_number AS jobNumber, j.address, j.assigned_tech AS assignedTech,
+              c.name AS customerName, c.email AS customerEmail
+         FROM jobs j
+         LEFT JOIN contacts c ON c.id = j.contact_id
+        WHERE j.id = ?`,
+    )
+    .get(jobId);
+
+  const jobLabel = job?.jobNumber
+    ? `#${job.jobNumber}${job?.address ? ` — ${job.address}` : ""}`
+    : job?.address || `Job ${jobId}`;
+  const appOrigin = process.env.APP_ORIGIN || "https://titanaugusta.pro";
+  const jobLink = `${appOrigin}/#/jobs/${jobId}`;
+  const signedAtDisplay = new Date(signedAt).toLocaleString("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+
+  // 1) In-app bell notifications for owners + admins + general managers.
+  //    Also target the assigned tech by name (legacy fanout) if one is set.
+  if (notifier) {
+    try {
+      notifier.notifyOwnersAndAdmins({
+        type: "signature_completed",
+        title: `✓ ${signerName} signed the ${title}`,
+        body: `${signerName} completed the ${title} for ${jobLabel} at ${signedAtDisplay}. The signed PDF is now in the job's Documents tab.`,
+        jobId,
+        link: `/jobs/${jobId}#documents`,
+      });
+    } catch (e: any) {
+      console.error("[signature] bell notify failed:", e?.message || e);
+    }
+  }
+
+  // Assemble the attachment ONCE and reuse for both team + customer emails.
+  const safeName = `${title.replace(/[^\w.-]+/g, "_")}_signed.pdf`;
+  const attachment = {
+    filename: safeName,
+    contentType: "application/pdf",
+    content: pdfDataUrl,
+  };
+
+  // 2) Team email — assigned tech (if we can resolve their gmail_email) plus
+  //    every active owner/admin. Deduped by lowercased address.
+  const teamRecipients = new Set<string>();
+  if (job?.assignedTech) {
+    const techRow: any = sqlite
+      .prepare(
+        "SELECT gmail_email FROM employees WHERE name = ? AND is_active = 1",
+      )
+      .get(job.assignedTech);
+    if (techRow?.gmail_email) teamRecipients.add(String(techRow.gmail_email).toLowerCase());
+  }
+  try {
+    const owners: any[] = sqlite
+      .prepare(
+        "SELECT gmail_email FROM employees WHERE is_active = 1 AND role IN ('owner','admin','general_manager') AND gmail_email IS NOT NULL AND gmail_email != ''",
+      )
+      .all();
+    for (const r of owners) if (r?.gmail_email) teamRecipients.add(String(r.gmail_email).toLowerCase());
+  } catch (_e) { /* ignore — optional */ }
+
+  // As a last resort, fall back to the OWNER_NOTIFY_EMAIL env var so a fresh
+  // install with no employee emails still notifies someone.
+  if (teamRecipients.size === 0 && process.env.OWNER_NOTIFY_EMAIL) {
+    teamRecipients.add(String(process.env.OWNER_NOTIFY_EMAIL).toLowerCase());
+  }
+
+  if (teamRecipients.size > 0) {
+    const teamText =
+      `${signerName} just signed the ${title} for ${jobLabel}.\n\n` +
+      `Signer role: ${signerRole}\n` +
+      `Signed at: ${signedAtDisplay}\n` +
+      `Customer email: ${recipientEmail}\n\n` +
+      `The signed PDF is attached and has been saved to the job's Documents tab.\n` +
+      `Open the job: ${jobLink}\n\n— Titan Restoration`;
+    const teamHtml =
+      `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:600px;margin:0 auto;color:#111;line-height:1.55">
+         <p style="font-size:16px;margin:0 0 4px"><strong>✓ ${escapeHtml(signerName)}</strong> signed the <strong>${escapeHtml(title)}</strong>.</p>
+         <p style="color:#555;margin:0 0 16px">Job ${escapeHtml(jobLabel)} · ${escapeHtml(signedAtDisplay)}</p>
+         <table style="font-size:14px;color:#333;border-collapse:collapse;margin:0 0 16px">
+           <tr><td style="padding:2px 8px 2px 0;color:#666">Signer role</td><td>${escapeHtml(signerRole)}</td></tr>
+           <tr><td style="padding:2px 8px 2px 0;color:#666">Customer email</td><td><a href="mailto:${escapeHtml(recipientEmail)}">${escapeHtml(recipientEmail)}</a></td></tr>
+           <tr><td style="padding:2px 8px 2px 0;color:#666">Document ID</td><td>#${documentId}</td></tr>
+         </table>
+         <p style="margin:0 0 20px">The signed PDF is attached and already saved to the job's Documents tab.</p>
+         <p style="margin:0 0 24px">
+           <a href="${jobLink}" style="background:#0A2540;color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:600;display:inline-block">Open job in Titan Pro</a>
+         </p>
+         <hr style="border:none;border-top:1px solid #eee;margin:20px 0"/>
+         <p style="font-size:12px;color:#888;margin:0">Titan Restoration · (803) 528-8683 · <a href="${appOrigin}" style="color:#888">titanaugusta.pro</a></p>
+       </div>`;
+    try {
+      await sendEmail({
+        to: Array.from(teamRecipients),
+        subject: `✓ ${signerName} signed the ${title} — ${jobLabel}`,
+        text: teamText,
+        html: teamHtml,
+        attachments: [attachment],
+      });
+    } catch (e: any) {
+      console.error("[signature] team email failed:", e?.message || e);
+    }
+  }
+
+  // 3) Customer confirmation with their signed copy attached.
+  try {
+    const hi = recipientName ? `Hi ${recipientName},` : "Hello,";
+    const customerText =
+      `${hi}\n\nThank you for signing the ${title}. Your signed copy is attached to this email for your records.\n\n` +
+      `If you have any questions, reply to this email or call us at (803) 528-8683.\n\n` +
+      `— Titan Restoration\n${appOrigin}`;
+    const customerHtml =
+      `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:560px;margin:0 auto;color:#111;line-height:1.6">
+         <p>${escapeHtml(hi)}</p>
+         <p>Thank you for signing the <strong>${escapeHtml(title)}</strong>. Your signed copy is attached to this email for your records.</p>
+         <p>If you have any questions, reply to this email or call us at <strong>(803) 528-8683</strong>.</p>
+         <hr style="border:none;border-top:1px solid #eee;margin:24px 0"/>
+         <p style="font-size:12px;color:#888;margin:0">Titan Restoration · (803) 528-8683 · <a href="${appOrigin}" style="color:#888">titanaugusta.pro</a></p>
+       </div>`;
+    await sendEmail({
+      to: recipientEmail,
+      subject: `Your signed copy — ${title}`,
+      text: customerText,
+      html: customerHtml,
+      attachments: [attachment],
+    });
+  } catch (e: any) {
+    console.error("[signature] customer email failed:", e?.message || e);
+  }
+
+  // Reference unused vars to silence TS.
+  void docType;
 }

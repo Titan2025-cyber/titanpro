@@ -4723,7 +4723,7 @@ cody@titanrestorationllc.com`;
 
   // ── Suite 4 Routes ─────────────────────────────────────────────────────────
   registerSuite4Routes(app, sqlite, { requireRole });
-  registerQuickAddAndESignRoutes(app, sqlite, { requireRole });
+  registerQuickAddAndESignRoutes(app, sqlite, { requireRole }, notifier);
 
   // ── Route Planner Routes ───────────────────────────────────────────────────
   registerRoutePlannerRoutes(app, sqlite);
