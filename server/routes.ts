@@ -476,6 +476,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       "/api/customer-portal/",   // prefix: login + all portal data/pay/stripe routes
       "/api/adjuster-portal/",   // prefix: access token + supplement response
       "/api/portal/login",
+      // Remote e-signature — customer opens the /sign/:token page from email.
+      // The signing token IS the auth (rotates on send, single-use, 7-day
+      // expiry, revocable via cancel). GET fetches the pending doc, POST
+      // returns the signed PDF + signature image. No staff session required.
+      "/api/public/sign/",       // prefix: GET + POST /api/public/sign/:token
       // QuickBooks OAuth redirect callback (no bearer token on the redirect)
       "/api/qb/oauth/callback",
       "/api/qb/oauth/start",
