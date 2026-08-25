@@ -172,26 +172,21 @@ function JobContextMenu({ job, children }: { job: Job; children: React.ReactNode
   // Otherwise "Open in new tab" would spawn the new tab AND navigate the
   // current tab because the Link click fires as part of the same gesture.
   const openHere = () => navigate(path);
-  // window.open('_blank') from a scripted handler forces foreground in
-  // Chromium. Simulating a Ctrl/Cmd-click on a real <a target="_blank">
-  // preserves the browser's native background-tab convention so the user
-  // stays on the current view and can visit the new tab when ready.
+  // Chromium ignores synthetic ctrl/cmd modifiers on dispatched click
+  // events for security reasons, so the ctrl-click trick can't force a
+  // background tab. Best we can do is open the tab, then immediately
+  // refocus the current window so the user visually stays put. Some
+  // browsers (Safari) may still briefly flash focus — that's a browser
+  // constraint we can't override without extension permissions.
   const openInBackgroundTab = (u: string) => {
-    const a = document.createElement("a");
-    a.href = u;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    // Dispatch a MouseEvent with ctrl+meta so Chrome/Safari/Firefox all
-    // interpret it as "open in background tab" per their platform norms.
-    const evt = new MouseEvent("click", {
-      bubbles: false,
-      cancelable: true,
-      view: window,
-      ctrlKey: true,   // Windows/Linux: background tab
-      metaKey: true,   // macOS: background tab
-      shiftKey: false,
-    });
-    a.dispatchEvent(evt);
+    const newWin = window.open(u, "_blank", "noopener,noreferrer");
+    // Refocus the current window on the next tick. window.focus() may be
+    // ignored by the browser depending on user settings, but this is the
+    // standard technique that works in most Chromium builds.
+    if (newWin) {
+      try { newWin.blur(); } catch { /* cross-origin or blocked */ }
+    }
+    setTimeout(() => { try { window.focus(); } catch { /* ignore */ } }, 0);
   };
   const openNewTab = () => openInBackgroundTab(hashUrl);
   const openPortal = () => openInBackgroundTab(hashUrlPortal);
