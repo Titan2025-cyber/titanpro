@@ -153,16 +153,23 @@ function PortalActiveBadge({ jobId }: { jobId: number }) {
 // but users often don't discover that when the card looks like a plain div.
 // The custom menu makes the affordance obvious and adds Copy link.
 function JobContextMenu({ job, children }: { job: Job; children: React.ReactNode }) {
-  const url = `/jobs/${job.id}`;
+  // App uses hash-based routing (see <Router hook={useHashLocationNoQuery}
+  // hrefs={p => "#" + p}> in App.tsx). wouter's navigate() takes the raw
+  // path, but window.open() needs the FULL fragment URL including "#",
+  // otherwise a new tab lands on "/jobs/123" which isn't a real route and
+  // shows a white screen.
+  const path = `/jobs/${job.id}`;
+  const hashUrl = `#${path}`;
+  const hashUrlPortal = `#${path}?portal=1`;
   // For "Copy link" we want the fully-qualified URL so it works when pasted
   // into a Slack or email off-device. window is guarded for SSR safety.
-  const absUrl = typeof window !== "undefined" ? `${window.location.origin}${url}` : url;
+  const absUrl = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}${hashUrl}` : hashUrl;
   const [, navigate] = useLocation();
   const { toast } = useToast();
 
-  const openHere = () => navigate(url);
-  const openNewTab = () => window.open(url, "_blank", "noopener,noreferrer");
-  const openPortal = () => window.open(`${url}?portal=1`, "_blank", "noopener,noreferrer");
+  const openHere = () => navigate(path);
+  const openNewTab = () => window.open(hashUrl, "_blank", "noopener,noreferrer");
+  const openPortal = () => window.open(hashUrlPortal, "_blank", "noopener,noreferrer");
   const copyLink = async () => {
     try {
       await navigator.clipboard.writeText(absUrl);
