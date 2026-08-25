@@ -167,6 +167,10 @@ function JobContextMenu({ job, children }: { job: Job; children: React.ReactNode
   const [, navigate] = useLocation();
   const { toast } = useToast();
 
+  // Handlers use Radix's onSelect (not onClick) and call preventDefault so
+  // the menu closes WITHOUT bubbling a click into the wrapped <a>/<Link>.
+  // Otherwise "Open in new tab" would spawn the new tab AND navigate the
+  // current tab because the Link click fires as part of the same gesture.
   const openHere = () => navigate(path);
   const openNewTab = () => window.open(hashUrl, "_blank", "noopener,noreferrer");
   const openPortal = () => window.open(hashUrlPortal, "_blank", "noopener,noreferrer");
@@ -178,22 +182,25 @@ function JobContextMenu({ job, children }: { job: Job; children: React.ReactNode
       toast({ title: "Copy failed", description: "Clipboard permission denied.", variant: "destructive" });
     }
   };
+  // Wrap each action so Radix always gets its preventDefault and the parent
+  // Link never sees a click. Kept as a factory to stay concise.
+  const wrap = (fn: () => void) => (e: Event) => { e.preventDefault(); fn(); };
 
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent className="w-56">
-        <ContextMenuItem onClick={openHere} data-testid={`ctxmenu-open-${job.id}`}>
+        <ContextMenuItem onSelect={wrap(openHere)} data-testid={`ctxmenu-open-${job.id}`}>
           <Eye className="w-4 h-4 mr-2" />Open job
         </ContextMenuItem>
-        <ContextMenuItem onClick={openNewTab} data-testid={`ctxmenu-open-newtab-${job.id}`}>
+        <ContextMenuItem onSelect={wrap(openNewTab)} data-testid={`ctxmenu-open-newtab-${job.id}`}>
           <ExternalLink className="w-4 h-4 mr-2" />Open in new tab
         </ContextMenuItem>
-        <ContextMenuItem onClick={openPortal} data-testid={`ctxmenu-open-portal-${job.id}`}>
+        <ContextMenuItem onSelect={wrap(openPortal)} data-testid={`ctxmenu-open-portal-${job.id}`}>
           <KeyRound className="w-4 h-4 mr-2" />Open portal setup (new tab)
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onClick={copyLink} data-testid={`ctxmenu-copy-link-${job.id}`}>
+        <ContextMenuItem onSelect={wrap(copyLink)} data-testid={`ctxmenu-copy-link-${job.id}`}>
           <Copy className="w-4 h-4 mr-2" />Copy link
         </ContextMenuItem>
       </ContextMenuContent>

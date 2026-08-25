@@ -1024,6 +1024,26 @@ export default function JobDetail() {
     if (jobScopeForEffect === "reconstruction" && phaseFilter !== "reconstruction") setPhaseFilter("reconstruction");
   }, [job, jobScopeForEffect, phaseFilter]);
 
+  // Set the browser tab title to the job number + customer/address so
+  // multiple job tabs are distinguishable at a glance. Restore the default
+  // title when this component unmounts so we don't leak a stale job label
+  // onto the next page the user navigates to.
+  const contactsForTitle = contacts;
+  useEffect(() => {
+    if (!job) return;
+    const c = contactsForTitle.find(x => x.id === job.contactId);
+    // Prefer customer name; fall back to short address; then just the number.
+    // Format: "TP-2026-0042 · Jane Doe — Titan Pro"
+    const shortAddr = (job.address || "").split(",")[0].trim();
+    const label = c?.name || shortAddr || "";
+    const title = label
+      ? `${job.jobNumber} · ${label} — Titan Pro`
+      : `${job.jobNumber} — Titan Pro`;
+    const prev = document.title;
+    document.title = title;
+    return () => { document.title = prev; };
+  }, [job, contactsForTitle]);
+
   if (isLoading) return <div className="p-6 text-muted-foreground">Loading…</div>;
   if (!job) return <div className="p-6 text-destructive">Job not found.</div>;
 
