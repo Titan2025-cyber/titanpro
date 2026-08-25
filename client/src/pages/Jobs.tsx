@@ -172,8 +172,29 @@ function JobContextMenu({ job, children }: { job: Job; children: React.ReactNode
   // Otherwise "Open in new tab" would spawn the new tab AND navigate the
   // current tab because the Link click fires as part of the same gesture.
   const openHere = () => navigate(path);
-  const openNewTab = () => window.open(hashUrl, "_blank", "noopener,noreferrer");
-  const openPortal = () => window.open(hashUrlPortal, "_blank", "noopener,noreferrer");
+  // window.open('_blank') from a scripted handler forces foreground in
+  // Chromium. Simulating a Ctrl/Cmd-click on a real <a target="_blank">
+  // preserves the browser's native background-tab convention so the user
+  // stays on the current view and can visit the new tab when ready.
+  const openInBackgroundTab = (u: string) => {
+    const a = document.createElement("a");
+    a.href = u;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    // Dispatch a MouseEvent with ctrl+meta so Chrome/Safari/Firefox all
+    // interpret it as "open in background tab" per their platform norms.
+    const evt = new MouseEvent("click", {
+      bubbles: false,
+      cancelable: true,
+      view: window,
+      ctrlKey: true,   // Windows/Linux: background tab
+      metaKey: true,   // macOS: background tab
+      shiftKey: false,
+    });
+    a.dispatchEvent(evt);
+  };
+  const openNewTab = () => openInBackgroundTab(hashUrl);
+  const openPortal = () => openInBackgroundTab(hashUrlPortal);
   const copyLink = async () => {
     try {
       await navigator.clipboard.writeText(absUrl);
