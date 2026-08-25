@@ -10,7 +10,7 @@ import { useState } from "react";
 import {
   Plus, Trash2, ChevronDown, ChevronUp, CheckCircle2,
   Thermometer, Droplets, Wind, Clipboard, Save, AlertTriangle,
-  CalendarOff, Ban
+  Scissors
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -145,7 +145,19 @@ interface EquipRow {
   serialNumber: string;
   dailyReadings?: DehuReading[]; // per-day intake/output readings (dehumidifiers)
 }
-interface AreaRow { id: number; room: string; material: string; sqft: number; wetPct: number; }
+// Affected area — a room/material pairing with wetness state. Optionally
+// tagged as a tear-out (material removed) with the replacement material
+// the tech intends to install so the reconstruction phase can be
+// pre-scoped straight from the drying record.
+interface AreaRow {
+  id: number;
+  room: string;
+  material: string;
+  sqft: number;
+  wetPct: number;
+  tearOut?: boolean;         // true when this material is being torn out
+  replacedWith?: string;     // replacement material to install (only meaningful when tearOut is true)
+}
 
 // Multi-location psychrometric grid. Renders Inside / Outside / Affected Area
 // rows with Temp + RH inputs and auto-computed GPP + Dew Point per row. Also
@@ -478,7 +490,18 @@ function AffectedAreasTable({ rows, onChange, readOnly }: { rows: AreaRow[]; onC
   const del = (id: number) => onChange(rows.filter(r => r.id !== id));
   const upd = (id: number, field: keyof AreaRow, val: any) =>
     onChange(rows.map(r => r.id === id ? { ...r, [field]: val } : r));
+  // Toggle tear-out on a row. When switching ON, pre-fill replacedWith with
+  // the same material as a sensible default (like-for-like replacement) so
+  // the tech only has to change it when the replacement differs.
+  const toggleTearOut = (row: AreaRow) => {
+    if (row.tearOut) {
+      onChange(rows.map(r => r.id === row.id ? { ...r, tearOut: false, replacedWith: undefined } : r));
+    } else {
+      onChange(rows.map(r => r.id === row.id ? { ...r, tearOut: true, replacedWith: r.replacedWith || r.material } : r));
+    }
+  };
   const totalSF = rows.reduce((s, r) => s + (r.sqft || 0), 0);
+  const tearOutSF = rows.filter(r => r.tearOut).reduce((s, r) => s + (r.sqft || 0), 0);
 
   return (
     <div>
@@ -488,26 +511,72 @@ function AffectedAreasTable({ rows, onChange, readOnly }: { rows: AreaRow[]; onC
       </div>
       <div className="space-y-1.5">
         {rows.map(row => (
-          <div key={row.id} className="grid grid-cols-12 gap-1 items-center">
-            <Input className="col-span-3 h-7 text-xs" placeholder="Room/Area" value={row.room}
-              disabled={readOnly} onChange={e => upd(row.id, "room", e.target.value)} />
-            <Select value={row.material} onValueChange={v => upd(row.id, "material", v)} disabled={readOnly}>
-              <SelectTrigger className="col-span-3 h-7 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>{MATERIAL_TYPES.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
-            </Select>
-            <Input className="col-span-2 h-7 text-xs" type="number" placeholder="SF" value={row.sqft || ""}
-              disabled={readOnly} onChange={e => upd(row.id, "sqft", Number(e.target.value))} />
-            <div className="col-span-3 flex items-center gap-1">
-              <Input className="h-7 text-xs" type="number" min="0" max="100" placeholder="Wet%" value={row.wetPct || ""}
-                disabled={readOnly} onChange={e => upd(row.id, "wetPct", Number(e.target.value))} />
-              <span className="text-xs text-muted-foreground">%</span>
+          <div key={row.id} className="space-y-1">
+            <div className="grid grid-cols-12 gap-1 items-center">
+              <Input className="col-span-3 h-7 text-xs" placeholder="Room/Area" value={row.room}
+                disabled={readOnly} onChange={e => upd(row.id, "room", e.target.value)} />
+              <Select value={row.material} onValueChange={v => upd(row.id, "material", v)} disabled={readOnly}>
+                <SelectTrigger className="col-span-3 h-7 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>{MATERIAL_TYPES.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
+              </Select>
+              <Input className="col-span-2 h-7 text-xs" type="number" placeholder="SF" value={row.sqft || ""}
+                disabled={readOnly} onChange={e => upd(row.id, "sqft", Number(e.target.value))} />
+              <div className="col-span-2 flex items-center gap-1">
+                <Input className="h-7 text-xs" type="number" min="0" max="100" placeholder="Wet%" value={row.wetPct || ""}
+                  disabled={readOnly} onChange={e => upd(row.id, "wetPct", Number(e.target.value))} />
+                <span className="text-xs text-muted-foreground">%</span>
+              </div>
+              {/* Tear-out toggle. When ON, a second row appears below with
+                  the replacement material Select. Amber = mark as tear-out,
+                  red highlight = active tear-out. */}
+              {!readOnly && (
+                <Button
+                  size="sm"
+                  variant={row.tearOut ? "default" : "outline"}
+                  className={"col-span-1 h-7 px-1 text-xs " + (row.tearOut
+                    ? "bg-red-600 hover:bg-red-700 text-white border-red-600"
+                    : "text-amber-700 border-amber-300 hover:bg-amber-50 dark:text-amber-300 dark:border-amber-700")}
+                  title={row.tearOut ? "Tear-out marked \u2014 click to remove" : "Mark this material for tear-out and replacement"}
+                  onClick={() => toggleTearOut(row)}
+                  data-testid={`button-tearout-${row.id}`}
+                >
+                  <Scissors className="w-3 h-3" />
+                </Button>
+              )}
+              {!readOnly && <Button size="sm" variant="ghost" className="col-span-1 h-7 px-1 text-destructive" onClick={() => del(row.id)}><Trash2 className="w-3 h-3" /></Button>}
             </div>
-            {!readOnly && <Button size="sm" variant="ghost" className="col-span-1 h-7 px-1 text-destructive" onClick={() => del(row.id)}><Trash2 className="w-3 h-3" /></Button>}
+            {/* Tear-out replacement row. Only rendered when this area is
+                flagged as a tear-out. Reads as: "Drywall \u2192 Sill Plate"
+                so the office can pre-scope reconstruction line items
+                straight from the drying record. */}
+            {row.tearOut && (
+              <div className="grid grid-cols-12 gap-1 items-center pl-3 border-l-2 border-red-400" data-testid={`tearout-row-${row.id}`}>
+                <div className="col-span-3 flex items-center gap-1 text-[11px] text-red-700 dark:text-red-400 font-semibold uppercase tracking-wide">
+                  <Scissors className="w-3 h-3" /><span>Tear-out</span>
+                </div>
+                <div className="col-span-3 text-[11px] text-muted-foreground truncate" title={row.material}>
+                  Removing: <span className="font-medium text-foreground">{row.material}</span>
+                </div>
+                <div className="col-span-1 text-center text-muted-foreground">→</div>
+                <Select value={row.replacedWith || row.material} onValueChange={v => upd(row.id, "replacedWith", v)} disabled={readOnly}>
+                  <SelectTrigger className="col-span-4 h-7 text-xs" data-testid={`select-replacedwith-${row.id}`}>
+                    <SelectValue placeholder="Replace with" />
+                  </SelectTrigger>
+                  <SelectContent>{MATERIAL_TYPES.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
+                </Select>
+                <div className="col-span-1" />
+              </div>
+            )}
           </div>
         ))}
         {rows.length === 0 && <p className="text-xs text-muted-foreground italic py-2">No affected areas documented.</p>}
       </div>
-      {totalSF > 0 && <p className="mt-1 text-xs text-muted-foreground">Total affected: <strong>{totalSF} SF</strong></p>}
+      {(totalSF > 0 || tearOutSF > 0) && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Total affected: <strong>{totalSF} SF</strong>
+          {tearOutSF > 0 && <span className="ml-2 text-red-700 dark:text-red-400">· Tear-out: <strong>{tearOutSF} SF</strong></span>}
+        </p>
+      )}
     </div>
   );
 }
@@ -798,120 +867,17 @@ function RecordCard({ record, jobId, readOnly, priorRecords = [] }: { record: Dr
   );
 }
 
-// ── Missed-Day Form ───────────────────────────────────────────────────────────
-// A stripped-down form used to log a day where drying was NOT performed —
-// homeowner denied access, weather, tech unavailable, equipment issue. Missed
-// days preserve the chronological integrity of the drying log per S500 §14
-// without polluting moisture-alert calculations. Added 2026-08-14.
-const MISSED_REASONS = [
-  "Homeowner denied access / not home",
-  "Weather / site inaccessible",
-  "Scheduling conflict / tech unavailable",
-  "Equipment issue / awaiting parts",
-  "Other (see notes)",
-];
-
-function MissedDayForm({ jobId, defaultDay, onClose }: { jobId: number; defaultDay: number; onClose: () => void }) {
-  const { toast } = useToast();
-  const [form, setForm] = useState({
-    readingDate: todayLocalISO(),
-    techName: "",
-    dayNumber: defaultDay,
-    missedReason: MISSED_REASONS[0],
-    observations: "",
-  });
-
-  const createMutation = useMutation({
-    mutationFn: async () => {
-      return apiRequest("POST", `/api/jobs/${jobId}/drying-records`, {
-        recordType: "missed",
-        readingDate: form.readingDate,
-        readingTime: null,
-        // The DB requires tech_name NOT NULL, so fall back to a system label.
-        techName: form.techName || "— no visit —",
-        dayNumber: form.dayNumber,
-        waterCategory: "category1",
-        waterClass: "class2",
-        missedReason: form.missedReason,
-        observations: form.observations,
-        moistureReadings: "[]",
-        equipment: "[]",
-        affectedAreas: "[]",
-        psychrometricReadings: "[]",
-        tempF: null,
-        rhPct: null,
-        gpp: null,
-        dewPointF: null,
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId), "drying-records"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", String(jobId)] });
-      toast({ title: "Missed day logged", description: `${form.readingDate} — ${form.missedReason}` });
-      onClose();
-    },
-  });
-
-  return (
-    <Card className="border-amber-300 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-950/20">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-sm flex items-center gap-2 text-amber-900 dark:text-amber-200">
-          <CalendarOff className="w-4 h-4" />
-          Log Missed Day
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="pt-0 space-y-3">
-        <p className="text-xs text-amber-800 dark:text-amber-300">
-          Use this to document a day where drying was scheduled but not performed. It keeps the S500 timeline continuous without recording readings.
-        </p>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <div>
-            <Label className="text-xs">Date</Label>
-            <Input type="date" className="h-8 text-xs mt-1" value={form.readingDate}
-              onChange={e => setForm(f => ({ ...f, readingDate: e.target.value }))}
-              data-testid="input-missed-date" />
-          </div>
-          <div>
-            <Label className="text-xs">Day #</Label>
-            <Input type="number" min="1" className="h-8 text-xs mt-1" value={form.dayNumber}
-              onChange={e => setForm(f => ({ ...f, dayNumber: Number(e.target.value) }))} />
-          </div>
-          <div>
-            <Label className="text-xs">Attempted by (optional)</Label>
-            <UserSelect value={form.techName} onChange={v => setForm(f => ({ ...f, techName: v }))} roles={["tech"]} placeholder="— not applicable —" className="h-8 text-xs mt-1" testId="select-missed-tech" />
-          </div>
-        </div>
-        <div>
-          <Label className="text-xs">Reason</Label>
-          <Select value={form.missedReason} onValueChange={v => setForm(f => ({ ...f, missedReason: v }))}>
-            <SelectTrigger className="h-8 text-xs mt-1" data-testid="select-missed-reason"><SelectValue /></SelectTrigger>
-            <SelectContent>{MISSED_REASONS.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}</SelectContent>
-          </Select>
-        </div>
-        <div>
-          <Label className="text-xs">Notes</Label>
-          <Textarea className="mt-1 text-xs min-h-[60px]"
-            placeholder="Optional — who was contacted, follow-up plan, adjuster notified, etc."
-            value={form.observations}
-            onChange={e => setForm(f => ({ ...f, observations: e.target.value }))} />
-        </div>
-        <div className="flex gap-2">
-          <Button className="flex-1 bg-amber-600 hover:bg-amber-700 text-white"
-            onClick={() => createMutation.mutate()}
-            disabled={createMutation.isPending || !form.readingDate || !form.missedReason}
-            data-testid="button-save-missed-day">
-            <CalendarOff className="w-4 h-4 mr-2" />
-            {createMutation.isPending ? "Saving…" : "Log Missed Day"}
-          </Button>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-// Compact row rendered for records with recordType === 'missed'. Rendered
-// in-line with normal drying visits so the timeline stays contiguous.
+// ── Legacy Missed-Day support ───────────────────────────────────────────────
+// The "Log Missed Day" flow was removed 2026-08-25 — techs asked for a
+// simpler timeline that just tracks days they actually visited. Historical
+// missed-day rows already in the DB are still rendered by MissedDayCard
+// below so the audit trail stays intact, but there is no longer a UI
+// path to create new missed-day rows.
+// Compact row rendered for LEGACY records with recordType === 'missed'.
+// No longer created via the UI (the Log Missed Day button was removed
+// 2026-08-25), but historical rows are still displayed so the S500
+// audit trail remains complete and previously-logged reasons stay
+// visible / deletable.
 function MissedDayCard({ record, jobId, readOnly }: { record: DryingRecord; jobId: number; readOnly?: boolean }) {
   const deleteMutation = useMutation({
     mutationFn: () => apiRequest("DELETE", `/api/drying-records/${record.id}`),
@@ -927,8 +893,7 @@ function MissedDayCard({ record, jobId, readOnly }: { record: DryingRecord; jobI
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
-            <Ban className="w-3.5 h-3.5 text-amber-700 dark:text-amber-300" />
-            <span className="text-xs font-semibold text-amber-900 dark:text-amber-200">Missed day</span>
+            <span className="text-xs font-semibold text-amber-900 dark:text-amber-200">— no visit —</span>
             <Badge className="bg-amber-200 text-amber-900 border-0 text-[10px] dark:bg-amber-900 dark:text-amber-100">{missedReason}</Badge>
           </div>
           {record.observations && (
@@ -1161,7 +1126,9 @@ function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; o
 // ── Main export ───────────────────────────────────────────────────────────────
 export default function DryingRecords({ jobId, readOnly = false }: { jobId: number; readOnly?: boolean }) {
   const [showNew, setShowNew] = useState(false);
-  const [showMissed, setShowMissed] = useState(false);
+  // showMissed / setShowMissed removed 2026-08-25 with the Log Missed Day
+  // feature. Historical missed-day rows still render via MissedDayCard.
+
 
   const { data: records = [], isLoading } = useQuery<DryingRecord[]>({
     queryKey: ["/api/jobs", String(jobId), "drying-records"],
@@ -1235,26 +1202,15 @@ export default function DryingRecords({ jobId, readOnly = false }: { jobId: numb
             />
           )}
         </div>
-        {!readOnly && !showNew && !showMissed && (
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              className="border-amber-400 text-amber-800 hover:bg-amber-50 dark:text-amber-300 dark:border-amber-600 dark:hover:bg-amber-950"
-              onClick={() => setShowMissed(true)}
-              data-testid="button-log-missed-day"
-            >
-              <CalendarOff className="w-3.5 h-3.5 mr-1" />Log Missed Day
-            </Button>
-            <Button
-              size="sm"
-              className="bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
-              onClick={() => setShowNew(true)}
-              data-testid="button-new-drying-record"
-            >
-              <Plus className="w-3.5 h-3.5 mr-1" />New Record
-            </Button>
-          </div>
+        {!readOnly && !showNew && (
+          <Button
+            size="sm"
+            className="bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
+            onClick={() => setShowNew(true)}
+            data-testid="button-new-drying-record"
+          >
+            <Plus className="w-3.5 h-3.5 mr-1" />New Record
+          </Button>
         )}
       </div>
 
@@ -1268,7 +1224,6 @@ export default function DryingRecords({ jobId, readOnly = false }: { jobId: numb
       )}
 
       {showNew && <NewRecordForm jobId={jobId} onClose={() => setShowNew(false)} priorRecords={records} />}
-      {showMissed && <MissedDayForm jobId={jobId} defaultDay={nextDay} onClose={() => setShowMissed(false)} />}
 
       {isLoading ? (
         <div className="space-y-2">{[1,2].map(i => <div key={i} className="h-14 bg-muted animate-pulse rounded-lg" />)}</div>

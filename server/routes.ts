@@ -1595,6 +1595,52 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ── Invoices ──────────────────────────────────────────────────────────────
+
+  // Auto-advance job stage → accounts_receivable when an invoice with a
+  // dueDate is created (or a due date is added to an existing draft invoice).
+  // Mirrors the CoC signature auto-advance in routes_quickadd_esign.ts,
+  // but for the next step in the pipeline. Keyed on dueDate because the
+  // invoice schema has no separate issue-date column. One-way guard: never
+  // move a job backward — if it's already in AR or complete, this no-ops.
+  const STAGE_RANK: Record<string, number> = {
+    pending_sale: 0,
+    pre_production: 1,
+    wip: 2,
+    invoice_pending: 3,
+    accounts_receivable: 4,
+    complete: 5,
+  };
+  function advanceJobToAR(jobId: number | null | undefined): { advanced: boolean } {
+    if (!jobId) return { advanced: false };
+    try {
+      const jobRow = sqlite
+        .prepare(`SELECT progress_stage, invoice_sent_date FROM jobs WHERE id = ?`)
+        .get(jobId) as any;
+      if (!jobRow) return { advanced: false };
+      const currentRank = STAGE_RANK[jobRow.progress_stage ?? "pending_sale"] ?? 0;
+      if (currentRank >= STAGE_RANK.accounts_receivable) return { advanced: false };
+      const now = new Date().toISOString();
+      // Stamp invoice_sent_date only if it was never set. An invoice with a
+      // due date has, by definition, been (or is about to be) sent, so this
+      // keeps AR aging honest for jobs that skipped the CoC-signed path.
+      const invoiceSentDate = jobRow.invoice_sent_date || now;
+      sqlite
+        .prepare(
+          `UPDATE jobs
+             SET progress_stage = 'accounts_receivable',
+                 invoice_sent_date = ?
+           WHERE id = ?`,
+        )
+        .run(invoiceSentDate, jobId);
+      return { advanced: true };
+    } catch (e: any) {
+      // Never fail the invoice save because of a stage-advance hiccup —
+      // log and move on. The invoice write is the primary action.
+      console.error("[invoice→AR] stage-advance failed:", e?.message || e);
+      return { advanced: false };
+    }
+  }
+
   app.get("/api/invoices", (_req, res) => { res.json(storage.getInvoices()); });
   app.get("/api/invoices/:id", (req, res) => {
     const inv = storage.getInvoice(Number(req.params.id));
@@ -1605,7 +1651,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/invoices", requireRole("owner", "admin", "sales", "general_manager"), (req, res) => {
     try {
       const body = recomputeDocTotals(req.body);
-      res.json(storage.createInvoice(body));
+      const created = storage.createInvoice(body);
+      // If the new invoice already has a due date, promote the parent job
+      // to accounts_receivable. Drafts with no dueDate stay in
+      // invoice_pending until a date is set.
+      if (created && (created as any).dueDate) {
+        advanceJobToAR((created as any).jobId);
+      }
+      res.json(created);
     } catch (err: any) { res.status(400).json({ error: err?.message || "Unable to create invoice" }); }
   });
   app.patch("/api/invoices/:id", requireRole("owner", "admin", "sales", "general_manager"), (req, res) => {
@@ -1653,6 +1706,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     const inv = storage.updateInvoice(id, updates);
     if (!inv) return res.status(404).json({ error: "Not found" });
+    // AR auto-advance on due-date change: whenever the PATCH sets a dueDate,
+    // promote the parent job. advanceJobToAR is idempotent — it only moves
+    // the job forward if it isn't already in AR/complete, so this is safe on
+    // repeated edits (e.g. correcting a mistyped due date).
+    const dueDateChanged = "dueDate" in updates && !!updates.dueDate;
+    if (dueDateChanged) {
+      advanceJobToAR((inv as any).jobId);
+    }
     res.json(inv);
   });
   // Full removal. Owner/admin/general_manager only — sales can create+edit

@@ -904,6 +904,48 @@ export default function JobDetail() {
     }),
   });
 
+  // Delete an estimate from inside JobDetail (Estimates card trash button).
+  // Server (DELETE /api/estimates/:id) enforces owner/admin/general_manager;
+  // non-privileged clicks surface a 403 toast rather than silently no-op.
+  const deleteEstimate = useMutation({
+    mutationFn: async (estimateId: number) => {
+      const r = await apiRequest("DELETE", `/api/estimates/${estimateId}`);
+      return r.json().catch(() => ({}));
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", id, "estimates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/estimates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
+      toast({ title: "Estimate deleted" });
+    },
+    onError: (e: any) => toast({
+      title: "Could not delete estimate",
+      description: e?.message || "You may not have permission, or the estimate is locked.",
+      variant: "destructive",
+    }),
+  });
+
+  // Delete an invoice from inside JobDetail (Invoices card trash button).
+  // Same role gate as estimates. Invalidates BOTH the per-job invoices list
+  // and the global invoices/financials queries so the AR page updates too.
+  const deleteInvoice = useMutation({
+    mutationFn: async (invoiceId: number) => {
+      const r = await apiRequest("DELETE", `/api/invoices/${invoiceId}`);
+      return r.json().catch(() => ({}));
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", id, "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
+      toast({ title: "Invoice deleted" });
+    },
+    onError: (e: any) => toast({
+      title: "Could not delete invoice",
+      description: e?.message || "You may not have permission, or the invoice is locked.",
+      variant: "destructive",
+    }),
+  });
+
   // Close / reopen state. UI is open to everyone — the server enforces
   // owner+admin at /api/jobs/:id/close (a non-admin click just gets a 403
   // toast). This keeps role-gate breakage from ever silently hiding the
@@ -1642,6 +1684,27 @@ export default function JobDetail() {
                           <Copy className="w-4 h-4" />
                         </Button>
                       )}
+                      {/* Delete estimate. Server enforces owner/admin/GM;
+                          the confirm() dialog just guards against fat-finger
+                          taps on the mobile job page. Works for both internal
+                          and external (uploaded PDF) estimates. */}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+                        title="Delete this estimate"
+                        disabled={deleteEstimate.isPending}
+                        onClick={(ev) => {
+                          ev.preventDefault();
+                          ev.stopPropagation();
+                          if (confirm(`Delete estimate "${e.title}"? This cannot be undone.`)) {
+                            deleteEstimate.mutate(e.id);
+                          }
+                        }}
+                        data-testid={`button-delete-estimate-${e.id}`}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
                     </div>
                   </CardContent>
                 </Card>
@@ -1672,10 +1735,15 @@ export default function JobDetail() {
           <div className="space-y-2">
             {visibleInvoices.map(inv => {
               const isExternal = (inv as any).source === "external";
+              // Internal invoices don't have their own /invoices/:id route
+              // (the invoice editor lives on /invoices via an in-page dialog),
+              // so we deep-link to /invoices?edit=<id> and the Invoices page
+              // auto-opens the edit dialog on mount. External invoices are
+              // just uploaded files — open the file directly, no edit UI.
               const inner = (
-                <Card className={isExternal ? "hover:shadow-md transition-shadow cursor-pointer" : ""}>
-                  <CardContent className="p-3 flex items-center justify-between">
-                    <div className="min-w-0">
+                <Card className={isExternal ? "hover:shadow-md transition-shadow cursor-pointer" : "hover:shadow-md transition-shadow"}>
+                  <CardContent className="p-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
                       <p className="font-semibold text-sm truncate flex items-center gap-1.5">
                         {isExternal && <Paperclip className="w-3 h-3 shrink-0 text-muted-foreground" />}
                         {inv.invoiceNumber}
@@ -1686,7 +1754,44 @@ export default function JobDetail() {
                         {isExternal ? " · external" : ""}
                       </p>
                     </div>
-                    <p className="font-bold text-green-600">${(inv.total || 0).toLocaleString()}</p>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <p className="font-bold text-green-600">${(inv.total || 0).toLocaleString()}</p>
+                      {!isExternal && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 w-8 p-0"
+                            title="Edit this invoice"
+                            onClick={(ev) => {
+                              ev.preventDefault();
+                              ev.stopPropagation();
+                              navigate(`/invoices?edit=${inv.id}`);
+                            }}
+                            data-testid={`button-edit-invoice-${inv.id}`}
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+                            title="Delete this invoice"
+                            disabled={deleteInvoice.isPending}
+                            onClick={(ev) => {
+                              ev.preventDefault();
+                              ev.stopPropagation();
+                              if (confirm(`Delete invoice ${inv.invoiceNumber}? This cannot be undone.`)) {
+                                deleteInvoice.mutate(inv.id);
+                              }
+                            }}
+                            data-testid={`button-delete-invoice-${inv.id}`}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
                   </CardContent>
                 </Card>
               );

@@ -41,6 +41,11 @@ export default function Invoices() {
   const initialParams = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
   const _prefillJobId = initialParams.get("jobId") || "";
   const _prefillPhase = initialParams.get("phase") || "mitigation";
+  // Deep-link support: /invoices?edit=<id> auto-opens the edit dialog for
+  // that invoice once the invoices list has loaded. Used by the Invoices
+  // card on JobDetail so the tech can jump straight into editing without
+  // scrolling through the full AR list to find the row.
+  const _prefillEditId = initialParams.get("edit") || "";
 
   const [open, setOpen] = useState(!!_prefillJobId); // auto-open when deep-linked from a job
   const [payOpen, setPayOpen] = useState<number | null>(null);
@@ -193,6 +198,11 @@ export default function Invoices() {
     }),
   });
 
+  // Track whether we've already auto-opened the edit dialog for the
+  // ?edit=<id> deep-link so we don't re-open it every time the invoices
+  // query re-fetches. React StrictMode also double-invokes effects in dev.
+  const [autoEditHandled, setAutoEditHandled] = useState(false);
+
   function openEdit(inv: Invoice) {
     // Derive the effective tax rate from stored subtotal/tax so edits preserve it.
     const sub = Number(inv.subtotal) || 0;
@@ -217,6 +227,29 @@ export default function Invoices() {
     setEditItems(rows.length ? rows : [blankRow()]);
     setEditId(inv.id);
   }
+
+  // ?edit=<id> deep-link → auto-open the invoice editor once data is ready.
+  // Runs once per mount (autoEditHandled guard) so navigating away and back
+  // to /invoices won't re-open the dialog unexpectedly, and query refetches
+  // don't retrigger it either.
+  useEffect(() => {
+    if (autoEditHandled) return;
+    if (!_prefillEditId || !invoices.length) return;
+    const targetId = Number(_prefillEditId);
+    if (!Number.isFinite(targetId)) { setAutoEditHandled(true); return; }
+    const inv = invoices.find(i => i.id === targetId);
+    if (inv) {
+      openEdit(inv);
+    } else {
+      toast({
+        title: "Invoice not found",
+        description: `Could not find invoice #${targetId}.`,
+        variant: "destructive",
+      });
+    }
+    setAutoEditHandled(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invoices, _prefillEditId]);
 
   const recordPayment = useMutation({
     mutationFn: ({ invId, amount, method }: { invId: number; amount: number; method: string }) =>
