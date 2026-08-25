@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Mail, Lock, Smartphone, Eye, EyeOff, ShieldCheck } from "lucide-react";
-import { SiGmail, SiQuickbooks, SiStripe } from "react-icons/si";
 import TwoFactorSetup from "@/components/TwoFactorSetup";
 
 // The Quick PIN kiosk fetches its name list live from /api/auth/pin-users so
@@ -574,15 +573,6 @@ export default function Login() {
           </CardContent>
         </Card>
 
-        {/* "Runs on" integration strip — quietly sells the connected-tools story.
-            Ported from the 2026-07-23 Command Center login. Purely decorative. */}
-        <div className="titan-runson" aria-hidden="true">
-          <span className="titan-runson-label">Unifies</span>
-          <SiGmail /><SiQuickbooks /><SiStripe />
-          <span className="titan-runson-word">Xactimate</span>
-          <span className="titan-runson-word">CompanyCam</span>
-        </div>
-
         {/* Proprietary / copyright footer */}
         <p className="mt-5 text-center text-[10px] leading-relaxed text-muted-foreground">
           © 2026 Titan Restoration LLC. All rights reserved.<br />
@@ -590,20 +580,6 @@ export default function Login() {
         </p>
       </div>
 
-      {/* Scoped styles for the integration strip (ported from recovery Login) */}
-      <style>{`
-        .titan-runson {
-          display: flex; align-items: center; justify-content: center; gap: 16px;
-          margin-top: 20px; opacity: 0.55; color: #7c90b2; font-size: 18px;
-          flex-wrap: wrap;
-        }
-        .titan-runson-label {
-          font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: #5f748f;
-        }
-        .titan-runson-word {
-          font-size: 11px; font-weight: 700; letter-spacing: -0.01em;
-        }
-      `}</style>
     </div>
   );
 }
