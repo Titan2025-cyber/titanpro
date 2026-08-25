@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import titanLogo from "@/assets/titan-logo.png";
+import titanIcon from "@/assets/titan-icon.jpg";
 import { useAuth, AuthUser, TRUSTED_DEVICE_KEY } from "@/lib/auth";
 import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent } from "@/components/ui/card";
@@ -253,8 +254,18 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4">
-      <div className="w-full max-w-sm space-y-6">
+    <div className="min-h-screen bg-background flex items-center justify-center p-4 relative overflow-hidden">
+      {/* Watermark logo that fades in behind the login card. The source is
+          a JPG with a white background, so mix-blend-mode: multiply drops the
+          white and lets only the colored TR mark show through. Sized to be
+          visibly present without overpowering the form. Non-interactive. */}
+      <img
+        src={titanIcon}
+        alt=""
+        aria-hidden="true"
+        className="pointer-events-none select-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-0 titan-login-watermark"
+      />
+      <div className="w-full max-w-sm space-y-6 relative z-10">
         {/* Logo / Brand */}
         <div className="text-center space-y-2">
           <div className="w-20 h-20 flex items-center justify-center mx-auto">
@@ -580,6 +591,30 @@ export default function Login() {
         </p>
       </div>
 
+      {/* Watermark sizing + fade-in animation. Sized to ~70vmin so it reads
+          on both mobile and desktop. Multiply blends out the white JPG
+          background on the light theme; on dark theme we swap to screen
+          + invert so the mark still reads without a white halo. */}
+      <style>{`
+        .titan-login-watermark {
+          width: min(70vmin, 640px);
+          height: min(70vmin, 640px);
+          opacity: 0;
+          mix-blend-mode: multiply;
+          animation: titan-watermark-fade 1400ms ease-out 200ms forwards;
+        }
+        .dark .titan-login-watermark {
+          mix-blend-mode: screen;
+          filter: invert(1);
+        }
+        @keyframes titan-watermark-fade {
+          from { opacity: 0; transform: translate(-50%, -50%) scale(1.04); }
+          to   { opacity: 0.10; transform: translate(-50%, -50%) scale(1); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .titan-login-watermark { animation: none; opacity: 0.10; }
+        }
+      `}</style>
     </div>
   );
 }
