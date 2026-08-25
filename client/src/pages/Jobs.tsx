@@ -17,6 +17,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { ExternalLink, Copy, Eye } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Job, Contact } from "@shared/schema";
@@ -145,6 +147,53 @@ function PortalActiveBadge({ jobId }: { jobId: number }) {
   );
 }
 
+// Right-click menu for job cards. Wrap any job-card element in this and
+// get Open / Open in new tab / Open portal / Copy link. This exists because
+// wouter's <Link> renders a real <a href>, so native right-click DOES work,
+// but users often don't discover that when the card looks like a plain div.
+// The custom menu makes the affordance obvious and adds Copy link.
+function JobContextMenu({ job, children }: { job: Job; children: React.ReactNode }) {
+  const url = `/jobs/${job.id}`;
+  // For "Copy link" we want the fully-qualified URL so it works when pasted
+  // into a Slack or email off-device. window is guarded for SSR safety.
+  const absUrl = typeof window !== "undefined" ? `${window.location.origin}${url}` : url;
+  const [, navigate] = useLocation();
+  const { toast } = useToast();
+
+  const openHere = () => navigate(url);
+  const openNewTab = () => window.open(url, "_blank", "noopener,noreferrer");
+  const openPortal = () => window.open(`${url}?portal=1`, "_blank", "noopener,noreferrer");
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(absUrl);
+      toast({ title: "Link copied", description: absUrl });
+    } catch {
+      toast({ title: "Copy failed", description: "Clipboard permission denied.", variant: "destructive" });
+    }
+  };
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuContent className="w-56">
+        <ContextMenuItem onClick={openHere} data-testid={`ctxmenu-open-${job.id}`}>
+          <Eye className="w-4 h-4 mr-2" />Open job
+        </ContextMenuItem>
+        <ContextMenuItem onClick={openNewTab} data-testid={`ctxmenu-open-newtab-${job.id}`}>
+          <ExternalLink className="w-4 h-4 mr-2" />Open in new tab
+        </ContextMenuItem>
+        <ContextMenuItem onClick={openPortal} data-testid={`ctxmenu-open-portal-${job.id}`}>
+          <KeyRound className="w-4 h-4 mr-2" />Open portal setup (new tab)
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={copyLink} data-testid={`ctxmenu-copy-link-${job.id}`}>
+          <Copy className="w-4 h-4 mr-2" />Copy link
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
 function JobCard({ job, contact, fin }: { job: Job; contact?: Contact; fin?: JobFinancials }) {
   const stage = getStageForJob(job);
   const currentDateStr = (job as any)[stage.dateField] as string | undefined;
@@ -156,6 +205,7 @@ function JobCard({ job, contact, fin }: { job: Job; contact?: Contact; fin?: Job
   const hasFinancials = fin && (fin.estimateTotal > 0 || fin.invoiceTotal > 0 || fin.collected > 0 || fin.totalCosts > 0);
 
   return (
+    <JobContextMenu job={job}>
     <Card
       className={`hover:shadow-md transition-all border-l-4 ${stage.borderColor} ${isArAlert ? "ring-1 ring-[hsl(var(--titan-red)/0.4)]" : ""}`}
       data-testid={`job-card-${job.id}`}
@@ -277,6 +327,7 @@ function JobCard({ job, contact, fin }: { job: Job; contact?: Contact; fin?: Job
         )}
       </div>
     </Card>
+    </JobContextMenu>
   );
 }
 
@@ -404,7 +455,8 @@ function PipelineBoard({ jobs, contacts, search, locationFilter, phaseFilter, fi
                   const isArAlert = stage.key === "invoice_pending" && (daysAgo(job.invoiceSentDate as string) ?? 0) > 30;
 
                   return (
-                    <div key={job.id} className={`${isArAlert ? "border-l-2 border-[hsl(var(--titan-red))]" : ""}`}>
+                    <JobContextMenu key={job.id} job={job}>
+                    <div className={`${isArAlert ? "border-l-2 border-[hsl(var(--titan-red))]" : ""}`}>
                       <Link href={`/jobs/${job.id}`}>
                         <div
                           className="p-3 pb-1 hover:bg-muted/40 transition-colors cursor-pointer"
@@ -458,6 +510,7 @@ function PipelineBoard({ jobs, contacts, search, locationFilter, phaseFilter, fi
                         <DateManager job={job} />
                       </div>
                     </div>
+                    </JobContextMenu>
                   );
                 })
               )}
