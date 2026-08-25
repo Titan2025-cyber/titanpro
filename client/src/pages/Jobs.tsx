@@ -983,11 +983,14 @@ export default function Jobs() {
                         propLookup.status === "loading" ? "text-muted-foreground" :
                         propLookup.status === "done" ? "text-green-700 dark:text-green-400" :
                         propLookup.status === "error" ? "text-amber-700 dark:text-amber-400" :
+                        propLookup.status === "empty" ? "text-amber-700 dark:text-amber-400" :
                         "text-muted-foreground"
                       }`}>
                         {propLookup.status === "loading" && "⏳ "}
                         {propLookup.status === "done" && "✓ "}
-                        {propLookup.note}
+                        {propLookup.status === "empty" && "⚠ "}
+                        {propLookup.status === "error" && "⚠ "}
+                        {propLookup.note || (propLookup.status === "empty" ? "No public year-built record on file for this address. Please enter Year Built manually below." : "")}
                       </p>
                     )}
                   </div>

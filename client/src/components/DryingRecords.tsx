@@ -127,7 +127,26 @@ function calcDewPoint(tempF: number, rh: number): number {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
-interface MoistureRow { id: number; location: string; material: string; reading: number; target: number; }
+// Moisture-reading row. One row = one material at one location per visit.
+// When a tech tears a wet material out mid-drying (e.g. wet drywall being
+// removed for sill plate), we DO NOT delete the row — IICRC S500 auditors
+// want to see the final wet reading before removal. Instead:
+//   1. The original row is marked tearOut=true and locked (grayscaled).
+//   2. A new row appears for the same location tracking the replacement
+//      material's readings going forward.
+// Both rows persist on the record; historical moisture trending still
+// counts the original material's readings from before removal.
+interface MoistureRow {
+  id: number;
+  location: string;
+  material: string;
+  reading: number;
+  target: number;
+  tearOut?: boolean;        // true = this material was torn out and is preserved for audit only
+  removedOn?: string;       // YYYY-MM-DD when the tear-out was recorded
+  removedDay?: number;      // Day # of the drying record when the tear-out happened
+  replacedWith?: string;    // The replacement material name (mirrors the new row's material for cross-ref)
+}
 interface DehuReading {
   id: number;
   date: string;      // YYYY-MM-DD
@@ -155,8 +174,10 @@ interface AreaRow {
   material: string;
   sqft: number;
   wetPct: number;
-  tearOut?: boolean;         // true when this material is being torn out
-  replacedWith?: string;     // replacement material to install (only meaningful when tearOut is true)
+  tearOut?: boolean;         // true when this material is being torn out (row becomes audit-only after removal)
+  replacedWith?: string;     // replacement material name (kept for cross-reference with the new AreaRow below)
+  removedOn?: string;        // YYYY-MM-DD when the tear-out happened
+  removedDay?: number;       // drying-record day # when the tear-out happened
 }
 
 // Multi-location psychrometric grid. Renders Inside / Outside / Affected Area
@@ -280,11 +301,87 @@ function buildMoistureHistory(priorRecords: DryingRecord[]): MoistureHistory {
   return history;
 }
 
-function MoistureTable({ rows, onChange, readOnly, history }: { rows: MoistureRow[]; onChange: (r: MoistureRow[]) => void; readOnly?: boolean; history?: MoistureHistory }) {
+// Suggested moisture-content target by material (WME %). Used when a
+// replacement material is dropped in via tear-out, so the tech doesn't
+// have to remember that hardwood dries to 12 but drywall dries to 17.
+function defaultTargetForMaterial(m: string): number {
+  const s = (m || "").toLowerCase();
+  if (s.includes("hardwood") || s.includes("wood floor")) return 12;
+  if (s.includes("concrete") || s.includes("masonry") || s.includes("brick")) return 16;
+  if (s.includes("plywood") || s.includes("osb") || s.includes("subfloor")) return 19;
+  if (s.includes("framing") || s.includes("stud") || s.includes("sill") || s.includes("joist") || s.includes("lumber")) return 15;
+  return 17; // drywall + default fallback
+}
+
+function MoistureTable({ rows, onChange, readOnly, history, dayNumber, readingDate }: {
+  rows: MoistureRow[];
+  onChange: (r: MoistureRow[]) => void;
+  readOnly?: boolean;
+  history?: MoistureHistory;
+  // dayNumber + readingDate are used to stamp tear-out events so the audit
+  // trail shows exactly WHEN a material was removed during drying. Both are
+  // optional — read-only card views don't pass them and don't need them.
+  dayNumber?: number;
+  readingDate?: string;
+}) {
   const add = () => onChange([...rows, { id: Date.now(), location: "", material: "Drywall", reading: 0, target: 17 }]);
   const del = (id: number) => onChange(rows.filter(r => r.id !== id));
   const upd = (id: number, field: keyof MoistureRow, val: any) =>
     onChange(rows.map(r => r.id === id ? { ...r, [field]: val } : r));
+
+  // Tear-out: lock the existing row (mark tearOut + stamp date/day), and
+  // insert a fresh row for the replacement material at the SAME location
+  // right below. The original row is preserved for S500 audit continuity;
+  // the replacement row starts with a zero reading so the tech records
+  // the initial moisture of the newly-installed material.
+  const tearOut = (row: MoistureRow) => {
+    const replacement = row.material === "Drywall" ? "Sill Plate" : row.material;
+    const stamp = readingDate || new Date().toISOString().slice(0, 10);
+    const nextRows: MoistureRow[] = [];
+    for (const r of rows) {
+      if (r.id === row.id) {
+        nextRows.push({
+          ...r,
+          tearOut: true,
+          removedOn: stamp,
+          removedDay: dayNumber,
+          replacedWith: replacement,
+        });
+        nextRows.push({
+          id: Date.now() + Math.floor(Math.random() * 1000),
+          location: r.location,
+          material: replacement,
+          reading: 0,
+          target: defaultTargetForMaterial(replacement),
+        });
+      } else {
+        nextRows.push(r);
+      }
+    }
+    onChange(nextRows);
+  };
+
+  // Undo tear-out (only meaningful for a tear-out marked earlier this same
+  // visit — lets techs correct a mistap without editing raw JSON). Also
+  // removes the replacement row IF it's still empty (untouched by the tech).
+  const undoTearOut = (row: MoistureRow) => {
+    const nextRows: MoistureRow[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (r.id === row.id) {
+        nextRows.push({ ...r, tearOut: false, removedOn: undefined, removedDay: undefined, replacedWith: undefined });
+        // Drop the immediately-following replacement row if it's the
+        // freshly-added, still-empty one for the same location.
+        const nxt = rows[i + 1];
+        if (nxt && nxt.location === r.location && nxt.material === r.replacedWith && (nxt.reading === 0 || !nxt.reading)) {
+          i += 1; // skip it
+        }
+      } else {
+        nextRows.push(r);
+      }
+    }
+    onChange(nextRows);
+  };
 
   return (
     <div>
@@ -294,40 +391,91 @@ function MoistureTable({ rows, onChange, readOnly, history }: { rows: MoistureRo
       </div>
       <div className="space-y-1.5">
         {rows.map(row => {
+          // Torn-out rows are locked, grayscaled, and read-only regardless of
+          // the parent readOnly flag. This is deliberate — an audit row must
+          // never be editable after the fact, since it captures the last-known
+          // wet reading before removal.
+          const isTorn = !!row.tearOut;
           const over = row.reading > row.target;
           const trend = history?.[moistureKey(row.location, row.material)] || [];
-          // Trend line: show day-1 (initial) plus up to the last 3 readings so
-          // the tech can see "started at 32%, now trending 24 -> 21 -> 19".
           const day1 = trend[0];
           const recent = trend.slice(-3);
           const showDay1Separately = day1 && !recent.includes(day1);
           const target = row.target || 0;
+          const rowInputsDisabled = readOnly || isTorn;
           return (
             <div key={row.id} className="space-y-0.5">
-              <div className="grid grid-cols-12 gap-1 items-center">
-                <Input className="col-span-3 h-7 text-xs" placeholder="Location" value={row.location} disabled={readOnly}
+              <div className={`grid grid-cols-12 gap-1 items-center ${isTorn ? "opacity-60" : ""}`}>
+                <Input className="col-span-3 h-7 text-xs" placeholder="Location" value={row.location} disabled={rowInputsDisabled}
                   onChange={e => upd(row.id, "location", e.target.value)} />
-                <Select value={row.material} onValueChange={v => upd(row.id, "material", v)} disabled={readOnly}>
-                  <SelectTrigger className="col-span-3 h-7 text-xs"><SelectValue /></SelectTrigger>
+                <Select value={row.material} onValueChange={v => upd(row.id, "material", v)} disabled={rowInputsDisabled}>
+                  <SelectTrigger className={`col-span-3 h-7 text-xs ${isTorn ? "line-through text-red-700 dark:text-red-400" : ""}`}><SelectValue /></SelectTrigger>
                   <SelectContent>{MATERIAL_TYPES.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
                 </Select>
                 <div className="col-span-2 relative">
-                  <Input className={`h-7 text-xs pr-6 ${over ? "border-red-400 bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300" : ""}`}
-                    type="number" placeholder="Reading" value={row.reading || ""} disabled={readOnly}
+                  <Input className={`h-7 text-xs pr-6 ${isTorn ? "text-muted-foreground" : over ? "border-red-400 bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300" : ""}`}
+                    type="number" placeholder="Reading" value={row.reading || ""} disabled={rowInputsDisabled}
                     onChange={e => upd(row.id, "reading", Number(e.target.value))} />
-                  {over && <AlertTriangle className="absolute right-1 top-1.5 w-3.5 h-3.5 text-red-500" />}
+                  {over && !isTorn && <AlertTriangle className="absolute right-1 top-1.5 w-3.5 h-3.5 text-red-500" />}
                 </div>
                 <Input className="col-span-2 h-7 text-xs" type="number" placeholder="Target" value={row.target || ""}
-                  disabled={readOnly} onChange={e => upd(row.id, "target", Number(e.target.value))} />
+                  disabled={rowInputsDisabled} onChange={e => upd(row.id, "target", Number(e.target.value))} />
                 <div className="col-span-1 flex justify-center">
-                  {over
-                    ? <Badge className="text-xs h-5 bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-200 border-0">WET</Badge>
-                    : <Badge className="text-xs h-5 bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-200 border-0">DRY</Badge>
+                  {isTorn
+                    ? <Badge className="text-xs h-5 bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200 border-0" title="Material removed — preserved for audit">OUT</Badge>
+                    : over
+                      ? <Badge className="text-xs h-5 bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-200 border-0">WET</Badge>
+                      : <Badge className="text-xs h-5 bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-200 border-0">DRY</Badge>
                   }
                 </div>
-                {!readOnly && <Button size="sm" variant="ghost" className="col-span-1 h-7 px-1 text-destructive" onClick={() => del(row.id)}><Trash2 className="w-3 h-3" /></Button>}
+                {!readOnly && !isTorn && (
+                  <div className="col-span-1 flex items-center gap-0.5">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 w-7 p-0 text-amber-700 hover:text-red-700 hover:bg-red-50 dark:text-amber-300"
+                      title="Mark material as torn out and start a new row for the replacement"
+                      onClick={() => tearOut(row)}
+                      data-testid={`button-moisture-tearout-${row.id}`}
+                    >
+                      <Scissors className="w-3 h-3" />
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive" onClick={() => del(row.id)} title="Delete this row">
+                      <Trash2 className="w-3 h-3" />
+                    </Button>
+                  </div>
+                )}
+                {/* Torn-out rows show an undo button in place of the action
+                    cluster, so a mistap can be corrected without hand-editing
+                    the JSON. Read-only card view shows nothing. */}
+                {!readOnly && isTorn && (
+                  <div className="col-span-1 flex justify-center">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+                      title="Undo tear-out (only removes the auto-added replacement row if it's still empty)"
+                      onClick={() => undoTearOut(row)}
+                      data-testid={`button-moisture-tearout-undo-${row.id}`}
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                    </Button>
+                  </div>
+                )}
               </div>
-              {trend.length > 0 && (
+              {/* Tear-out audit chip: shows "TORN OUT day 3 → Sill Plate" so
+                  the S500 record makes the transition unambiguous even years
+                  later. Persists on the record forever. */}
+              {isTorn && (
+                <div className="pl-1 flex items-center gap-1.5 text-[10px] text-red-700 dark:text-red-400 font-medium">
+                  <Scissors className="w-3 h-3" />
+                  <span>TORN OUT{row.removedDay ? ` · Day ${row.removedDay}` : ""}{row.removedOn ? ` · ${row.removedOn}` : ""}</span>
+                  {row.replacedWith && (
+                    <span className="text-muted-foreground">→ replaced with <span className="font-semibold text-foreground">{row.replacedWith}</span></span>
+                  )}
+                </div>
+              )}
+              {trend.length > 0 && !isTorn && (
                 <div className="col-span-12 pl-1 flex items-center gap-1.5 text-[10px] text-muted-foreground flex-wrap">
                   <span className="uppercase tracking-wide">Prior:</span>
                   {showDay1Separately && day1 && (
@@ -485,6 +633,17 @@ function EquipmentTable({ rows, onChange, readOnly }: { rows: EquipRow[]; onChan
   );
 }
 
+// Stamp date/day fields on any AreaRow whose tearOut flag just went on but
+// hasn't been persisted yet. Idempotent — rows already stamped are left alone.
+function stampAreaTearOuts(rows: AreaRow[], dayNumber: number | undefined, readingDate: string | undefined): AreaRow[] {
+  const stamp = readingDate || new Date().toISOString().slice(0, 10);
+  return rows.map(r => {
+    if (!r.tearOut) return r;
+    if (r.removedOn && r.removedDay) return r;
+    return { ...r, removedOn: r.removedOn || stamp, removedDay: r.removedDay ?? dayNumber };
+  });
+}
+
 function AffectedAreasTable({ rows, onChange, readOnly }: { rows: AreaRow[]; onChange: (r: AreaRow[]) => void; readOnly?: boolean }) {
   const add = () => onChange([...rows, { id: Date.now(), room: "", material: "Drywall", sqft: 0, wetPct: 0 }]);
   const del = (id: number) => onChange(rows.filter(r => r.id !== id));
@@ -550,21 +709,28 @@ function AffectedAreasTable({ rows, onChange, readOnly }: { rows: AreaRow[]; onC
                 so the office can pre-scope reconstruction line items
                 straight from the drying record. */}
             {row.tearOut && (
-              <div className="grid grid-cols-12 gap-1 items-center pl-3 border-l-2 border-red-400" data-testid={`tearout-row-${row.id}`}>
-                <div className="col-span-3 flex items-center gap-1 text-[11px] text-red-700 dark:text-red-400 font-semibold uppercase tracking-wide">
-                  <Scissors className="w-3 h-3" /><span>Tear-out</span>
+              <div className="space-y-0.5" data-testid={`tearout-row-${row.id}`}>
+                <div className="grid grid-cols-12 gap-1 items-center pl-3 border-l-2 border-red-400">
+                  <div className="col-span-3 flex items-center gap-1 text-[11px] text-red-700 dark:text-red-400 font-semibold uppercase tracking-wide">
+                    <Scissors className="w-3 h-3" /><span>Tear-out</span>
+                  </div>
+                  <div className="col-span-3 text-[11px] text-muted-foreground truncate" title={row.material}>
+                    Removing: <span className="font-medium text-foreground line-through">{row.material}</span>
+                  </div>
+                  <div className="col-span-1 text-center text-muted-foreground">→</div>
+                  <Select value={row.replacedWith || row.material} onValueChange={v => upd(row.id, "replacedWith", v)} disabled={readOnly}>
+                    <SelectTrigger className="col-span-4 h-7 text-xs" data-testid={`select-replacedwith-${row.id}`}>
+                      <SelectValue placeholder="Replace with" />
+                    </SelectTrigger>
+                    <SelectContent>{MATERIAL_TYPES.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
+                  </Select>
+                  <div className="col-span-1" />
                 </div>
-                <div className="col-span-3 text-[11px] text-muted-foreground truncate" title={row.material}>
-                  Removing: <span className="font-medium text-foreground">{row.material}</span>
-                </div>
-                <div className="col-span-1 text-center text-muted-foreground">→</div>
-                <Select value={row.replacedWith || row.material} onValueChange={v => upd(row.id, "replacedWith", v)} disabled={readOnly}>
-                  <SelectTrigger className="col-span-4 h-7 text-xs" data-testid={`select-replacedwith-${row.id}`}>
-                    <SelectValue placeholder="Replace with" />
-                  </SelectTrigger>
-                  <SelectContent>{MATERIAL_TYPES.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
-                </Select>
-                <div className="col-span-1" />
+                {(row.removedOn || row.removedDay) && (
+                  <div className="pl-4 text-[10px] text-muted-foreground">
+                    Removed{row.removedDay ? ` · Day ${row.removedDay}` : ""}{row.removedOn ? ` · ${row.removedOn}` : ""}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -637,7 +803,7 @@ function RecordCard({ record, jobId, readOnly, priorRecords = [] }: { record: Dr
         structuralDryingComplete: form.structuralDryingComplete ? 1 : 0,
         moistureReadings: JSON.stringify(moistureRows),
         equipment: JSON.stringify(equipRows),
-        affectedAreas: JSON.stringify(areaRows),
+        affectedAreas: JSON.stringify(stampAreaTearOuts(areaRows, record.dayNumber ?? undefined, form.readingDate)),
       });
       // Run moisture alert check after every save
       return apiRequest("POST", `/api/jobs/${jobId}/moisture-alert-check`, {});
@@ -797,7 +963,7 @@ function RecordCard({ record, jobId, readOnly, priorRecords = [] }: { record: Dr
             )}
 
             {/* Moisture readings */}
-            <MoistureTable rows={moistureRows} onChange={setMoistureRows} readOnly={!editing} history={buildMoistureHistory(priorRecords)} />
+            <MoistureTable rows={moistureRows} onChange={setMoistureRows} readOnly={!editing} history={buildMoistureHistory(priorRecords)} dayNumber={record.dayNumber} readingDate={form.readingDate} />
 
             {/* Equipment */}
             <EquipmentTable rows={equipRows} onChange={setEquipRows} readOnly={!editing} />
@@ -940,13 +1106,18 @@ function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; o
     try { rows = JSON.parse(lastVisit.moistureReadings || "[]"); } catch { rows = []; }
     // Preserve location, material, and target; blank the reading so the tech
     // has to actively enter today's value (no accidental duplicate readings).
-    return rows.filter(r => r && (r.location || r.material)).map(r => ({
-      id: Date.now() + Math.random(),
-      location: r.location || "",
-      material: r.material || "Drywall",
-      reading: 0,
-      target: Number(r.target) || 17,
-    })) as MoistureRow[];
+    // Torn-out rows are historical/audit only and must NOT be re-seeded onto
+    // future visits — the wall isn't there anymore. Their prior readings
+    // still show up in the trend line via buildMoistureHistory.
+    return rows
+      .filter(r => r && (r.location || r.material) && !r.tearOut)
+      .map(r => ({
+        id: Date.now() + Math.random(),
+        location: r.location || "",
+        material: r.material || "Drywall",
+        reading: 0,
+        target: Number(r.target) || 17,
+      })) as MoistureRow[];
   })();
 
   const seededEquip: EquipRow[] = (() => {
@@ -968,7 +1139,12 @@ function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; o
     if (!lastVisit) return [];
     let rows: AreaRow[] = [];
     try { rows = JSON.parse(lastVisit.affectedAreas || "[]"); } catch { rows = []; }
-    return rows.filter(Boolean).map(r => ({ ...r, id: Date.now() + Math.random() })) as AreaRow[];
+    // Same rule as moisture: torn-out affected-area rows are audit-only —
+    // don't carry them forward. The replacement material row will still
+    // seed forward because it's a normal, non-torn row.
+    return rows
+      .filter(r => r && !r.tearOut)
+      .map(r => ({ ...r, id: Date.now() + Math.random() })) as AreaRow[];
   })();
 
   const moistureHistory = buildMoistureHistory(priorRecords);
@@ -1006,7 +1182,7 @@ function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; o
         psychrometricReadings: serializePsychroReadings(psychroReadings),
         moistureReadings: JSON.stringify(moistureRows),
         equipment: JSON.stringify(equipRows),
-        affectedAreas: JSON.stringify(areaRows),
+        affectedAreas: JSON.stringify(stampAreaTearOuts(areaRows, form.dayNumber, form.readingDate)),
       });
       // Run moisture alert check immediately after creating
       return apiRequest("POST", `/api/jobs/${jobId}/moisture-alert-check`, {});
@@ -1096,7 +1272,7 @@ function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; o
           </div>
         )}
 
-        <MoistureTable rows={moistureRows} onChange={setMoistureRows} history={moistureHistory} />
+        <MoistureTable rows={moistureRows} onChange={setMoistureRows} history={moistureHistory} dayNumber={form.dayNumber} readingDate={form.readingDate} />
         <EquipmentTable rows={equipRows} onChange={setEquipRows} />
         <AffectedAreasTable rows={areaRows} onChange={setAreaRows} />
 
