@@ -66,6 +66,19 @@ function parseArr<T = any>(s: string | null | undefined): T[] {
   try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; }
 }
 
+// Runtime hours between two YYYY-MM-DD dates (end - start). Duplicated from
+// DryingRecords.tsx so the PDF module stays self-contained — both call sites
+// keep whole-day granularity because equipment is placed/pulled on a date,
+// not a specific time. Returns null on missing/invalid input.
+function pdfRuntimeHours(startDate?: string, endDate?: string): number | null {
+  if (!startDate || !endDate) return null;
+  const s = new Date(startDate + "T00:00:00");
+  const e = new Date(endDate + "T00:00:00");
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return null;
+  const hrs = Math.round((e.getTime() - s.getTime()) / 3_600_000);
+  return hrs >= 0 ? hrs : null;
+}
+
 // Sort drying records ascending by day (readingDate then dayNumber) so the
 // per-day breakdown in the PDF matches the natural drying timeline.
 function sortRecordsByDay(records: DryingRecord[]): DryingRecord[] {
@@ -415,8 +428,19 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
       y += 2;
     }
 
-    // Row 5: Equipment on site
-    const equipment = parseArr<{ type?: string; qty?: number; placement?: string; serialNumber?: string }>(rec.equipment);
+    // Row 5: Equipment on site — now shows per-room placement plus deployment
+    // window (start/end/runtime). Rows are grouped by room so the daily view
+    // matches the whole-job Equipment Runtime Summary at the end of the PDF.
+    type EquipmentEntry = {
+      type?: string;
+      qty?: number;
+      placement?: string;
+      serialNumber?: string;
+      room?: string;
+      startDate?: string;
+      endDate?: string;
+    };
+    const equipment = parseArr<EquipmentEntry>(rec.equipment);
     y = ensureSpace(y, 8 + Math.max(equipment.length, 1) * 5 + 4, dayLabel);
     setFont("bold", 9, BLUE);
     doc.text("EQUIPMENT ON SITE", M, y);
@@ -426,26 +450,69 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
       doc.text("No equipment logged for this day.", M + 2, y + 4);
       y += 8;
     } else {
-      doc.setFillColor(LGRAY[0], LGRAY[1], LGRAY[2]);
-      doc.rect(M, y, CONTENT_W, 5, "F");
-      setFont("bold", 7, DARK);
-      doc.text("TYPE", M + 2, y + 3.5);
-      doc.text("QTY", M + 70, y + 3.5);
-      doc.text("PLACEMENT", M + 90, y + 3.5);
-      doc.text("SERIAL / ID", M + 150, y + 3.5);
-      y += 5;
-      equipment.forEach((e, i) => {
-        y = ensureSpace(y, 5, dayLabel);
-        if (i % 2 === 0) {
-          doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
-          doc.rect(M, y, CONTENT_W, 5, "F");
-        }
-        setFont("normal", 8, DARK);
-        doc.text(doc.splitTextToSize(e.type || "—", 65)[0], M + 2, y + 3.5);
-        doc.text(e.qty != null ? String(e.qty) : "—", M + 70, y + 3.5);
-        doc.text(doc.splitTextToSize(e.placement || "—", 55)[0], M + 90, y + 3.5);
-        doc.text(doc.splitTextToSize(e.serialNumber || "—", 35)[0], M + 150, y + 3.5);
+      // Group by room label. Empty / missing room → "Unassigned".
+      const groupsMap = new Map<string, EquipmentEntry[]>();
+      equipment.forEach(e => {
+        const key = (e.room || "").trim() || "Unassigned";
+        const bucket = groupsMap.get(key) || [];
+        bucket.push(e);
+        groupsMap.set(key, bucket);
+      });
+      const groups = Array.from(groupsMap.entries()).sort(([a], [b]) => a.localeCompare(b));
+
+      // Column layout for the equipment grid. Sums to ~CONTENT_W (~191mm).
+      const COL_TYPE = 2;
+      const COL_QTY = 52;
+      const COL_PLACE = 62;
+      const COL_SERIAL = 100;
+      const COL_START = 132;
+      const COL_END = 154;
+      const COL_RT = 176;
+
+      groups.forEach(([room, items]) => {
+        y = ensureSpace(y, 5 + items.length * 5 + 2, dayLabel);
+        // Room banner
+        doc.setFillColor(LGRAY[0], LGRAY[1], LGRAY[2]);
+        doc.rect(M, y, CONTENT_W, 5, "F");
+        setFont("bold", 7, DARK);
+        doc.text(`ROOM: ${room}`, M + 2, y + 3.5);
+        // Header labels aligned right — keeps the banner readable.
+        setFont("bold", 6.5, DARK);
+        doc.text("TYPE", M + COL_TYPE, y + 3.5);
+        doc.text("QTY", M + COL_QTY, y + 3.5);
+        doc.text("PLACEMENT", M + COL_PLACE, y + 3.5);
+        doc.text("SERIAL", M + COL_SERIAL, y + 3.5);
+        doc.text("START", M + COL_START, y + 3.5);
+        doc.text("END", M + COL_END, y + 3.5);
+        doc.text("RUNTIME", M + COL_RT, y + 3.5);
         y += 5;
+
+        items.forEach((e, i) => {
+          y = ensureSpace(y, 5, dayLabel);
+          if (i % 2 === 0) {
+            doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
+            doc.rect(M, y, CONTENT_W, 5, "F");
+          }
+          setFont("normal", 7.5, DARK);
+          doc.text(doc.splitTextToSize(e.type || "—", 48)[0], M + COL_TYPE, y + 3.5);
+          doc.text(e.qty != null ? String(e.qty) : "—", M + COL_QTY, y + 3.5);
+          doc.text(doc.splitTextToSize(e.placement || "—", 36)[0], M + COL_PLACE, y + 3.5);
+          doc.text(doc.splitTextToSize(e.serialNumber || "—", 30)[0], M + COL_SERIAL, y + 3.5);
+          doc.text(e.startDate ? fmtDateShort(e.startDate) : "—", M + COL_START, y + 3.5);
+          doc.text(e.endDate ? fmtDateShort(e.endDate) : (e.startDate ? "active" : "—"), M + COL_END, y + 3.5);
+          // Runtime hours (whole-day granularity). If still running, show a
+          // running-total from startDate to this record's reading date.
+          let rtLabel = "—";
+          if (e.startDate && e.endDate) {
+            const hrs = pdfRuntimeHours(e.startDate, e.endDate);
+            rtLabel = hrs != null ? `${hrs}h` : "—";
+          } else if (e.startDate && rec.readingDate) {
+            const hrs = pdfRuntimeHours(e.startDate, rec.readingDate);
+            rtLabel = hrs != null ? `${hrs}h (running)` : "—";
+          }
+          doc.text(rtLabel, M + COL_RT, y + 3.5);
+          y += 5;
+        });
       });
       const totalUnits = equipment.reduce((sum, e) => sum + (Number(e.qty) || 0), 0);
       setFont("italic" as any, 7, GRAY);
@@ -545,36 +612,130 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
   }
 
   setFont("bold", 11, BLUE);
-  doc.text("EQUIPMENT SUMMARY (ALL DAYS)", M, y);
+  doc.text("EQUIPMENT RUNTIME SUMMARY", M, y);
   y += 5;
 
-  const equipMap: Record<string, number> = {};
+  // Reconstruct one row per physical asset per room by de-duplicating on
+  // (type, serialNumber, room) across all days. earliestStart / latestEnd
+  // give the true deployment window; when any occurrence has a blank
+  // endDate we treat the asset as still deployed and use the last known
+  // reading date as the running-total endpoint. If the same asset was
+  // deployed to multiple rooms across the job we get one row per room —
+  // matches the field workflow where a mover is physically moved.
+  type RollupEntry = {
+    type: string;
+    serial: string;
+    room: string;
+    qty: number;
+    earliestStart?: string;
+    latestEnd?: string;
+    stillDeployed: boolean;
+  };
+  const rollup = new Map<string, RollupEntry>();
+  const lastReadingDate = sorted.length ? (sorted[sorted.length - 1].readingDate || "") : "";
   sorted.forEach(rec => {
-    parseArr<{ type?: string; qty?: number }>(rec.equipment).forEach(e => {
-      if (e.type) equipMap[e.type] = (equipMap[e.type] || 0) + (Number(e.qty) || 1);
+    parseArr<{ type?: string; qty?: number; serialNumber?: string; room?: string; startDate?: string; endDate?: string }>(rec.equipment).forEach(e => {
+      const type = (e.type || "").trim() || "—";
+      const serial = (e.serialNumber || "").trim();
+      const room = (e.room || "").trim() || "Unassigned";
+      // Serial-less rows collapse per (type, room) so we don't produce
+      // spurious duplicate rows when techs didn't record a serial.
+      const key = `${type}␟${serial || "∅"}␟${room}`;
+      const cur = rollup.get(key) || {
+        type, serial, room,
+        qty: 0,
+        earliestStart: undefined,
+        latestEnd: undefined,
+        stillDeployed: false,
+      };
+      cur.qty = Math.max(cur.qty, Number(e.qty) || 1);
+      if (e.startDate) {
+        cur.earliestStart = !cur.earliestStart || e.startDate < cur.earliestStart ? e.startDate : cur.earliestStart;
+      }
+      if (e.endDate) {
+        cur.latestEnd = !cur.latestEnd || e.endDate > cur.latestEnd ? e.endDate : cur.latestEnd;
+      } else {
+        // Any occurrence without an endDate means "still on site" for this asset.
+        cur.stillDeployed = true;
+      }
+      rollup.set(key, cur);
     });
   });
-  const equipList = Object.entries(equipMap);
-  if (equipList.length > 0) {
-    doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
-    const perCol = Math.ceil(equipList.length / 2);
-    const equipH = perCol * 6 + 6;
-    doc.roundedRect(M, y, CONTENT_W, equipH, 2, 2, "F");
-    equipList.forEach(([type, qty], i) => {
-      const col = Math.floor(i / perCol);
-      const row = i % perCol;
-      const ex = M + 4 + col * (CONTENT_W / 2);
-      const ey = y + 5 + row * 6;
-      setFont("bold", 8, DARK);
-      doc.text(`${qty}x`, ex, ey);
-      setFont("normal", 8, DARK);
-      doc.text(type, ex + 8, ey);
-    });
-    y += equipH + 4;
-  } else {
+
+  const entries = Array.from(rollup.values()).sort((a, b) =>
+    a.room.localeCompare(b.room) || a.type.localeCompare(b.type) || a.serial.localeCompare(b.serial));
+
+  if (entries.length === 0) {
     setFont("normal", 9, GRAY);
     doc.text("No equipment recorded across drying days.", M, y + 4);
     y += 10;
+  } else {
+    // Group by room and render room banner + rows.
+    const byRoom = new Map<string, RollupEntry[]>();
+    entries.forEach(e => {
+      const b = byRoom.get(e.room) || [];
+      b.push(e);
+      byRoom.set(e.room, b);
+    });
+
+    // Column layout mirrors the per-day equipment table so the report reads
+    // consistently.
+    const COL_TYPE = 2;
+    const COL_QTY = 52;
+    const COL_SERIAL = 62;
+    const COL_START = 100;
+    const COL_END = 130;
+    const COL_RT = 160;
+
+    Array.from(byRoom.entries()).sort(([a], [b]) => a.localeCompare(b)).forEach(([room, items]) => {
+      y = ensureSpace(y, 5 + items.length * 5 + 4);
+      doc.setFillColor(LGRAY[0], LGRAY[1], LGRAY[2]);
+      doc.rect(M, y, CONTENT_W, 5, "F");
+      setFont("bold", 7.5, DARK);
+      doc.text(`ROOM: ${room}`, M + 2, y + 3.5);
+      setFont("bold", 6.5, DARK);
+      doc.text("TYPE", M + COL_TYPE, y + 3.5);
+      doc.text("QTY", M + COL_QTY, y + 3.5);
+      doc.text("SERIAL", M + COL_SERIAL, y + 3.5);
+      doc.text("START", M + COL_START, y + 3.5);
+      doc.text("END", M + COL_END, y + 3.5);
+      doc.text("TOTAL RUNTIME", M + COL_RT, y + 3.5);
+      y += 5;
+
+      let roomTotalHrs = 0;
+      items.forEach((e, i) => {
+        y = ensureSpace(y, 5);
+        if (i % 2 === 0) {
+          doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
+          doc.rect(M, y, CONTENT_W, 5, "F");
+        }
+        setFont("normal", 7.5, DARK);
+        doc.text(doc.splitTextToSize(e.type, 48)[0], M + COL_TYPE, y + 3.5);
+        doc.text(String(e.qty), M + COL_QTY, y + 3.5);
+        doc.text(doc.splitTextToSize(e.serial || "—", 36)[0], M + COL_SERIAL, y + 3.5);
+        doc.text(e.earliestStart ? fmtDateShort(e.earliestStart) : "—", M + COL_START, y + 3.5);
+        // Endpoint for runtime: latestEnd if pulled, else last known reading
+        // date if still deployed. Label matches so the total reads honestly.
+        const endForCalc = !e.stillDeployed && e.latestEnd ? e.latestEnd : lastReadingDate;
+        const endLabel = !e.stillDeployed && e.latestEnd
+          ? fmtDateShort(e.latestEnd)
+          : (e.stillDeployed ? "still on site" : "—");
+        doc.text(endLabel, M + COL_END, y + 3.5);
+        const hrs = pdfRuntimeHours(e.earliestStart, endForCalc);
+        if (hrs != null) roomTotalHrs += hrs * (e.qty || 1);
+        const rtLabel = hrs != null
+          ? (e.stillDeployed ? `${hrs}h (running)` : `${hrs}h`)
+          : "—";
+        doc.text(rtLabel, M + COL_RT, y + 3.5);
+        y += 5;
+      });
+
+      // Per-room subtotal in unit-hours (qty × hours) — the number carriers
+      // actually want for reimbursement calculations.
+      setFont("italic" as any, 7, GRAY);
+      doc.text(`Room subtotal: ${roomTotalHrs} unit-hours`, M + 2, y + 3);
+      y += 6;
+    });
   }
 
   // Clearance block: measure text height first so the box wraps content

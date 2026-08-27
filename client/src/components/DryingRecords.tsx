@@ -163,6 +163,26 @@ interface EquipRow {
   placement: string;
   serialNumber: string;
   dailyReadings?: DehuReading[]; // per-day intake/output readings (dehumidifiers)
+  // ── Per-room deployment tracking (added 2026-08-27) ──────────────────
+  // Links this equipment row to a specific affected area (matches an
+  // AreaRow.room label on the same drying record) plus its deployment
+  // window. Runtime hours is derived from start→end when both are set,
+  // otherwise the row is treated as still deployed.
+  room?: string;         // matches an AreaRow.room label on this record
+  startDate?: string;    // YYYY-MM-DD when the equipment was placed
+  endDate?: string;      // YYYY-MM-DD when the equipment was pulled (blank = still deployed)
+}
+
+// Runtime in hours between two YYYY-MM-DD dates (end - start). Returns null
+// if either bound is missing or invalid. Whole-day granularity is enough for
+// insurance documentation — techs don't log hour-level pull times.
+function runtimeHoursBetween(startDate?: string, endDate?: string): number | null {
+  if (!startDate || !endDate) return null;
+  const s = new Date(startDate + "T00:00:00");
+  const e = new Date(endDate + "T00:00:00");
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return null;
+  const hrs = Math.round((e.getTime() - s.getTime()) / 3_600_000);
+  return hrs >= 0 ? hrs : null;
 }
 // Affected area — a room/material pairing with wetness state. Optionally
 // tagged as a tear-out (material removed) with the replacement material
@@ -575,8 +595,43 @@ function DehuReadingsPanel({ readings, onChange, readOnly }: { readings: DehuRea
   );
 }
 
-function EquipmentTable({ rows, onChange, readOnly }: { rows: EquipRow[]; onChange: (r: EquipRow[]) => void; readOnly?: boolean }) {
-  const add = () => onChange([...rows, { id: Date.now(), type: "LGR Dehumidifier", qty: 1, placement: "", serialNumber: "", dailyReadings: [] }]);
+function EquipmentTable({
+  rows, onChange, readOnly, areaRows, readingDate,
+}: {
+  rows: EquipRow[];
+  onChange: (r: EquipRow[]) => void;
+  readOnly?: boolean;
+  // Affected-area rows on the same drying record. Their `room` labels populate
+  // the equipment Room dropdown so field techs pick from a known list instead
+  // of retyping (and possibly misspelling) room names.
+  areaRows?: AreaRow[];
+  // Reading date of the parent drying record. Used as the default startDate
+  // when a new equipment row is added.
+  readingDate?: string;
+}) {
+  // Room options derived from the affected-areas table plus any orphaned
+  // rooms already recorded on existing equipment rows (so an equipment row
+  // whose room was later removed from the areas table doesn't lose its
+  // assignment on next edit).
+  const roomOptions = Array.from(new Set([
+    ...((areaRows || []).map(a => a.room).filter(Boolean) as string[]),
+    ...(rows.map(r => r.room).filter(Boolean) as string[]),
+  ])).sort();
+
+  const today = () => new Date().toISOString().slice(0, 10);
+  const add = () => onChange([...rows, {
+    id: Date.now(),
+    type: "LGR Dehumidifier",
+    qty: 1,
+    placement: "",
+    serialNumber: "",
+    dailyReadings: [],
+    room: roomOptions[0] || "",
+    // Default startDate to the drying record's reading date so techs don't
+    // have to re-enter today's date every time they add a piece of equipment.
+    startDate: readingDate || today(),
+    endDate: "",
+  }]);
   const del = (id: number) => onChange(rows.filter(r => r.id !== id));
   const upd = (id: number, field: keyof EquipRow, val: any) =>
     onChange(rows.map(r => r.id === id ? { ...r, [field]: val } : r));
@@ -590,32 +645,67 @@ function EquipmentTable({ rows, onChange, readOnly }: { rows: EquipRow[]; onChan
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Equipment Log</p>
         {!readOnly && <Button size="sm" variant="outline" onClick={add} className="h-7 text-xs"><Plus className="w-3 h-3 mr-1" />Add</Button>}
       </div>
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         {rows.map(row => {
           const isDehu = row.type.toLowerCase().includes("dehumid");
           const dr = row.dailyReadings || [];
+          const runtimeHrs = runtimeHoursBetween(row.startDate, row.endDate);
           return (
-            <div key={row.id} className="grid grid-cols-12 gap-1 items-center">
-              <Select value={row.type} onValueChange={v => upd(row.id, "type", v)} disabled={readOnly}>
-                <SelectTrigger className="col-span-4 h-7 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>{EQUIPMENT_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
-              </Select>
-              <Input className="col-span-1 h-7 text-xs" type="number" min="1" placeholder="Qty" value={row.qty || ""}
-                disabled={readOnly} onChange={e => upd(row.id, "qty", Number(e.target.value))} />
-              <Input className="col-span-3 h-7 text-xs" placeholder="Placement/Room" value={row.placement}
-                disabled={readOnly} onChange={e => upd(row.id, "placement", e.target.value)} />
-              <Input className={`${isDehu ? "col-span-2" : "col-span-3"} h-7 text-xs`} placeholder="Serial / Asset #" value={row.serialNumber}
-                disabled={readOnly} onChange={e => upd(row.id, "serialNumber", e.target.value)} />
-              {isDehu && (
-                <Button size="sm" variant="outline" className="col-span-1 h-7 px-1 text-[10px]"
-                  onClick={() => upd(row.id, "dailyReadings", dr.length ? dr : [{ id: Date.now(), date: new Date().toISOString().split("T")[0], intakeTemp: 0, intakeRh: 0, outTemp: 0, outRh: 0 }])}
-                  title="Show daily readings">
-                  <Droplets className="w-3 h-3" />{dr.length > 0 ? dr.length : ""}
-                </Button>
-              )}
-              {!readOnly && <Button size="sm" variant="ghost" className="col-span-1 h-7 px-1 text-destructive" onClick={() => del(row.id)}><Trash2 className="w-3 h-3" /></Button>}
+            <div key={row.id} className="border rounded-md p-1.5 space-y-1">
+              {/* Primary line: what it is + serial + actions. */}
+              <div className="grid grid-cols-12 gap-1 items-center">
+                <Select value={row.type} onValueChange={v => upd(row.id, "type", v)} disabled={readOnly}>
+                  <SelectTrigger className="col-span-4 h-7 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>{EQUIPMENT_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
+                </Select>
+                <Input className="col-span-1 h-7 text-xs" type="number" min="1" placeholder="Qty" value={row.qty || ""}
+                  disabled={readOnly} onChange={e => upd(row.id, "qty", Number(e.target.value))} />
+                <Input className={`${isDehu ? "col-span-5" : "col-span-6"} h-7 text-xs`} placeholder="Serial / Asset #" value={row.serialNumber}
+                  disabled={readOnly} onChange={e => upd(row.id, "serialNumber", e.target.value)} />
+                {isDehu && (
+                  <Button size="sm" variant="outline" className="col-span-1 h-7 px-1 text-[10px]"
+                    onClick={() => upd(row.id, "dailyReadings", dr.length ? dr : [{ id: Date.now(), date: new Date().toISOString().split("T")[0], intakeTemp: 0, intakeRh: 0, outTemp: 0, outRh: 0 }])}
+                    title="Show daily readings">
+                    <Droplets className="w-3 h-3" />{dr.length > 0 ? dr.length : ""}
+                  </Button>
+                )}
+                {!readOnly && <Button size="sm" variant="ghost" className="col-span-1 h-7 px-1 text-destructive" onClick={() => del(row.id)}><Trash2 className="w-3 h-3" /></Button>}
+              </div>
+              {/* Secondary line: where it is + when it was deployed. Placement
+                  is now free-text spot-inside-the-room (e.g. "NE corner"),
+                  while Room is a dropdown pulled from the affected-areas
+                  table so the drying report can roll up runtime per room. */}
+              <div className="grid grid-cols-12 gap-1 items-center">
+                <Select
+                  value={row.room || "__unset__"}
+                  onValueChange={v => upd(row.id, "room", v === "__unset__" ? "" : v)}
+                  disabled={readOnly}
+                >
+                  <SelectTrigger className="col-span-4 h-7 text-xs">
+                    <SelectValue placeholder="Room" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__unset__">— unassigned —</SelectItem>
+                    {roomOptions.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Input className="col-span-3 h-7 text-xs" placeholder="Placement in room" value={row.placement}
+                  disabled={readOnly} onChange={e => upd(row.id, "placement", e.target.value)} title="Specific spot within the room (e.g. NE corner, closet)" />
+                <Input className="col-span-2 h-7 text-xs" type="date" value={row.startDate || ""}
+                  disabled={readOnly} onChange={e => upd(row.id, "startDate", e.target.value)} title="Placed on" />
+                <Input className="col-span-2 h-7 text-xs" type="date" value={row.endDate || ""}
+                  disabled={readOnly} onChange={e => upd(row.id, "endDate", e.target.value)} title="Pulled on (blank = still deployed)" />
+                <div className="col-span-1 text-[10px] text-muted-foreground text-right pr-1" title="Total runtime">
+                  {runtimeHrs !== null
+                    ? <span className="font-medium text-foreground">{runtimeHrs}h</span>
+                    : (row.startDate ? <span className="text-amber-600 dark:text-amber-400">on</span> : <span className="opacity-50">—</span>)
+                  }
+                </div>
+              </div>
               {isDehu && dr.length > 0 && (
-                <DehuReadingsPanel readings={dr} onChange={v => upd(row.id, "dailyReadings", v)} readOnly={readOnly} />
+                <div className="grid grid-cols-12 gap-1">
+                  <DehuReadingsPanel readings={dr} onChange={v => upd(row.id, "dailyReadings", v)} readOnly={readOnly} />
+                </div>
               )}
             </div>
           );
@@ -965,8 +1055,15 @@ function RecordCard({ record, jobId, readOnly, priorRecords = [] }: { record: Dr
             {/* Moisture readings */}
             <MoistureTable rows={moistureRows} onChange={setMoistureRows} readOnly={!editing} history={buildMoistureHistory(priorRecords)} dayNumber={record.dayNumber} readingDate={form.readingDate} />
 
-            {/* Equipment */}
-            <EquipmentTable rows={equipRows} onChange={setEquipRows} readOnly={!editing} />
+            {/* Equipment — pass affected-area rows so the room dropdown
+                offers exactly the rooms recorded on this record. */}
+            <EquipmentTable
+              rows={equipRows}
+              onChange={setEquipRows}
+              readOnly={!editing}
+              areaRows={areaRows}
+              readingDate={form.readingDate}
+            />
 
             {/* Affected areas */}
             <AffectedAreasTable rows={areaRows} onChange={setAreaRows} readOnly={!editing} />
@@ -1273,7 +1370,12 @@ function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; o
         )}
 
         <MoistureTable rows={moistureRows} onChange={setMoistureRows} history={moistureHistory} dayNumber={form.dayNumber} readingDate={form.readingDate} />
-        <EquipmentTable rows={equipRows} onChange={setEquipRows} />
+        <EquipmentTable
+          rows={equipRows}
+          onChange={setEquipRows}
+          areaRows={areaRows}
+          readingDate={form.readingDate}
+        />
         <AffectedAreasTable rows={areaRows} onChange={setAreaRows} />
 
         <div>

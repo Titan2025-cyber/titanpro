@@ -561,20 +561,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try { sqlite.exec(`ALTER TABLE payments ADD COLUMN memo_reason TEXT`); } catch(_) {}
 
     const jobs = sqlite.prepare("SELECT id FROM jobs WHERE status IS NULL OR status != 'closed'").all() as any[];
-    const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
+    // Estimates and invoices soft-delete via `deleted_at`. Every aggregate
+    // below must filter `deleted_at IS NULL`, otherwise the Financial Summary
+    // card keeps the deleted row's dollars in the Estimate Amount / Outstanding
+    // buckets even though the row is hidden from the list — which is what
+    // "the total in the bucket persists after delete" was reporting.
+    const invoices = sqlite.prepare("SELECT * FROM invoices WHERE deleted_at IS NULL").all() as any[];
     const payments = sqlite.prepare("SELECT * FROM payments").all() as any[];
     // Per-job, per-phase cost & estimate sums (estimates/invoices/job_costs carry a phase column).
     const costsPhase = sqlite.prepare("SELECT job_id, phase, SUM(total) as total FROM job_costs GROUP BY job_id, phase").all() as any[];
-    const estimatesPhase = sqlite.prepare("SELECT job_id, phase, SUM(total) as total FROM estimates WHERE status != 'rejected' GROUP BY job_id, phase").all() as any[];
+    const estimatesPhase = sqlite.prepare("SELECT job_id, phase, SUM(total) as total FROM estimates WHERE deleted_at IS NULL AND status != 'rejected' GROUP BY job_id, phase").all() as any[];
     // Externally-uploaded estimate/invoice rollup so the Financial Summary
     // card can call out how much of the totals came from outside-authored
     // documents (Xactimate PDFs, sub invoices, carrier approvals, etc.).
     // NULL source is treated as internal.
     const extEstimatesPhase = sqlite.prepare(
-      "SELECT job_id, phase, COUNT(*) as cnt, SUM(total) as total FROM estimates WHERE source = 'external' AND status != 'rejected' GROUP BY job_id, phase"
+      "SELECT job_id, phase, COUNT(*) as cnt, SUM(total) as total FROM estimates WHERE deleted_at IS NULL AND source = 'external' AND status != 'rejected' GROUP BY job_id, phase"
     ).all() as any[];
     const extInvoicesPhase = sqlite.prepare(
-      "SELECT job_id, phase, COUNT(*) as cnt, SUM(total) as total FROM invoices WHERE source = 'external' GROUP BY job_id, phase"
+      "SELECT job_id, phase, COUNT(*) as cnt, SUM(total) as total FROM invoices WHERE deleted_at IS NULL AND source = 'external' GROUP BY job_id, phase"
     ).all() as any[];
     const supplements = sqlite.prepare("SELECT job_id, SUM(amount_approved) as settled FROM supplements WHERE status IN ('approved','partial') GROUP BY job_id").all() as any[];
 

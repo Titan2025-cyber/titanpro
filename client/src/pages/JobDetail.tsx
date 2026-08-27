@@ -1657,7 +1657,15 @@ export default function JobDetail() {
               // from an existing one on the same job. External estimates
               // (uploaded PDFs) can't be duplicated — there's no line-item
               // data to copy, they're just attached files.
-              const openHref = isExternal ? `/api/estimates/${e.id}/external-file` : `/estimates/${e.id}`;
+              // Plain-anchor navigation can't attach the Authorization header,
+              // so external-file routes accept the same session token via ?t=.
+              // Falls back to the un-tokened path if we don't have a token yet
+              // (e.g. race with initial auth) — the server still returns 401
+              // in that case, matching prior behavior.
+              const tok = typeof window !== "undefined" ? (window as any).__titanToken__ : undefined;
+              const openHref = isExternal
+                ? `/api/estimates/${e.id}/external-file${tok ? `?t=${encodeURIComponent(tok)}` : ""}`
+                : `/estimates/${e.id}`;
               return (
                 <Card key={e.id} className="hover:shadow-md transition-shadow">
                   <CardContent className="p-3 flex items-center justify-between gap-3">
@@ -1818,7 +1826,10 @@ export default function JobDetail() {
               return isExternal ? (
                 <a
                   key={inv.id}
-                  href={`/api/invoices/${inv.id}/external-file`}
+                  href={(() => {
+                    const tok = typeof window !== "undefined" ? (window as any).__titanToken__ : undefined;
+                    return `/api/invoices/${inv.id}/external-file${tok ? `?t=${encodeURIComponent(tok)}` : ""}`;
+                  })()}
                   target="_blank"
                   rel="noreferrer"
                   title="Open external invoice"

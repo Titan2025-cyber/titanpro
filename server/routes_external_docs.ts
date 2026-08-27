@@ -198,7 +198,24 @@ export function registerExternalDocRoutes(
   // Uses readImageField, which hands back a signed URL if the row has a
   // storageKey, or the inline data URL otherwise. Same helper used
   // everywhere else in the app so behavior is consistent.
-  app.get("/api/estimates/:id/external-file", requireStaffAuth, async (req: any, res: Response) => {
+  //
+  // These two GET routes are triggered by plain `<a target="_blank">` clicks
+  // in the Estimates / Invoices tab, so the browser cannot attach the
+  // `Authorization: Bearer <token>` header the rest of the API expects.
+  // Without a fallback, requireStaffAuth returns 401 and the new tab shows
+  // a black "Authentication required" screen. To keep the click-to-view UX
+  // and still enforce auth, we accept the same session token via the `?t=`
+  // query parameter and hoist it into the Authorization header before the
+  // real middleware runs. Tokens are the caller's own 8h session token, so
+  // no new secrets/state are introduced.
+  const acceptQueryToken = (req: any, _res: any, next: any) => {
+    if (!req.headers.authorization && typeof req.query?.t === "string" && req.query.t) {
+      req.headers.authorization = `Bearer ${req.query.t}`;
+    }
+    next();
+  };
+
+  app.get("/api/estimates/:id/external-file", acceptQueryToken, requireStaffAuth, async (req: any, res: Response) => {
     try {
       const id = Number(req.params.id);
       const row: any = sqlite.prepare(
@@ -226,7 +243,7 @@ export function registerExternalDocRoutes(
     }
   });
 
-  app.get("/api/invoices/:id/external-file", requireStaffAuth, async (req: any, res: Response) => {
+  app.get("/api/invoices/:id/external-file", acceptQueryToken, requireStaffAuth, async (req: any, res: Response) => {
     try {
       const id = Number(req.params.id);
       const row: any = sqlite.prepare(
