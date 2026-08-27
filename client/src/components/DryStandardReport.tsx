@@ -58,367 +58,516 @@ function calcGPP(tempF: number, rh: number): number {
 // ─────────────────────────────────────────────────────────────────────────────
 // PDF generator
 // ─────────────────────────────────────────────────────────────────────────────
+// Safe JSON.parse for arrays stored as text on DryingRecord. Returns [] on
+// any parse failure so downstream renderers never crash on malformed data.
+function parseArr<T = any>(s: string | null | undefined): T[] {
+  if (!s) return [];
+  try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; }
+}
+
+// Sort drying records ascending by day (readingDate then dayNumber) so the
+// per-day breakdown in the PDF matches the natural drying timeline.
+function sortRecordsByDay(records: DryingRecord[]): DryingRecord[] {
+  return [...records].sort((a, b) => {
+    const da = (a.readingDate || "").localeCompare(b.readingDate || "");
+    if (da !== 0) return da;
+    return (a.dayNumber || 0) - (b.dayNumber || 0);
+  });
+}
+
 async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<string> {
   const jsPDF = await loadJsPDF();
-  const doc: JsPDFDoc = new jsPDF({ orientation: "landscape", unit: "mm", format: "letter" });
-  const PW = 279.4;
-  const PH = 215.9;
+  // Portrait letter — per-day panels stack vertically so each day gets a
+  // dedicated readable column. Landscape worked for one flat table but is
+  // awkward for the per-day breakdown insurance carriers actually want.
+  const doc: JsPDFDoc = new jsPDF({ orientation: "portrait", unit: "mm", format: "letter" });
+  const PW = 215.9;
+  const PH = 279.4;
   const M  = 12;
+  const CONTENT_W = PW - M * 2;
 
   const setFont = (w: "normal" | "bold", sz: number, color: readonly [number, number, number] = DARK) => {
     doc.setFont("helvetica", w);
     doc.setFontSize(sz);
     doc.setTextColor(color[0], color[1], color[2]);
   };
-  const hRule = (y: number, color: readonly [number, number, number] = LGRAY, lw = 0.3) => {
+  const hRule = (y: number, color: readonly [number, number, number] = LGRAY, lw = 0.3, x1 = M, x2 = PW - M) => {
     doc.setDrawColor(color[0], color[1], color[2]);
     doc.setLineWidth(lw);
-    doc.line(M, y, PW - M, y);
+    doc.line(x1, y, x2, y);
   };
 
-  // ── PAGE 1: Header + Job Info + S500 Standards ────────────────────────────
-  // Header band
-  doc.setFillColor(RED[0], RED[1], RED[2]);
-  doc.rect(0, 0, PW, 20, "F");
-  doc.setFillColor(BLUE[0], BLUE[1], BLUE[2]);
-  doc.rect(0, 20, PW, 4, "F");
+  // Standard red/blue Titan banner. Drawn on every page so the report reads
+  // consistently even when a day breaks across pages.
+  const drawBanner = (title: string, subtitle?: string) => {
+    doc.setFillColor(RED[0], RED[1], RED[2]);
+    doc.rect(0, 0, PW, 16, "F");
+    doc.setFillColor(BLUE[0], BLUE[1], BLUE[2]);
+    doc.rect(0, 16, PW, 3, "F");
+    setFont("bold", 12, WHITE);
+    doc.text("TITAN RESTORATION LLC", M, 10);
+    setFont("normal", 7, WHITE);
+    doc.text("Augusta, GA  ·  706-922-0154  ·  titanaugusta.pro", M, 15);
+    setFont("bold", 9, WHITE);
+    doc.text(title, PW - M, 8, { align: "right" });
+    if (subtitle) {
+      setFont("normal", 7, WHITE);
+      doc.text(subtitle, PW - M, 13, { align: "right" });
+    }
+    return 24; // y position where content should start
+  };
 
-  setFont("bold", 16, WHITE);
-  doc.text("TITAN RESTORATION LLC", M, 13);
-  setFont("normal", 8, WHITE);
-  doc.text("Augusta, GA  ·  706-922-0154  ·  titanaugusta.pro", M, 19);
+  // Guarantee `needed` mm of space below y; add a page with continuation
+  // banner if not. Returns the (possibly new) y position.
+  const ensureSpace = (y: number, needed: number, dayLabel?: string): number => {
+    if (y + needed <= PH - 14) return y;
+    doc.addPage();
+    return drawBanner(
+      "STRUCTURAL DRYING REPORT",
+      dayLabel ? `${dayLabel} (continued)` : "IICRC S500",
+    );
+  };
 
-  // Report title (right side of header)
-  setFont("bold", 10, WHITE);
-  doc.text("STRUCTURAL DRYING REPORT", PW - M, 10, { align: "right" });
-  setFont("normal", 8, WHITE);
-  doc.text("IICRC S500 Standard for Professional Water Damage Restoration", PW - M, 16, { align: "right" });
+  // ================================================================
+  // PAGE 1 — Cover: banner, job info, S500 targets, coverage
+  // ================================================================
+  let y = drawBanner(
+    "STRUCTURAL DRYING REPORT",
+    "IICRC S500 · Professional Water Damage Restoration",
+  );
 
-  let y = 32;
-
-  // Job info table
+  y += 4;
+  setFont("bold", 10, BLUE);
+  doc.text("JOB INFORMATION", M, y);
+  y += 4;
   doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
-  doc.roundedRect(M, y - 4, PW - M * 2, 28, 2, 2, "F");
+  doc.roundedRect(M, y, CONTENT_W, 40, 2, 2, "F");
 
-  const col1 = M + 4;
-  const col2 = PW / 4 + 4;
-  const col3 = PW / 2 + 4;
-  const col4 = (PW * 3) / 4 + 4;
-
-  const fieldCell = (label: string, value: string, x: number, cy: number, maxW = 55) => {
+  const colL = M + 4;
+  const colR = M + CONTENT_W / 2 + 2;
+  const fieldCell = (label: string, value: string, x: number, cy: number, maxW = CONTENT_W / 2 - 6) => {
     setFont("bold", 7, GRAY);
     doc.text(label.toUpperCase(), x, cy);
-    setFont("normal", 8.5, DARK);
-    // Blank (not "—") when there's no value, so header fields don't advertise
-    // missing data. Table cells pass their own "—" explicitly where a dash is
-    // the right convention.
+    setFont("normal", 9, DARK);
     const lines = doc.splitTextToSize(value != null && value !== "" ? value : "", maxW);
     doc.text(lines, x, cy + 4);
-    return cy + 4 + (lines.length - 1) * 4;
   };
 
-  fieldCell("Job Number", job.jobNumber, col1, y);
-  fieldCell("Property Address", job.address || "—", col2, y, 60);
-  fieldCell("Loss Type", (job.lossType || "—").replace(/_/g, " ").toUpperCase(), col3, y);
-  fieldCell("Assigned Tech", job.assignedTech || "—", col4, y);
+  fieldCell("Job Number", job.jobNumber, colL, y + 5);
+  fieldCell("Assigned Tech", job.assignedTech || "—", colR, y + 5);
+  fieldCell("Property Address", job.address || "—", colL, y + 14);
+  fieldCell("Loss Type", (job.lossType || "—").replace(/_/g, " ").toUpperCase(), colR, y + 14);
+  fieldCell("Insurance Carrier", job.insuranceCarrier || "", colL, y + 23);
+  fieldCell("Claim Number", job.claimNumber || "", colR, y + 23);
+  fieldCell("Policy Number", (job as any).policyNumber || "", colL, y + 32);
+  fieldCell("Report Date", new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }), colR, y + 32);
 
-  // Insurance header row: leave blank (not "—") when a value isn't on file so
-  // the report doesn't advertise missing data.
-  y += 10;
-  fieldCell("Insurance Carrier", job.insuranceCarrier || "", col1, y);
-  fieldCell("Claim Number", job.claimNumber || "", col2, y);
-  fieldCell("Policy Number", (job as any).policyNumber || "", col3, y);
-  fieldCell("Report Date", new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }), col4, y);
+  y += 46;
 
-  y += 12;
-  hRule(y);
-
-  // ── S500 Psychrometric Standards section ───────────────────────────────────
-  y += 6;
+  // S500 Targets block
   setFont("bold", 10, BLUE);
-  doc.text("IICRC S500 PSYCHROMETRIC STANDARDS REFERENCE", M, y);
-
-  y += 5;
-  // Standards box
+  doc.text("IICRC S500 CLEARANCE TARGETS", M, y);
+  y += 3;
   doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
-  doc.roundedRect(M, y - 2, PW - M * 2, 22, 2, 2, "F");
+  doc.roundedRect(M, y, CONTENT_W, 32, 2, 2, "F");
+  setFont("bold", 8, DARK);
+  doc.text("Moisture Equivalence (WME)", M + 4, y + 6);
+  setFont("normal", 8, DARK);
+  doc.text(`Wood/Framing: ≤${S500_TARGETS.wood.wme}%`, M + 4, y + 11);
+  doc.text(`Drywall/Gypsum: ≤${S500_TARGETS.drywall.wme}%`, M + 4, y + 16);
+  doc.text(`Concrete/Masonry: ≤${S500_TARGETS.concrete.wme}%`, M + 4, y + 21);
 
   setFont("bold", 8, DARK);
-  doc.text("Target Moisture Equivalence (WME):", M + 4, y + 4);
+  doc.text("Atmospheric Targets", M + CONTENT_W / 2 + 2, y + 6);
   setFont("normal", 8, DARK);
-  doc.text(`Wood/Framing: ≤${S500_TARGETS.wood.wme}%`, M + 4, y + 9);
-  doc.text(`Drywall/Gypsum: ≤${S500_TARGETS.drywall.wme}%`, M + 4, y + 13);
-  doc.text(`Concrete/Masonry: ≤${S500_TARGETS.concrete.wme}%`, M + 4, y + 17);
+  doc.text(`Indoor GPP: ≤${S500_TARGETS.gpp.value} grains/lb`, M + CONTENT_W / 2 + 2, y + 11);
+  doc.text("Relative Humidity: ≤50% typical", M + CONTENT_W / 2 + 2, y + 16);
+  doc.text("Temperature: 70–90°F optimal", M + CONTENT_W / 2 + 2, y + 21);
 
-  setFont("bold", 8, DARK);
-  doc.text("Atmospheric Targets:", PW / 3 + 4, y + 4);
-  setFont("normal", 8, DARK);
-  doc.text(`Target GPP: ≤${S500_TARGETS.gpp.value} grains/lb (indoor humidity goal)`, PW / 3 + 4, y + 9);
-  doc.text("Relative Humidity: Typically ≤50% for structural drying", PW / 3 + 4, y + 13);
-  doc.text("Temperature: 70–90°F recommended for optimal drying", PW / 3 + 4, y + 17);
+  setFont("italic" as any, 7, GRAY);
+  doc.text("Clearance per S500 §13.2: all materials at/below dry standard, ambient conditions normalized, no visible mold.", M + 4, y + 28);
 
-  setFont("bold", 8, DARK);
-  doc.text("Clearance Criteria (S500 §13.2):", (PW * 2) / 3 + 4, y + 4);
-  setFont("normal", 8, DARK);
-  doc.text("All affected materials at or below dry standard", (PW * 2) / 3 + 4, y + 9);
-  doc.text("Ambient conditions normalized to pre-loss levels", (PW * 2) / 3 + 4, y + 13);
-  doc.text("No visible mold growth or odor observed", (PW * 2) / 3 + 4, y + 17);
+  y += 38;
 
-  y += 26;
-  hRule(y);
+  // Coverage KPIs
+  const sorted = sortRecordsByDay(records);
+  const visitCount = sorted.filter(r => r.recordType !== "missed").length;
+  const missedCount = sorted.filter(r => r.recordType === "missed").length;
+  const dayNumbers = Array.from(new Set(sorted.map(r => r.dayNumber || 0).filter(n => n > 0))).sort((a, b) => a - b);
 
-  // ── PAGE 2+: Daily Drying Log table ──────────────────────────────────────
-  if (records.length > 0) {
+  setFont("bold", 10, BLUE);
+  doc.text("DRYING COVERAGE", M, y);
+  y += 4;
+  doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
+  doc.roundedRect(M, y, CONTENT_W, 16, 2, 2, "F");
+  const kpiW = CONTENT_W / 4;
+  const drawKpi = (label: string, value: string, x: number, valueColor: readonly [number, number, number] = BLUE) => {
+    setFont("bold", 7, GRAY);
+    doc.text(label.toUpperCase(), x + 4, y + 5);
+    setFont("bold", 12, valueColor);
+    doc.text(value, x + 4, y + 12);
+  };
+  drawKpi("Total Days", String(dayNumbers.length || sorted.length), M);
+  drawKpi("Visits", String(visitCount), M + kpiW);
+  drawKpi("Missed", String(missedCount), M + kpiW * 2, missedCount > 0 ? AMBER : GRAY);
+  drawKpi("Log Entries", String(sorted.length), M + kpiW * 3);
+
+  // ================================================================
+  // Per-day breakdown — one panel per record
+  // ================================================================
+  if (sorted.length === 0) {
     doc.addPage();
-    // Re-draw a mini header
-    doc.setFillColor(RED[0], RED[1], RED[2]);
-    doc.rect(0, 0, PW, 12, "F");
-    setFont("bold", 11, WHITE);
-    doc.text("TITAN RESTORATION LLC  —  DAILY DRYING LOG", PW / 2, 8, { align: "center" });
-
-    y = 18;
-    setFont("bold", 10, BLUE);
-    doc.text("DAILY DRYING LOG", M, y);
-    setFont("normal", 8, GRAY);
-    doc.text(`Job #${job.jobNumber}  ·  ${records.length} log entries`, PW - M, y, { align: "right" });
-
-    y += 5;
-
-    // Table headers
-    const cols = [
-      { header: "Date", w: 22 },
-      { header: "Area / Location", w: 38 },
-      { header: "Material", w: 30 },
-      { header: "WME%", w: 14 },
-      { header: "Temp°F", w: 16 },
-      { header: "RH%", w: 13 },
-      { header: "GPP", w: 13 },
-      { header: "Equipment Running", w: 40 },
-      { header: "Notes", w: 45 },
-      { header: "Tech", w: 20 },
-    ];
-
-    // Header row
-    doc.setFillColor(BLUE[0], BLUE[1], BLUE[2]);
-    doc.rect(M, y - 4, PW - M * 2, 7, "F");
-    let cx = M + 1;
-    cols.forEach(c => {
-      setFont("bold", 7, WHITE);
-      doc.text(c.header, cx, y);
-      cx += c.w;
-    });
-
-    y += 4;
-
-    // Data rows
-    records.forEach((rec, i) => {
-      const rowH = 6;
-      if (y + rowH > PH - 15) {
-        doc.addPage();
-        doc.setFillColor(RED[0], RED[1], RED[2]);
-        doc.rect(0, 0, PW, 12, "F");
-        setFont("bold", 11, WHITE);
-        doc.text("TITAN RESTORATION LLC  —  DAILY DRYING LOG (continued)", PW / 2, 8, { align: "center" });
-        y = 18;
-        // Re-draw header row
-        doc.setFillColor(BLUE[0], BLUE[1], BLUE[2]);
-        doc.rect(M, y - 4, PW - M * 2, 7, "F");
-        cx = M + 1;
-        cols.forEach(c => {
-          setFont("bold", 7, WHITE);
-          doc.text(c.header, cx, y);
-          cx += c.w;
-        });
-        y += 4;
-      }
-
-      // Alternating row bg
-      if (i % 2 === 0) {
-        doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
-        doc.rect(M, y - 3.5, PW - M * 2, rowH, "F");
-      }
-
-      // Parse moisture readings for WME
-      let wme = "—";
-      try {
-        const mr = JSON.parse(rec.moistureReadings || "[]");
-        if (mr.length > 0) {
-          const maxReading = Math.max(...mr.map((r: any) => r.reading || 0));
-          wme = `${maxReading}%`;
-        }
-      } catch {}
-
-      // Parse equipment
-      let equip = "—";
-      try {
-        const eq = JSON.parse(rec.equipment || "[]");
-        if (eq.length > 0) {
-          equip = eq
-            .slice(0, 3)
-            .map((e: any) => `${e.qty || 1}x ${e.type || ""}`.trim())
-            .join(", ");
-          if (eq.length > 3) equip += `…+${eq.length - 3}`;
-        }
-      } catch {}
-
-      const gpp = rec.tempF && rec.relativeHumidity
-        ? String(calcGPP(rec.tempF, rec.relativeHumidity))
-        : "—";
-
-      const cells = [
-        rec.recordDate ? fmtDate(rec.recordDate, { month: "2-digit", day: "2-digit", year: "2-digit" }) : "—",
-        rec.area || "—",
-        rec.material || "—",
-        wme,
-        rec.tempF ? `${rec.tempF}°` : "—",
-        rec.relativeHumidity ? `${rec.relativeHumidity}%` : "—",
-        gpp,
-        equip,
-        rec.notes ? rec.notes.slice(0, 60) : "—",
-        rec.technician || "—",
-      ];
-
-      cx = M + 1;
-      cells.forEach((cell, ci) => {
-        setFont("normal", 7, DARK);
-        const truncated = String(cell).slice(0, Math.floor(cols[ci].w / 2.2));
-        doc.text(truncated, cx, y);
-        cx += cols[ci].w;
-      });
-
-      y += rowH;
-    });
-  }
-
-  // ── Page 3: Moisture trend + Equipment summary + Final clearance ──────────
-  doc.addPage();
-  doc.setFillColor(RED[0], RED[1], RED[2]);
-  doc.rect(0, 0, PW, 12, "F");
-  setFont("bold", 11, WHITE);
-  doc.text("TITAN RESTORATION LLC  —  DRYING ANALYSIS & CLEARANCE", PW / 2, 8, { align: "center" });
-
-  y = 20;
-
-  // Moisture trend
-  setFont("bold", 11, BLUE);
-  doc.text("MOISTURE TREND — HIGHEST READING TO CLEARANCE", M, y);
-  y += 6;
-
-  if (records.length > 0) {
-    // Find highest and final readings
-    let allReadings: Array<{ date: string; wme: number; material: string; area: string }> = [];
-    records.forEach(rec => {
-      try {
-        const mr = JSON.parse(rec.moistureReadings || "[]");
-        mr.forEach((r: any) => {
-          if (r.reading) {
-            allReadings.push({
-              date: rec.recordDate || "",
-              wme: r.reading,
-              material: r.material || rec.material || "—",
-              area: r.location || rec.area || "—",
-            });
-          }
-        });
-      } catch {}
-    });
-
-    if (allReadings.length > 0) {
-      const sorted = [...allReadings].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-      const highest = allReadings.reduce((p, c) => c.wme > p.wme ? c : p);
-      const final = allReadings[allReadings.length - 1];
-
-      doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
-      doc.roundedRect(M, y - 2, PW - M * 2, 18, 2, 2, "F");
-
-      setFont("bold", 8, GRAY);
-      doc.text("INITIAL HIGH READING", M + 4, y + 3);
-      setFont("bold", 12, RED);
-      doc.text(`${highest.wme}% WME`, M + 4, y + 9);
-      setFont("normal", 7.5, GRAY);
-      doc.text(`${highest.material} — ${highest.area}`, M + 4, y + 13);
-      doc.text(`Date: ${highest.date ? fmtDateShort(highest.date) : "—"}`, M + 4, y + 16);
-
-      // Arrow
-      setFont("bold", 14, BLUE);
-      doc.text("→", PW / 2, y + 9, { align: "center" });
-
-      setFont("bold", 8, GRAY);
-      doc.text("FINAL CLEARANCE READING", PW * 0.55, y + 3);
-      const finalColor = final.wme <= 16 ? GREEN : AMBER;
-      setFont("bold", 12, finalColor);
-      doc.text(`${final.wme}% WME`, PW * 0.55, y + 9);
-      setFont("normal", 7.5, GRAY);
-      doc.text(`${final.material} — ${final.area}`, PW * 0.55, y + 13);
-      doc.text(`Date: ${final.date ? fmtDateShort(final.date) : "—"}`, PW * 0.55, y + 16);
-
-      // Reduction %
-      const pct = ((highest.wme - final.wme) / highest.wme * 100).toFixed(0);
-      setFont("bold", 8, GREEN);
-      doc.text(`${pct}% moisture reduction achieved`, PW - M, y + 9, { align: "right" });
-    }
+    y = drawBanner("STRUCTURAL DRYING REPORT", "Per-Day Breakdown");
+    setFont("normal", 10, GRAY);
+    doc.text("No drying records logged for this job.", M, y + 8);
   } else {
-    setFont("normal", 9, GRAY);
-    doc.text("No drying records found for this job.", M, y + 6);
+    doc.addPage();
+    y = drawBanner("STRUCTURAL DRYING REPORT", "Per-Day Breakdown");
   }
 
-  y += 22;
-  hRule(y);
+  sorted.forEach((rec, idx) => {
+    const dayLabel = `Day ${rec.dayNumber || idx + 1} — ${rec.readingDate ? fmtDate(rec.readingDate) : "—"}${rec.readingTime ? " @ " + rec.readingTime : ""}`;
 
-  // Equipment summary
-  y += 6;
-  setFont("bold", 11, BLUE);
-  doc.text("EQUIPMENT SUMMARY", M, y);
-  y += 6;
+    y = ensureSpace(y, 26, dayLabel);
 
-  const equipMap: Record<string, number> = {};
-  records.forEach(rec => {
-    try {
-      const eq = JSON.parse(rec.equipment || "[]");
-      eq.forEach((e: any) => {
-        if (e.type) {
-          equipMap[e.type] = (equipMap[e.type] || 0) + (e.qty || 1);
+    // Day banner strip
+    doc.setFillColor(BLUE[0], BLUE[1], BLUE[2]);
+    doc.rect(M, y, CONTENT_W, 8, "F");
+    setFont("bold", 10, WHITE);
+    doc.text(dayLabel, M + 3, y + 5.6);
+    setFont("normal", 8, WHITE);
+    const rightLabel = rec.recordType === "missed"
+      ? `MISSED DAY${rec.missedReason ? " — " + rec.missedReason : ""}`
+      : `Tech: ${rec.techName || "—"}`;
+    doc.text(rightLabel, PW - M - 3, y + 5.6, { align: "right" });
+    y += 10;
+
+    // Missed-day short-circuit
+    if (rec.recordType === "missed") {
+      setFont("normal", 9, DARK);
+      const reasonLines = doc.splitTextToSize(
+        `Reason: ${rec.missedReason || "Not specified"}. Logged by ${rec.techName || "—"} per S500 continuity-of-coverage documentation.`,
+        CONTENT_W - 4,
+      );
+      doc.text(reasonLines, M + 2, y + 4);
+      y += reasonLines.length * 4 + 8;
+      return;
+    }
+
+    // Row 1: Water classification + goals
+    y = ensureSpace(y, 18, dayLabel);
+    doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
+    doc.roundedRect(M, y, CONTENT_W, 14, 1.5, 1.5, "F");
+    setFont("bold", 7, GRAY);
+    doc.text("WATER CATEGORY", M + 3, y + 4);
+    setFont("bold", 9, DARK);
+    doc.text((rec.waterCategory || "—").toUpperCase().replace("CATEGORY", "CAT "), M + 3, y + 9);
+    setFont("bold", 7, GRAY);
+    doc.text("WATER CLASS", M + 45, y + 4);
+    setFont("bold", 9, DARK);
+    doc.text((rec.waterClass || "—").toUpperCase().replace("CLASS", "CLASS "), M + 45, y + 9);
+    setFont("bold", 7, GRAY);
+    doc.text("DRYING GOAL", M + 85, y + 4);
+    setFont("bold", 9, rec.dryingGoalMet ? GREEN : AMBER);
+    doc.text(rec.dryingGoalMet ? "MET" : "NOT YET", M + 85, y + 9);
+    setFont("bold", 7, GRAY);
+    doc.text("STRUCTURAL DRY", M + 130, y + 4);
+    setFont("bold", 9, rec.structuralDryingComplete ? GREEN : GRAY);
+    doc.text(rec.structuralDryingComplete ? "COMPLETE" : "IN PROGRESS", M + 130, y + 9);
+    y += 16;
+
+    // Row 2: Psychrometric (multi-slot with legacy fallback)
+    const psychro = parseArr<{ location: string; tempF?: number; rhPct?: number; gpp?: number; dewPointF?: number }>(rec.psychrometricReadings);
+    const psychroRows: Array<{ location: string; tempF?: number; rhPct?: number; gpp?: number; dewPointF?: number }> =
+      psychro.length > 0
+        ? psychro
+        : (rec.tempF || rec.rhPct)
+          ? [{ location: "inside", tempF: rec.tempF ?? undefined, rhPct: rec.rhPct ?? undefined, gpp: rec.gpp ?? undefined, dewPointF: rec.dewPointF ?? undefined }]
+          : [];
+
+    y = ensureSpace(y, 8 + Math.max(psychroRows.length, 1) * 5 + 4, dayLabel);
+    setFont("bold", 9, BLUE);
+    doc.text("PSYCHROMETRIC READINGS", M, y);
+    y += 3;
+    if (psychroRows.length === 0) {
+      setFont("italic" as any, 8, GRAY);
+      doc.text("No psychrometric readings recorded.", M + 2, y + 4);
+      y += 8;
+    } else {
+      doc.setFillColor(LGRAY[0], LGRAY[1], LGRAY[2]);
+      doc.rect(M, y, CONTENT_W, 5, "F");
+      setFont("bold", 7, DARK);
+      doc.text("LOCATION", M + 2, y + 3.5);
+      doc.text("TEMP °F", M + 45, y + 3.5);
+      doc.text("RH %", M + 75, y + 3.5);
+      doc.text("GPP", M + 100, y + 3.5);
+      doc.text("DEW PT °F", M + 125, y + 3.5);
+      y += 5;
+      psychroRows.forEach((p, i) => {
+        if (i % 2 === 0) {
+          doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
+          doc.rect(M, y, CONTENT_W, 5, "F");
         }
+        setFont("normal", 8, DARK);
+        doc.text((p.location || "—").toString().toUpperCase(), M + 2, y + 3.5);
+        doc.text(p.tempF != null ? `${p.tempF}°` : "—", M + 45, y + 3.5);
+        doc.text(p.rhPct != null ? `${p.rhPct}%` : "—", M + 75, y + 3.5);
+        const gppVal = p.gpp != null
+          ? p.gpp
+          : (p.tempF != null && p.rhPct != null ? calcGPP(p.tempF, p.rhPct) : null);
+        doc.text(gppVal != null ? String(gppVal) : "—", M + 100, y + 3.5);
+        doc.text(p.dewPointF != null ? `${p.dewPointF}°` : "—", M + 125, y + 3.5);
+        y += 5;
       });
-    } catch {}
+      y += 2;
+    }
+
+    // Row 3: Affected areas
+    const areas = parseArr<{ room?: string; material?: string; sqft?: number; wetPct?: number }>(rec.affectedAreas);
+    y = ensureSpace(y, 8 + Math.max(areas.length, 1) * 5 + 4, dayLabel);
+    setFont("bold", 9, BLUE);
+    doc.text("AFFECTED AREAS", M, y);
+    y += 3;
+    if (areas.length === 0) {
+      setFont("italic" as any, 8, GRAY);
+      doc.text("No affected areas logged for this day.", M + 2, y + 4);
+      y += 8;
+    } else {
+      doc.setFillColor(LGRAY[0], LGRAY[1], LGRAY[2]);
+      doc.rect(M, y, CONTENT_W, 5, "F");
+      setFont("bold", 7, DARK);
+      doc.text("ROOM / AREA", M + 2, y + 3.5);
+      doc.text("MATERIAL", M + 65, y + 3.5);
+      doc.text("SQ FT", M + 125, y + 3.5);
+      doc.text("WET %", M + 155, y + 3.5);
+      y += 5;
+      areas.forEach((a, i) => {
+        y = ensureSpace(y, 5, dayLabel);
+        if (i % 2 === 0) {
+          doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
+          doc.rect(M, y, CONTENT_W, 5, "F");
+        }
+        setFont("normal", 8, DARK);
+        doc.text(doc.splitTextToSize(a.room || "—", 60)[0], M + 2, y + 3.5);
+        doc.text(doc.splitTextToSize(a.material || "—", 55)[0], M + 65, y + 3.5);
+        doc.text(a.sqft != null ? String(a.sqft) : "—", M + 125, y + 3.5);
+        doc.text(a.wetPct != null ? `${a.wetPct}%` : "—", M + 155, y + 3.5);
+        y += 5;
+      });
+      y += 2;
+    }
+
+    // Row 4: Moisture readings
+    const moisture = parseArr<{ location?: string; material?: string; reading?: number; gpp?: number; target?: number }>(rec.moistureReadings);
+    y = ensureSpace(y, 8 + Math.max(moisture.length, 1) * 5 + 4, dayLabel);
+    setFont("bold", 9, BLUE);
+    doc.text("MOISTURE READINGS", M, y);
+    y += 3;
+    if (moisture.length === 0) {
+      setFont("italic" as any, 8, GRAY);
+      doc.text("No moisture readings logged for this day.", M + 2, y + 4);
+      y += 8;
+    } else {
+      doc.setFillColor(LGRAY[0], LGRAY[1], LGRAY[2]);
+      doc.rect(M, y, CONTENT_W, 5, "F");
+      setFont("bold", 7, DARK);
+      doc.text("LOCATION", M + 2, y + 3.5);
+      doc.text("MATERIAL", M + 55, y + 3.5);
+      doc.text("READING %", M + 110, y + 3.5);
+      doc.text("TARGET %", M + 140, y + 3.5);
+      doc.text("STATUS", M + 170, y + 3.5);
+      y += 5;
+      moisture.forEach((m, i) => {
+        y = ensureSpace(y, 5, dayLabel);
+        if (i % 2 === 0) {
+          doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
+          doc.rect(M, y, CONTENT_W, 5, "F");
+        }
+        const reading = m.reading != null ? Number(m.reading) : null;
+        const target = m.target != null ? Number(m.target) : null;
+        const withinTarget = reading != null && target != null ? reading <= target : null;
+        setFont("normal", 8, DARK);
+        doc.text(doc.splitTextToSize(m.location || "—", 50)[0], M + 2, y + 3.5);
+        doc.text(doc.splitTextToSize(m.material || "—", 52)[0], M + 55, y + 3.5);
+        setFont("bold", 8, reading != null && target != null && reading > target ? RED : DARK);
+        doc.text(reading != null ? `${reading}%` : "—", M + 110, y + 3.5);
+        setFont("normal", 8, DARK);
+        doc.text(target != null ? `${target}%` : "—", M + 140, y + 3.5);
+        if (withinTarget === true) { setFont("bold", 8, GREEN); doc.text("DRY", M + 170, y + 3.5); }
+        else if (withinTarget === false) { setFont("bold", 8, AMBER); doc.text("WET", M + 170, y + 3.5); }
+        else { setFont("normal", 8, GRAY); doc.text("—", M + 170, y + 3.5); }
+        y += 5;
+      });
+      y += 2;
+    }
+
+    // Row 5: Equipment on site
+    const equipment = parseArr<{ type?: string; qty?: number; placement?: string; serialNumber?: string }>(rec.equipment);
+    y = ensureSpace(y, 8 + Math.max(equipment.length, 1) * 5 + 4, dayLabel);
+    setFont("bold", 9, BLUE);
+    doc.text("EQUIPMENT ON SITE", M, y);
+    y += 3;
+    if (equipment.length === 0) {
+      setFont("italic" as any, 8, GRAY);
+      doc.text("No equipment logged for this day.", M + 2, y + 4);
+      y += 8;
+    } else {
+      doc.setFillColor(LGRAY[0], LGRAY[1], LGRAY[2]);
+      doc.rect(M, y, CONTENT_W, 5, "F");
+      setFont("bold", 7, DARK);
+      doc.text("TYPE", M + 2, y + 3.5);
+      doc.text("QTY", M + 70, y + 3.5);
+      doc.text("PLACEMENT", M + 90, y + 3.5);
+      doc.text("SERIAL / ID", M + 150, y + 3.5);
+      y += 5;
+      equipment.forEach((e, i) => {
+        y = ensureSpace(y, 5, dayLabel);
+        if (i % 2 === 0) {
+          doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
+          doc.rect(M, y, CONTENT_W, 5, "F");
+        }
+        setFont("normal", 8, DARK);
+        doc.text(doc.splitTextToSize(e.type || "—", 65)[0], M + 2, y + 3.5);
+        doc.text(e.qty != null ? String(e.qty) : "—", M + 70, y + 3.5);
+        doc.text(doc.splitTextToSize(e.placement || "—", 55)[0], M + 90, y + 3.5);
+        doc.text(doc.splitTextToSize(e.serialNumber || "—", 35)[0], M + 150, y + 3.5);
+        y += 5;
+      });
+      const totalUnits = equipment.reduce((sum, e) => sum + (Number(e.qty) || 0), 0);
+      setFont("italic" as any, 7, GRAY);
+      doc.text(`Total units on site: ${totalUnits}`, M + 2, y + 3);
+      y += 6;
+    }
+
+    // Row 6: Observations
+    if (rec.observations && rec.observations.trim()) {
+      const obsLines = doc.splitTextToSize(rec.observations.trim(), CONTENT_W - 4);
+      y = ensureSpace(y, 6 + obsLines.length * 4 + 4, dayLabel);
+      setFont("bold", 9, BLUE);
+      doc.text("OBSERVATIONS", M, y);
+      y += 3;
+      doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
+      doc.roundedRect(M, y, CONTENT_W, obsLines.length * 4 + 4, 1.5, 1.5, "F");
+      setFont("normal", 8, DARK);
+      doc.text(obsLines, M + 3, y + 4);
+      y += obsLines.length * 4 + 6;
+    }
+
+    // Signature line for the day
+    y = ensureSpace(y, 10, dayLabel);
+    setFont("bold", 7, GRAY);
+    doc.text("TECH SIGNATURE", M, y);
+    hRule(y + 3, DARK, 0.3, M + 30, PW - M);
+    setFont("normal", 8, DARK);
+    doc.text(rec.techSignature || rec.techName || "", M + 32, y + 2);
+    y += 8;
+
+    // Divider between days
+    if (idx < sorted.length - 1) {
+      hRule(y, LGRAY, 0.5);
+      y += 4;
+    }
   });
 
+  // ================================================================
+  // Trailer — moisture trend, aggregated equipment, clearance
+  // ================================================================
+  doc.addPage();
+  y = drawBanner("STRUCTURAL DRYING REPORT", "Summary & Clearance");
+
+  setFont("bold", 11, BLUE);
+  doc.text("MOISTURE TREND", M, y);
+  y += 5;
+
+  const allReadings: Array<{ date: string; wme: number; material: string; location: string }> = [];
+  sorted.forEach(rec => {
+    parseArr<{ reading?: number; material?: string; location?: string }>(rec.moistureReadings).forEach(r => {
+      if (r.reading != null && Number(r.reading) > 0) {
+        allReadings.push({
+          date: rec.readingDate || "",
+          wme: Number(r.reading),
+          material: r.material || "—",
+          location: r.location || "—",
+        });
+      }
+    });
+  });
+
+  if (allReadings.length > 0) {
+    const highest = allReadings.reduce((p, c) => c.wme > p.wme ? c : p);
+    const final = allReadings[allReadings.length - 1];
+    doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
+    doc.roundedRect(M, y, CONTENT_W, 22, 2, 2, "F");
+
+    setFont("bold", 7, GRAY);
+    doc.text("INITIAL HIGH READING", M + 4, y + 5);
+    setFont("bold", 14, RED);
+    doc.text(`${highest.wme}% WME`, M + 4, y + 12);
+    setFont("normal", 7.5, GRAY);
+    doc.text(`${highest.material} — ${highest.location}`, M + 4, y + 16);
+    doc.text(`Date: ${highest.date ? fmtDateShort(highest.date) : "—"}`, M + 4, y + 19);
+
+    setFont("bold", 16, BLUE);
+    doc.text("→", PW / 2, y + 12, { align: "center" });
+
+    setFont("bold", 7, GRAY);
+    doc.text("FINAL READING", PW * 0.6, y + 5);
+    const finalColor = final.wme <= 16 ? GREEN : AMBER;
+    setFont("bold", 14, finalColor);
+    doc.text(`${final.wme}% WME`, PW * 0.6, y + 12);
+    setFont("normal", 7.5, GRAY);
+    doc.text(`${final.material} — ${final.location}`, PW * 0.6, y + 16);
+    doc.text(`Date: ${final.date ? fmtDateShort(final.date) : "—"}`, PW * 0.6, y + 19);
+
+    const pct = highest.wme > 0 ? ((highest.wme - final.wme) / highest.wme * 100).toFixed(0) : "0";
+    setFont("bold", 8, GREEN);
+    doc.text(`${pct}% reduction`, PW - M - 3, y + 12, { align: "right" });
+    y += 26;
+  } else {
+    setFont("normal", 9, GRAY);
+    doc.text("No moisture readings recorded.", M, y + 4);
+    y += 10;
+  }
+
+  setFont("bold", 11, BLUE);
+  doc.text("EQUIPMENT SUMMARY (ALL DAYS)", M, y);
+  y += 5;
+
+  const equipMap: Record<string, number> = {};
+  sorted.forEach(rec => {
+    parseArr<{ type?: string; qty?: number }>(rec.equipment).forEach(e => {
+      if (e.type) equipMap[e.type] = (equipMap[e.type] || 0) + (Number(e.qty) || 1);
+    });
+  });
   const equipList = Object.entries(equipMap);
   if (equipList.length > 0) {
     doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
-    const equipH = Math.ceil(equipList.length / 3) * 7 + 6;
-    doc.roundedRect(M, y - 2, PW - M * 2, equipH, 2, 2, "F");
-
-    const perCol = Math.ceil(equipList.length / 3);
+    const perCol = Math.ceil(equipList.length / 2);
+    const equipH = perCol * 6 + 6;
+    doc.roundedRect(M, y, CONTENT_W, equipH, 2, 2, "F");
     equipList.forEach(([type, qty], i) => {
       const col = Math.floor(i / perCol);
       const row = i % perCol;
-      const ex = M + 4 + col * (PW / 3 - 4);
-      const ey = y + 3 + row * 6.5;
+      const ex = M + 4 + col * (CONTENT_W / 2);
+      const ey = y + 5 + row * 6;
       setFont("bold", 8, DARK);
       doc.text(`${qty}x`, ex, ey);
       setFont("normal", 8, DARK);
-      doc.text(type, ex + 7, ey);
+      doc.text(type, ex + 8, ey);
     });
-
     y += equipH + 4;
   } else {
     setFont("normal", 9, GRAY);
-    doc.text("No equipment records found.", M, y + 4);
-    y += 12;
+    doc.text("No equipment recorded across drying days.", M, y + 4);
+    y += 10;
   }
 
-  hRule(y);
-
-  // Final clearance confirmation
-  y += 6;
+  y = ensureSpace(y, 60);
   setFont("bold", 11, BLUE);
   doc.text("FINAL CLEARANCE STATEMENT — IICRC S500 §13.2", M, y);
-  y += 6;
-
+  y += 4;
   doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
-  doc.roundedRect(M, y - 2, PW - M * 2, 30, 2, 2, "F");
-
+  doc.roundedRect(M, y, CONTENT_W, 32, 2, 2, "F");
   setFont("normal", 8.5, DARK);
   const clearanceText =
     "I attest, in accordance with IICRC S500 §13.2, that all affected materials at the above-referenced property " +
@@ -427,42 +576,39 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
     "(temperature, relative humidity, grains per pound) have been normalized to pre-loss levels. No visible mold growth, " +
     "standing water, or elevated moisture readings were observed at the time of clearance. All drying equipment has been " +
     "removed. The property is hereby released from active structural drying protocols.";
-  const clearLines = doc.splitTextToSize(clearanceText, PW - M * 2 - 8);
-  doc.text(clearLines, M + 4, y + 4);
+  const clearLines = doc.splitTextToSize(clearanceText, CONTENT_W - 8);
+  doc.text(clearLines, M + 4, y + 5);
+  y += 36;
 
-  y += 34;
-
-  // Technician signature line
   setFont("bold", 8, GRAY);
   doc.text("TECHNICIAN SIGNATURE", M, y);
-  hRule(y + 4, DARK, 0.3);
-  setFont("normal", 8, GRAY);
+  hRule(y + 4, DARK, 0.3, M, M + 80);
+  setFont("normal", 8, DARK);
   doc.text(job.assignedTech || "________________________", M, y + 9);
+  setFont("normal", 7, GRAY);
   doc.text("Certified Technician, Titan Restoration LLC", M, y + 14);
 
   setFont("bold", 8, GRAY);
-  doc.text("DATE", PW / 2, y);
-  hRule(y + 4, DARK, 0.3);
-  setFont("normal", 8, GRAY);
-  doc.text(new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }), PW / 2, y + 9);
+  doc.text("DATE", M + 100, y);
+  hRule(y + 4, DARK, 0.3, M + 100, PW - M);
+  setFont("normal", 8, DARK);
+  doc.text(new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }), M + 100, y + 9);
 
-  // Footer disclaimer
-  const footerY = PH - 10;
-  hRule(footerY - 5);
-  setFont("normal", 6.5, GRAY);
-  doc.text(
-    "This report prepared in accordance with IICRC S500 Standard for Professional Water Damage Restoration.  Titan Restoration LLC · Augusta, GA · 706-922-0154",
-    PW / 2,
-    footerY,
-    { align: "center" }
-  );
-
-  // Page numbers
+  // Footer + page numbers on every page
   const pageCount = (doc as any).internal.getNumberOfPages();
   for (let p = 1; p <= pageCount; p++) {
     doc.setPage(p);
+    hRule(PH - 11);
+    setFont("normal", 6.5, GRAY);
+    doc.text(
+      "Prepared in accordance with IICRC S500 Standard for Professional Water Damage Restoration. Titan Restoration LLC · Augusta, GA · 706-922-0154",
+      PW / 2,
+      PH - 7,
+      { align: "center" },
+    );
     setFont("normal", 7, GRAY);
-    doc.text(`Page ${p} of ${pageCount}`, PW - M, PH - 5, { align: "right" });
+    doc.text(`Page ${p} of ${pageCount}`, PW - M, PH - 3, { align: "right" });
+    doc.text(`Job #${job.jobNumber}`, M, PH - 3);
   }
 
   return doc.output("datauristring");
@@ -571,9 +717,14 @@ export function DryStandardReportGenerator({
 
   const latestWME = (() => {
     if (records.length === 0) return 0;
-    const sorted = [...records].sort((a, b) =>
-      new Date(b.recordDate || 0).getTime() - new Date(a.recordDate || 0).getTime()
-    );
+    // Records are keyed by readingDate (YYYY-MM-DD) with a per-day dayNumber.
+    // Fall back to dayNumber tie-break so multiple entries on the same day
+    // still order deterministically.
+    const sorted = [...records].sort((a, b) => {
+      const da = (b.readingDate || "").localeCompare(a.readingDate || "");
+      if (da !== 0) return da;
+      return (b.dayNumber || 0) - (a.dayNumber || 0);
+    });
     let latest = 0;
     try {
       const mr = JSON.parse(sorted[0].moistureReadings || "[]");
@@ -598,9 +749,10 @@ export function DryStandardReportGenerator({
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Info className="w-3.5 h-3.5 flex-shrink-0" />
               <span>
-                This report will compile all drying log entries into a multi-page
-                IICRC S500-compliant PDF with job info, daily log table, moisture trend,
-                equipment summary, and technician clearance attestation.
+                This report will compile every drying log entry into a multi-page
+                IICRC S500-compliant PDF with a per-day breakdown (psychrometric readings,
+                affected areas, moisture readings, equipment, observations, and signature),
+                followed by a moisture trend, equipment summary, and technician clearance attestation.
               </span>
             </div>
 
@@ -655,9 +807,9 @@ export function DryStandardReportGenerator({
                   <Table>
                     <TableHeader>
                       <TableRow>
+                        <TableHead className="text-xs h-7">Day</TableHead>
                         <TableHead className="text-xs h-7">Date</TableHead>
-                        <TableHead className="text-xs h-7">Area</TableHead>
-                        <TableHead className="text-xs h-7">Material</TableHead>
+                        <TableHead className="text-xs h-7">Readings</TableHead>
                         <TableHead className="text-xs h-7">
                           <span className="flex items-center gap-1">
                             <Droplets className="w-3 h-3" />RH%
@@ -673,37 +825,50 @@ export function DryStandardReportGenerator({
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {records.slice(0, 5).map(rec => {
-                        const gpp =
-                          rec.tempF && rec.relativeHumidity
-                            ? calcGPP(rec.tempF, rec.relativeHumidity)
-                            : null;
-                        return (
-                          <TableRow key={rec.id} className="text-xs">
-                            <TableCell className="py-1.5">
-                              {rec.recordDate
-                                ? fmtDateShort(rec.recordDate)
-                                : "—"}
-                            </TableCell>
-                            <TableCell className="py-1.5">{rec.area || "—"}</TableCell>
-                            <TableCell className="py-1.5">{rec.material || "—"}</TableCell>
-                            <TableCell className="py-1.5">
-                              {rec.relativeHumidity ? `${rec.relativeHumidity}%` : "—"}
-                            </TableCell>
-                            <TableCell className="py-1.5">
-                              {rec.tempF ? `${rec.tempF}°F` : "—"}
-                            </TableCell>
-                            <TableCell className="py-1.5">
-                              {gpp !== null ? (
-                                <span className={gpp <= 55 ? "text-green-600" : "text-amber-600"}>
-                                  {gpp}
-                                </span>
-                              ) : "—"}
-                            </TableCell>
-                            <TableCell className="py-1.5">{rec.technician || "—"}</TableCell>
-                          </TableRow>
-                        );
-                      })}
+                      {[...records]
+                        .sort((a, b) => {
+                          const da = (a.readingDate || "").localeCompare(b.readingDate || "");
+                          if (da !== 0) return da;
+                          return (a.dayNumber || 0) - (b.dayNumber || 0);
+                        })
+                        .slice(0, 5)
+                        .map(rec => {
+                          const gpp =
+                            rec.tempF && rec.rhPct
+                              ? calcGPP(rec.tempF, rec.rhPct)
+                              : null;
+                          let readingCount = 0;
+                          try { readingCount = (JSON.parse(rec.moistureReadings || "[]") as any[]).length; } catch {}
+                          return (
+                            <TableRow key={rec.id} className="text-xs">
+                              <TableCell className="py-1.5 font-semibold">Day {rec.dayNumber || "—"}</TableCell>
+                              <TableCell className="py-1.5">
+                                {rec.readingDate ? fmtDateShort(rec.readingDate) : "—"}
+                              </TableCell>
+                              <TableCell className="py-1.5">
+                                {rec.recordType === "missed" ? (
+                                  <span className="text-amber-600">Missed</span>
+                                ) : readingCount > 0 ? (
+                                  `${readingCount} reading${readingCount === 1 ? "" : "s"}`
+                                ) : "—"}
+                              </TableCell>
+                              <TableCell className="py-1.5">
+                                {rec.rhPct != null ? `${rec.rhPct}%` : "—"}
+                              </TableCell>
+                              <TableCell className="py-1.5">
+                                {rec.tempF != null ? `${rec.tempF}°F` : "—"}
+                              </TableCell>
+                              <TableCell className="py-1.5">
+                                {gpp !== null ? (
+                                  <span className={gpp <= 55 ? "text-green-600" : "text-amber-600"}>
+                                    {gpp}
+                                  </span>
+                                ) : "—"}
+                              </TableCell>
+                              <TableCell className="py-1.5">{rec.techName || "—"}</TableCell>
+                            </TableRow>
+                          );
+                        })}
                     </TableBody>
                   </Table>
                   {records.length > 5 && (
