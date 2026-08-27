@@ -66,17 +66,34 @@ function parseArr<T = any>(s: string | null | undefined): T[] {
   try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; }
 }
 
-// Runtime hours between two YYYY-MM-DD dates (end - start). Duplicated from
-// DryingRecords.tsx so the PDF module stays self-contained — both call sites
-// keep whole-day granularity because equipment is placed/pulled on a date,
-// not a specific time. Returns null on missing/invalid input.
-function pdfRuntimeHours(startDate?: string, endDate?: string): number | null {
+// Runtime hours between (startDate,startTime) and (endDate,endTime). Kept in
+// sync with DryingRecords.tsx so the on-screen runtime matches what the PDF
+// prints. Time components are optional and default to 00:00 for records that
+// predate the time fields. Precision is one decimal hour (e.g. 2.3h).
+function pdfRuntimeHours(
+  startDate?: string,
+  endDate?: string,
+  startTime?: string,
+  endTime?: string,
+): number | null {
   if (!startDate || !endDate) return null;
-  const s = new Date(startDate + "T00:00:00");
-  const e = new Date(endDate + "T00:00:00");
+  const st = /^\d{2}:\d{2}$/.test(startTime || "") ? startTime : "00:00";
+  const et = /^\d{2}:\d{2}$/.test(endTime || "") ? endTime : "00:00";
+  const s = new Date(`${startDate}T${st}:00`);
+  const e = new Date(`${endDate}T${et}:00`);
   if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return null;
-  const hrs = Math.round((e.getTime() - s.getTime()) / 3_600_000);
-  return hrs >= 0 ? hrs : null;
+  const hrs = (e.getTime() - s.getTime()) / 3_600_000;
+  if (hrs < 0) return null;
+  return Math.round(hrs * 10) / 10;
+}
+
+// Compact "MM/DD HH:MM" label for the equipment tables. HH:MM comes straight
+// from the tech's local-time input — no timezone conversion so the printed
+// label matches what they typed in the field.
+function fmtDateTimeShort(date?: string, time?: string): string {
+  if (!date) return "—";
+  const base = fmtDateShort(date);
+  return time && /^\d{2}:\d{2}$/.test(time) ? `${base} ${time}` : base;
 }
 
 // Sort drying records ascending by day (readingDate then dayNumber) so the
@@ -438,7 +455,9 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
       serialNumber?: string;
       room?: string;
       startDate?: string;
+      startTime?: string;
       endDate?: string;
+      endTime?: string;
     };
     const equipment = parseArr<EquipmentEntry>(rec.equipment);
     y = ensureSpace(y, 8 + Math.max(equipment.length, 1) * 5 + 4, dayLabel);
@@ -461,13 +480,14 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
       const groups = Array.from(groupsMap.entries()).sort(([a], [b]) => a.localeCompare(b));
 
       // Column layout for the equipment grid. Sums to ~CONTENT_W (~191mm).
+      // Start/End widen to fit "MM/DD HH:MM" (~13 chars at 7.5pt).
       const COL_TYPE = 2;
-      const COL_QTY = 52;
-      const COL_PLACE = 62;
-      const COL_SERIAL = 100;
-      const COL_START = 132;
-      const COL_END = 154;
-      const COL_RT = 176;
+      const COL_QTY = 44;
+      const COL_PLACE = 54;
+      const COL_SERIAL = 88;
+      const COL_START = 120;
+      const COL_END = 148;
+      const COL_RT = 178;
 
       groups.forEach(([room, items]) => {
         y = ensureSpace(y, 5 + items.length * 5 + 2, dayLabel);
@@ -498,16 +518,21 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
           doc.text(e.qty != null ? String(e.qty) : "—", M + COL_QTY, y + 3.5);
           doc.text(doc.splitTextToSize(e.placement || "—", 36)[0], M + COL_PLACE, y + 3.5);
           doc.text(doc.splitTextToSize(e.serialNumber || "—", 30)[0], M + COL_SERIAL, y + 3.5);
-          doc.text(e.startDate ? fmtDateShort(e.startDate) : "—", M + COL_START, y + 3.5);
-          doc.text(e.endDate ? fmtDateShort(e.endDate) : (e.startDate ? "active" : "—"), M + COL_END, y + 3.5);
-          // Runtime hours (whole-day granularity). If still running, show a
-          // running-total from startDate to this record's reading date.
+          doc.text(fmtDateTimeShort(e.startDate, e.startTime), M + COL_START, y + 3.5);
+          doc.text(
+            e.endDate
+              ? fmtDateTimeShort(e.endDate, e.endTime)
+              : (e.startDate ? "active" : "—"),
+            M + COL_END, y + 3.5
+          );
+          // Runtime hours (0.1h precision). If still running, show a
+          // running-total from start to this record's reading date @ end-of-day.
           let rtLabel = "—";
           if (e.startDate && e.endDate) {
-            const hrs = pdfRuntimeHours(e.startDate, e.endDate);
+            const hrs = pdfRuntimeHours(e.startDate, e.endDate, e.startTime, e.endTime);
             rtLabel = hrs != null ? `${hrs}h` : "—";
           } else if (e.startDate && rec.readingDate) {
-            const hrs = pdfRuntimeHours(e.startDate, rec.readingDate);
+            const hrs = pdfRuntimeHours(e.startDate, rec.readingDate, e.startTime, "23:59");
             rtLabel = hrs != null ? `${hrs}h (running)` : "—";
           }
           doc.text(rtLabel, M + COL_RT, y + 3.5);
@@ -627,14 +652,16 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
     serial: string;
     room: string;
     qty: number;
-    earliestStart?: string;
+    earliestStart?: string;      // YYYY-MM-DD
+    earliestStartTime?: string;  // HH:MM aligned with earliestStart
     latestEnd?: string;
+    latestEndTime?: string;
     stillDeployed: boolean;
   };
   const rollup = new Map<string, RollupEntry>();
   const lastReadingDate = sorted.length ? (sorted[sorted.length - 1].readingDate || "") : "";
   sorted.forEach(rec => {
-    parseArr<{ type?: string; qty?: number; serialNumber?: string; room?: string; startDate?: string; endDate?: string }>(rec.equipment).forEach(e => {
+    parseArr<{ type?: string; qty?: number; serialNumber?: string; room?: string; startDate?: string; startTime?: string; endDate?: string; endTime?: string }>(rec.equipment).forEach(e => {
       const type = (e.type || "").trim() || "—";
       const serial = (e.serialNumber || "").trim();
       const room = (e.room || "").trim() || "Unassigned";
@@ -645,16 +672,26 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
         type, serial, room,
         qty: 0,
         earliestStart: undefined,
+        earliestStartTime: undefined,
         latestEnd: undefined,
+        latestEndTime: undefined,
         stillDeployed: false,
       };
       cur.qty = Math.max(cur.qty, Number(e.qty) || 1);
-      if (e.startDate) {
-        cur.earliestStart = !cur.earliestStart || e.startDate < cur.earliestStart ? e.startDate : cur.earliestStart;
+      // Compare on date+time so the same date with different times still
+      // resolves to the correct extreme. Missing time → 00:00.
+      const startKey = e.startDate ? `${e.startDate}T${e.startTime && /^\d{2}:\d{2}$/.test(e.startTime) ? e.startTime : "00:00"}` : "";
+      const endKey   = e.endDate   ? `${e.endDate}T${e.endTime && /^\d{2}:\d{2}$/.test(e.endTime)     ? e.endTime   : "00:00"}` : "";
+      const curStartKey = cur.earliestStart ? `${cur.earliestStart}T${cur.earliestStartTime || "00:00"}` : "";
+      const curEndKey   = cur.latestEnd     ? `${cur.latestEnd}T${cur.latestEndTime || "00:00"}`       : "";
+      if (startKey && (!curStartKey || startKey < curStartKey)) {
+        cur.earliestStart = e.startDate;
+        cur.earliestStartTime = e.startTime;
       }
-      if (e.endDate) {
-        cur.latestEnd = !cur.latestEnd || e.endDate > cur.latestEnd ? e.endDate : cur.latestEnd;
-      } else {
+      if (endKey && (!curEndKey || endKey > curEndKey)) {
+        cur.latestEnd = e.endDate;
+        cur.latestEndTime = e.endTime;
+      } else if (!e.endDate) {
         // Any occurrence without an endDate means "still on site" for this asset.
         cur.stillDeployed = true;
       }
@@ -679,12 +716,12 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
     });
 
     // Column layout mirrors the per-day equipment table so the report reads
-    // consistently.
+    // consistently. Widen START/END here too for "MM/DD HH:MM".
     const COL_TYPE = 2;
-    const COL_QTY = 52;
-    const COL_SERIAL = 62;
-    const COL_START = 100;
-    const COL_END = 130;
+    const COL_QTY = 44;
+    const COL_SERIAL = 54;
+    const COL_START = 92;
+    const COL_END = 125;
     const COL_RT = 160;
 
     Array.from(byRoom.entries()).sort(([a], [b]) => a.localeCompare(b)).forEach(([room, items]) => {
@@ -713,15 +750,16 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
         doc.text(doc.splitTextToSize(e.type, 48)[0], M + COL_TYPE, y + 3.5);
         doc.text(String(e.qty), M + COL_QTY, y + 3.5);
         doc.text(doc.splitTextToSize(e.serial || "—", 36)[0], M + COL_SERIAL, y + 3.5);
-        doc.text(e.earliestStart ? fmtDateShort(e.earliestStart) : "—", M + COL_START, y + 3.5);
+        doc.text(fmtDateTimeShort(e.earliestStart, e.earliestStartTime), M + COL_START, y + 3.5);
         // Endpoint for runtime: latestEnd if pulled, else last known reading
         // date if still deployed. Label matches so the total reads honestly.
         const endForCalc = !e.stillDeployed && e.latestEnd ? e.latestEnd : lastReadingDate;
+        const endTimeForCalc = !e.stillDeployed ? e.latestEndTime : "23:59";
         const endLabel = !e.stillDeployed && e.latestEnd
-          ? fmtDateShort(e.latestEnd)
+          ? fmtDateTimeShort(e.latestEnd, e.latestEndTime)
           : (e.stillDeployed ? "still on site" : "—");
         doc.text(endLabel, M + COL_END, y + 3.5);
-        const hrs = pdfRuntimeHours(e.earliestStart, endForCalc);
+        const hrs = pdfRuntimeHours(e.earliestStart, endForCalc, e.earliestStartTime, endTimeForCalc);
         if (hrs != null) roomTotalHrs += hrs * (e.qty || 1);
         const rtLabel = hrs != null
           ? (e.stillDeployed ? `${hrs}h (running)` : `${hrs}h`)
@@ -733,7 +771,7 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
       // Per-room subtotal in unit-hours (qty × hours) — the number carriers
       // actually want for reimbursement calculations.
       setFont("italic" as any, 7, GRAY);
-      doc.text(`Room subtotal: ${roomTotalHrs} unit-hours`, M + 2, y + 3);
+      doc.text(`Room subtotal: ${Math.round(roomTotalHrs * 10) / 10} unit-hours`, M + 2, y + 3);
       y += 6;
     });
   }

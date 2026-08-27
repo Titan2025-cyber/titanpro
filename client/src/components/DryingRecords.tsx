@@ -170,19 +170,31 @@ interface EquipRow {
   // otherwise the row is treated as still deployed.
   room?: string;         // matches an AreaRow.room label on this record
   startDate?: string;    // YYYY-MM-DD when the equipment was placed
+  startTime?: string;    // HH:MM (24h, local) when the equipment was placed
   endDate?: string;      // YYYY-MM-DD when the equipment was pulled (blank = still deployed)
+  endTime?: string;      // HH:MM (24h, local) when the equipment was pulled
 }
 
-// Runtime in hours between two YYYY-MM-DD dates (end - start). Returns null
-// if either bound is missing or invalid. Whole-day granularity is enough for
-// insurance documentation — techs don't log hour-level pull times.
-function runtimeHoursBetween(startDate?: string, endDate?: string): number | null {
+// Runtime in hours between (startDate,startTime) and (endDate,endTime). Time
+// components are optional and default to 00:00 so records created before the
+// time fields existed keep working. Precision is one decimal hour so a 2h15m
+// deployment reads as "2.3h" — accurate enough for reimbursement without
+// visually noisy minute counts. Returns null on missing/invalid bounds.
+function runtimeHoursBetween(
+  startDate?: string,
+  endDate?: string,
+  startTime?: string,
+  endTime?: string,
+): number | null {
   if (!startDate || !endDate) return null;
-  const s = new Date(startDate + "T00:00:00");
-  const e = new Date(endDate + "T00:00:00");
+  const st = /^\d{2}:\d{2}$/.test(startTime || "") ? startTime : "00:00";
+  const et = /^\d{2}:\d{2}$/.test(endTime || "") ? endTime : "00:00";
+  const s = new Date(`${startDate}T${st}:00`);
+  const e = new Date(`${endDate}T${et}:00`);
   if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return null;
-  const hrs = Math.round((e.getTime() - s.getTime()) / 3_600_000);
-  return hrs >= 0 ? hrs : null;
+  const hrs = (e.getTime() - s.getTime()) / 3_600_000;
+  if (hrs < 0) return null;
+  return Math.round(hrs * 10) / 10;
 }
 // Affected area — a room/material pairing with wetness state. Optionally
 // tagged as a tear-out (material removed) with the replacement material
@@ -619,6 +631,14 @@ function EquipmentTable({
   ])).sort();
 
   const today = () => new Date().toISOString().slice(0, 10);
+  // HH:MM in the local timezone — matches what the <input type="time">
+  // control emits so pre-filled values round-trip cleanly.
+  const nowHHMM = () => {
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  };
   const add = () => onChange([...rows, {
     id: Date.now(),
     type: "LGR Dehumidifier",
@@ -627,10 +647,13 @@ function EquipmentTable({
     serialNumber: "",
     dailyReadings: [],
     room: roomOptions[0] || "",
-    // Default startDate to the drying record's reading date so techs don't
-    // have to re-enter today's date every time they add a piece of equipment.
+    // Default startDate/startTime to the drying record's reading date and the
+    // current wall-clock time so techs don't have to re-enter them every time
+    // they add a piece of equipment.
     startDate: readingDate || today(),
+    startTime: nowHHMM(),
     endDate: "",
+    endTime: "",
   }]);
   const del = (id: number) => onChange(rows.filter(r => r.id !== id));
   const upd = (id: number, field: keyof EquipRow, val: any) =>
@@ -649,7 +672,7 @@ function EquipmentTable({
         {rows.map(row => {
           const isDehu = row.type.toLowerCase().includes("dehumid");
           const dr = row.dailyReadings || [];
-          const runtimeHrs = runtimeHoursBetween(row.startDate, row.endDate);
+          const runtimeHrs = runtimeHoursBetween(row.startDate, row.endDate, row.startTime, row.endTime);
           return (
             <div key={row.id} className="border rounded-md p-1.5 space-y-1">
               {/* Primary line: what it is + serial + actions. */}
@@ -671,17 +694,17 @@ function EquipmentTable({
                 )}
                 {!readOnly && <Button size="sm" variant="ghost" className="col-span-1 h-7 px-1 text-destructive" onClick={() => del(row.id)}><Trash2 className="w-3 h-3" /></Button>}
               </div>
-              {/* Secondary line: where it is + when it was deployed. Placement
-                  is now free-text spot-inside-the-room (e.g. "NE corner"),
-                  while Room is a dropdown pulled from the affected-areas
-                  table so the drying report can roll up runtime per room. */}
+              {/* Secondary line: WHERE the equipment sits. Placement is free-text
+                  spot-inside-the-room (e.g. "NE corner"); Room is a dropdown
+                  pulled from the affected-areas table so the drying report can
+                  roll up runtime per room. */}
               <div className="grid grid-cols-12 gap-1 items-center">
                 <Select
                   value={row.room || "__unset__"}
                   onValueChange={v => upd(row.id, "room", v === "__unset__" ? "" : v)}
                   disabled={readOnly}
                 >
-                  <SelectTrigger className="col-span-4 h-7 text-xs">
+                  <SelectTrigger className="col-span-5 h-7 text-xs">
                     <SelectValue placeholder="Room" />
                   </SelectTrigger>
                   <SelectContent>
@@ -689,13 +712,24 @@ function EquipmentTable({
                     {roomOptions.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
                   </SelectContent>
                 </Select>
-                <Input className="col-span-3 h-7 text-xs" placeholder="Placement in room" value={row.placement}
+                <Input className="col-span-7 h-7 text-xs" placeholder="Placement in room" value={row.placement}
                   disabled={readOnly} onChange={e => upd(row.id, "placement", e.target.value)} title="Specific spot within the room (e.g. NE corner, closet)" />
-                <Input className="col-span-2 h-7 text-xs" type="date" value={row.startDate || ""}
-                  disabled={readOnly} onChange={e => upd(row.id, "startDate", e.target.value)} title="Placed on" />
-                <Input className="col-span-2 h-7 text-xs" type="date" value={row.endDate || ""}
-                  disabled={readOnly} onChange={e => upd(row.id, "endDate", e.target.value)} title="Pulled on (blank = still deployed)" />
-                <div className="col-span-1 text-[10px] text-muted-foreground text-right pr-1" title="Total runtime">
+              </div>
+              {/* Tertiary line: WHEN it was placed / pulled. Date and time
+                  are separate inputs — native <input type="time"> gives us
+                  a mobile-friendly wheel on iOS/Android without needing a
+                  custom picker. Runtime column shows the derived hours
+                  (one decimal) with an "on" pill when still deployed. */}
+              <div className="grid grid-cols-12 gap-1 items-center">
+                <Input className="col-span-3 h-7 text-xs" type="date" value={row.startDate || ""}
+                  disabled={readOnly} onChange={e => upd(row.id, "startDate", e.target.value)} title="Placed date" />
+                <Input className="col-span-2 h-7 text-xs" type="time" value={row.startTime || ""}
+                  disabled={readOnly} onChange={e => upd(row.id, "startTime", e.target.value)} title="Placed time" />
+                <Input className="col-span-3 h-7 text-xs" type="date" value={row.endDate || ""}
+                  disabled={readOnly} onChange={e => upd(row.id, "endDate", e.target.value)} title="Pulled date (blank = still deployed)" />
+                <Input className="col-span-2 h-7 text-xs" type="time" value={row.endTime || ""}
+                  disabled={readOnly} onChange={e => upd(row.id, "endTime", e.target.value)} title="Pulled time" />
+                <div className="col-span-2 text-[10px] text-muted-foreground text-right pr-1" title="Total runtime">
                   {runtimeHrs !== null
                     ? <span className="font-medium text-foreground">{runtimeHrs}h</span>
                     : (row.startDate ? <span className="text-amber-600 dark:text-amber-400">on</span> : <span className="opacity-50">—</span>)
