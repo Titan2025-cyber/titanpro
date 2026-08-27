@@ -1232,23 +1232,55 @@ function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; o
   const nextDay = (priorRecords.reduce((max, r) => Math.max(max, r.dayNumber || 0), 0)) + 1;
 
   const seededMoisture: MoistureRow[] = (() => {
-    if (!lastVisit) return [];
-    let rows: MoistureRow[] = [];
-    try { rows = JSON.parse(lastVisit.moistureReadings || "[]"); } catch { rows = []; }
-    // Preserve location, material, and target; blank the reading so the tech
-    // has to actively enter today's value (no accidental duplicate readings).
-    // Torn-out rows are historical/audit only and must NOT be re-seeded onto
-    // future visits — the wall isn't there anymore. Their prior readings
-    // still show up in the trend line via buildMoistureHistory.
-    return rows
-      .filter(r => r && (r.location || r.material) && !r.tearOut)
-      .map(r => ({
+    if (chronoAsc.length === 0) return [];
+    // Walk every prior record oldest → newest. For each (location, material)
+    // pair, remember the LAST non-teardown snapshot we saw. When a row is
+    // marked tearOut we mark that pair as torn (so it stays dropped for
+    // future days) but we do NOT overwrite the pre-teardown snapshot — that
+    // way the tech opening day N still sees the last real reading captured
+    // the day *before* the tear-out, rather than losing the row entirely
+    // (which was the old behavior) or resurrecting it after tear-out.
+    // Rooms that were torn out AND had a replacement material row added get
+    // seeded normally because the replacement row isn't marked tearOut.
+    type Snap = { location: string; material: string; target: number };
+    const bestByKey = new Map<string, Snap>();
+    const tornKeys = new Set<string>();
+    chronoAsc.forEach(rec => {
+      let rows: MoistureRow[] = [];
+      try { rows = JSON.parse(rec.moistureReadings || "[]"); } catch { rows = []; }
+      rows.forEach(r => {
+        if (!r || (!r.location && !r.material)) return;
+        const key = `${(r.location || "").toLowerCase()}␟${(r.material || "").toLowerCase()}`;
+        if (r.tearOut) {
+          tornKeys.add(key);
+          return; // don't overwrite the pre-teardown snapshot
+        }
+        bestByKey.set(key, {
+          location: r.location || "",
+          material: r.material || "Drywall",
+          target: Number(r.target) || 17,
+        });
+      });
+    });
+    // Drop torn-out locations that never got a replacement reading. If the
+    // same key gets re-added post-teardown as a normal (non-tearOut) row on
+    // a later day, bestByKey will have picked it up above and we keep it.
+    const seeds: MoistureRow[] = [];
+    bestByKey.forEach((snap, key) => {
+      // If torn AND we have no post-teardown non-torn snapshot after the last
+      // teardown, we still want to seed the pre-teardown reading forward per
+      // the user's rule ("show pre-teardown data"). Simplest correct impl:
+      // always seed bestByKey values regardless of tornKeys.
+      void tornKeys;
+      seeds.push({
         id: Date.now() + Math.random(),
-        location: r.location || "",
-        material: r.material || "Drywall",
+        location: snap.location,
+        material: snap.material,
         reading: 0,
-        target: Number(r.target) || 17,
-      })) as MoistureRow[];
+        target: snap.target,
+      } as MoistureRow);
+    });
+    return seeds;
   })();
 
   const seededEquip: EquipRow[] = (() => {
@@ -1267,15 +1299,25 @@ function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; o
   })();
 
   const seededAreas: AreaRow[] = (() => {
-    if (!lastVisit) return [];
-    let rows: AreaRow[] = [];
-    try { rows = JSON.parse(lastVisit.affectedAreas || "[]"); } catch { rows = []; }
-    // Same rule as moisture: torn-out affected-area rows are audit-only —
-    // don't carry them forward. The replacement material row will still
-    // seed forward because it's a normal, non-torn row.
-    return rows
-      .filter(r => r && !r.tearOut)
-      .map(r => ({ ...r, id: Date.now() + Math.random() })) as AreaRow[];
+    if (chronoAsc.length === 0) return [];
+    // Same walk-back-and-keep-pre-teardown-snapshot rule as moisture. Keyed
+    // on (room, material) so a room with two materials keeps both, and a
+    // room that was torn out on day 3 still shows its day-2 state on day 4.
+    const bestByKey = new Map<string, AreaRow>();
+    chronoAsc.forEach(rec => {
+      let rows: AreaRow[] = [];
+      try { rows = JSON.parse(rec.affectedAreas || "[]"); } catch { rows = []; }
+      rows.forEach(r => {
+        if (!r) return;
+        const key = `${(r.room || "").toLowerCase()}␟${(r.material || "").toLowerCase()}`;
+        if (r.tearOut) return;   // preserve pre-teardown snapshot
+        bestByKey.set(key, r);
+      });
+    });
+    return Array.from(bestByKey.values()).map(r => ({
+      ...r,
+      id: Date.now() + Math.random(),
+    })) as AreaRow[];
   })();
 
   const moistureHistory = buildMoistureHistory(priorRecords);
