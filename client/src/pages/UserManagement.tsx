@@ -61,7 +61,10 @@ const POSITIONS = [
   "Accounts Payable", "Receptionist", "Subcontractor",
 ];
 
-const blank = { name: "", role: "tech", position: "", phone: "", gmailEmail: "", password: "titan1234", pin: "1234", isActive: true };
+// PIN policy on the server (validatePinStrength) requires 6–8 digits and
+// rejects trivial patterns. Leaving PIN blank tells the server to generate a
+// unique compliant PIN and write it to the audit log for distribution.
+const blank = { name: "", role: "tech", position: "", phone: "", gmailEmail: "", password: "titan1234", pin: "", isActive: true };
 
 export default function UserManagement() {
   const { user: me, can } = useAuth();
@@ -245,7 +248,7 @@ export default function UserManagement() {
                       </div>
                       <div>
                         <Label className="text-xs">New PIN</Label>
-                        <Input className="h-8 text-xs mt-1" type="password" maxLength={6} placeholder="4–6 digits" value={newPin} onChange={e => setNewPin(e.target.value)} />
+                        <Input className="h-8 text-xs mt-1" type="password" inputMode="numeric" pattern="[0-9]*" maxLength={8} placeholder="6–8 digits" value={newPin} onChange={e => setNewPin(e.target.value.replace(/\D/g, ""))} />
                       </div>
                     </div>
                     <div className="flex gap-2">
@@ -484,8 +487,8 @@ function StaffForm({ form, setForm, onSave, onCancel, isPending, isNew }: {
             <Input className="h-8 text-xs mt-1" type="password" value={form.password} onChange={e => setForm((f: any) => ({ ...f, password: e.target.value }))} placeholder="titan1234" data-testid="input-staff-password" />
           </div>
           <div>
-            <Label className="text-xs">PIN <span className="text-muted-foreground">(default: 1234)</span></Label>
-            <Input className="h-8 text-xs mt-1" type="password" maxLength={8} value={form.pin} onChange={e => setForm((f: any) => ({ ...f, pin: e.target.value }))} placeholder="1234" data-testid="input-staff-pin" />
+            <Label className="text-xs">PIN <span className="text-muted-foreground">(6–8 digits, blank auto-generates)</span></Label>
+            <Input className="h-8 text-xs mt-1" type="password" inputMode="numeric" pattern="[0-9]*" maxLength={8} value={form.pin} onChange={e => setForm((f: any) => ({ ...f, pin: e.target.value.replace(/\D/g, "") }))} placeholder="6–8 digits" data-testid="input-staff-pin" />
           </div>
         </>
       ) : (
@@ -495,8 +498,8 @@ function StaffForm({ form, setForm, onSave, onCancel, isPending, isNew }: {
             <Input className="h-8 text-xs mt-1" type="password" value={form.password} onChange={e => setForm((f: any) => ({ ...f, password: e.target.value }))} placeholder="••••••••" data-testid="input-staff-password" />
           </div>
           <div>
-            <Label className="text-xs">New PIN <span className="text-muted-foreground">(4–8 digits, blank keeps)</span></Label>
-            <Input className="h-8 text-xs mt-1" type="password" maxLength={8} value={form.pin} onChange={e => setForm((f: any) => ({ ...f, pin: e.target.value }))} placeholder="••••" data-testid="input-staff-pin" />
+            <Label className="text-xs">New PIN <span className="text-muted-foreground">(6–8 digits, blank keeps)</span></Label>
+            <Input className="h-8 text-xs mt-1" type="password" inputMode="numeric" pattern="[0-9]*" maxLength={8} value={form.pin} onChange={e => setForm((f: any) => ({ ...f, pin: e.target.value.replace(/\D/g, "") }))} placeholder="••••••" data-testid="input-staff-pin" />
           </div>
         </>
       )}
