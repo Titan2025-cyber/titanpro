@@ -562,12 +562,9 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
     y += 10;
   }
 
-  y = ensureSpace(y, 60);
-  setFont("bold", 11, BLUE);
-  doc.text("FINAL CLEARANCE STATEMENT — IICRC S500 §13.2", M, y);
-  y += 4;
-  doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
-  doc.roundedRect(M, y, CONTENT_W, 32, 2, 2, "F");
+  // Clearance block: measure text height first so the box wraps content
+  // exactly and the signatures below never fall off the page. Reserve space
+  // for section heading + box + signatures + footer clearance (PH-14).
   setFont("normal", 8.5, DARK);
   const clearanceText =
     "I attest, in accordance with IICRC S500 §13.2, that all affected materials at the above-referenced property " +
@@ -576,9 +573,23 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
     "(temperature, relative humidity, grains per pound) have been normalized to pre-loss levels. No visible mold growth, " +
     "standing water, or elevated moisture readings were observed at the time of clearance. All drying equipment has been " +
     "removed. The property is hereby released from active structural drying protocols.";
-  const clearLines = doc.splitTextToSize(clearanceText, CONTENT_W - 8);
-  doc.text(clearLines, M + 4, y + 5);
-  y += 36;
+  const clearLines = doc.splitTextToSize(clearanceText, CONTENT_W - 8) as string[];
+  const LINE_H = 4.2;                            // 8.5pt text with a touch of leading
+  const boxH = clearLines.length * LINE_H + 8;   // padding top + bottom
+  const SIG_BLOCK_H = 20;                        // heading + rule + name + subtitle
+  const HEADING_H = 8;
+  const totalNeeded = HEADING_H + boxH + SIG_BLOCK_H + 4;
+  y = ensureSpace(y, totalNeeded);
+
+  setFont("bold", 11, BLUE);
+  doc.text("FINAL CLEARANCE STATEMENT — IICRC S500 §13.2", M, y);
+  y += 4;
+
+  doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
+  doc.roundedRect(M, y, CONTENT_W, boxH, 2, 2, "F");
+  setFont("normal", 8.5, DARK);
+  doc.text(clearLines, M + 4, y + 5, { lineHeightFactor: 1.25 });
+  y += boxH + 6;
 
   setFont("bold", 8, GRAY);
   doc.text("TECHNICIAN SIGNATURE", M, y);
