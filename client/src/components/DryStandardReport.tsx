@@ -173,15 +173,17 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
   setFont("bold", 8, DARK);
   doc.text("Moisture Equivalence (WME)", M + 4, y + 6);
   setFont("normal", 8, DARK);
-  doc.text(`Wood/Framing: ≤${S500_TARGETS.wood.wme}%`, M + 4, y + 11);
-  doc.text(`Drywall/Gypsum: ≤${S500_TARGETS.drywall.wme}%`, M + 4, y + 16);
-  doc.text(`Concrete/Masonry: ≤${S500_TARGETS.concrete.wme}%`, M + 4, y + 21);
+  // jsPDF's built-in Helvetica uses WinAnsi encoding, which has no glyph for
+  // U+2264 (≤). Rendering it corrupts the whole line. Use "<=" instead.
+  doc.text(`Wood/Framing: <= ${S500_TARGETS.wood.wme}%`, M + 4, y + 11);
+  doc.text(`Drywall/Gypsum: <= ${S500_TARGETS.drywall.wme}%`, M + 4, y + 16);
+  doc.text(`Concrete/Masonry: <= ${S500_TARGETS.concrete.wme}%`, M + 4, y + 21);
 
   setFont("bold", 8, DARK);
   doc.text("Atmospheric Targets", M + CONTENT_W / 2 + 2, y + 6);
   setFont("normal", 8, DARK);
-  doc.text(`Indoor GPP: ≤${S500_TARGETS.gpp.value} grains/lb`, M + CONTENT_W / 2 + 2, y + 11);
-  doc.text("Relative Humidity: ≤50% typical", M + CONTENT_W / 2 + 2, y + 16);
+  doc.text(`Indoor GPP: <= ${S500_TARGETS.gpp.value} grains/lb`, M + CONTENT_W / 2 + 2, y + 11);
+  doc.text("Relative Humidity: <= 50% typical", M + CONTENT_W / 2 + 2, y + 16);
   doc.text("Temperature: 70–90°F optimal", M + CONTENT_W / 2 + 2, y + 21);
 
   setFont("italic" as any, 7, GRAY);
@@ -507,8 +509,9 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
     doc.text(`${highest.material} — ${highest.location}`, M + 4, y + 16);
     doc.text(`Date: ${highest.date ? fmtDateShort(highest.date) : "—"}`, M + 4, y + 19);
 
-    setFont("bold", 16, BLUE);
-    doc.text("→", PW / 2, y + 12, { align: "center" });
+    // Helvetica WinAnsi has no U+2192 (→). Use ">" for a clean arrow-ish glyph.
+    setFont("bold", 18, BLUE);
+    doc.text(">", PW / 2, y + 12, { align: "center" });
 
     setFont("bold", 7, GRAY);
     doc.text("FINAL READING", PW * 0.6, y + 5);
@@ -569,7 +572,7 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
   const clearanceText =
     "I attest, in accordance with IICRC S500 §13.2, that all affected materials at the above-referenced property " +
     "have been verified at or below established drying standards. Moisture content of all structural materials has been " +
-    "reduced to acceptable levels (Wood ≤16% WME, Drywall ≤1% WME, Concrete ≤4% WME). Indoor atmospheric conditions " +
+    "reduced to acceptable levels (Wood <= 16% WME, Drywall <= 1% WME, Concrete <= 4% WME). Indoor atmospheric conditions " +
     "(temperature, relative humidity, grains per pound) have been normalized to pre-loss levels. No visible mold growth, " +
     "standing water, or elevated moisture readings were observed at the time of clearance. All drying equipment has been " +
     "removed. The property is hereby released from active structural drying protocols.";
