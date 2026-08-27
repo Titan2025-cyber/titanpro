@@ -496,6 +496,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // req.path here is relative to the "/api" mount, so re-prefix for matching.
       const full = "/api" + (req.path === "/" ? "" : req.path);
       if (isPublic(full)) return next();
+      // Allow query-param session token for plain <a> / window.open flows that
+      // can't attach an Authorization header (e.g. opening an uploaded PDF from
+      // the Estimates tab). We only hoist ?t= into the header when Authorization
+      // is missing so callers using headers keep normal behavior. The token is
+      // still validated by gateStaffAuth against staff_sessions — no bypass.
+      if (!req.headers.authorization && typeof req.query?.t === "string" && req.query.t) {
+        req.headers.authorization = `Bearer ${req.query.t}`;
+      }
       return gateStaffAuth(req, res, next);
     });
   }
