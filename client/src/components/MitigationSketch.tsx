@@ -341,6 +341,16 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
   const dragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
   const dragShapeStart = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  // Which shape is currently being dragged in select mode. This has to live
+  // in a ref (not state) so a click-and-drag gesture works in one motion:
+  // the closure captured by handleMouseMove sees the id set on mousedown
+  // without waiting for a React re-render (which was the old bug — users
+  // had to click-then-release-then-drag to move a room).
+  const draggingShapeId = useRef<string | null>(null);
+  // Snapshot of the shape's original geometry at mousedown, so a drag
+  // computes newPos = origin + (cursor - dragStart) instead of chasing.
+  // Fields are union of every movable shape's positional attrs.
+  const dragShapeOrigin = useRef<{ x?: number; y?: number; cx?: number; cy?: number; x1?: number; y1?: number; x2?: number; y2?: number } | null>(null);
   const freehandPoints = useRef<{ x: number; y: number }[]>([]);
   const currentFreehandId = useRef<string | null>(null);
   const panStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
@@ -505,11 +515,34 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
     if (tool === "select") {
       const hit = hitTest(w.x, w.y);
       setSelectedId(hit);
+      // Reset drag target on every mousedown; only set it below when we
+      // hit a movable shape. Prevents a stale drag from a prior selection.
+      draggingShapeId.current = null;
+      dragShapeOrigin.current = null;
       if (hit) {
         const shape = sketch.shapes.find(s => s.id === hit);
-        if (shape?.type === "room") {
-          const r = shape as RoomShape;
-          dragShapeStart.current = { x: r.x, y: r.y, w: r.w, h: r.h };
+        if (shape) {
+          draggingShapeId.current = hit;
+          if (shape.type === "room") {
+            const r = shape as RoomShape;
+            dragShapeStart.current = { x: r.x, y: r.y, w: r.w, h: r.h };
+            dragShapeOrigin.current = { x: r.x, y: r.y };
+          } else if (shape.type === "text") {
+            const t = shape as TextShape;
+            dragShapeOrigin.current = { x: t.x, y: t.y };
+          } else if (shape.type === "moisture") {
+            const m = shape as MoisturePin;
+            dragShapeOrigin.current = { x: m.x, y: m.y };
+          } else if (shape.type === "circle") {
+            const c = shape as CircleShape;
+            dragShapeOrigin.current = { cx: c.cx, cy: c.cy };
+          } else if (shape.type === "arrow") {
+            const a = shape as ArrowShape;
+            dragShapeOrigin.current = { x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2 };
+          } else {
+            // Freehand not draggable for now — too many points to translate.
+            draggingShapeId.current = null;
+          }
         }
       }
     } else if (tool === "text") {
@@ -582,20 +615,36 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
             : s
         ),
       }));
-    } else if (tool === "select" && selectedId) {
-      const shape = sketch.shapes.find(s => s.id === selectedId);
-      if (shape?.type === "room") {
-        const dx = w.x - ds.x;
-        const dy = w.y - ds.y;
-        setSketch(prev => ({
-          ...prev,
-          shapes: prev.shapes.map(s =>
-            s.id === selectedId
-              ? { ...s, x: dragShapeStart.current.x + dx, y: dragShapeStart.current.y + dy } as RoomShape
-              : s
-          ),
-        }));
-      }
+    } else if (tool === "select" && draggingShapeId.current && dragShapeOrigin.current) {
+      // Move whichever shape was grabbed on mousedown. Using the ref (not
+      // selectedId from state) so click-and-drag in a single gesture works
+      // — the state update from setSelectedId hasn't landed yet.
+      const dragId = draggingShapeId.current;
+      const origin = dragShapeOrigin.current;
+      const dx = w.x - ds.x;
+      const dy = w.y - ds.y;
+      setSketch(prev => ({
+        ...prev,
+        shapes: prev.shapes.map(s => {
+          if (s.id !== dragId) return s;
+          if (s.type === "room" && origin.x != null && origin.y != null) {
+            return { ...s, x: origin.x + dx, y: origin.y + dy } as RoomShape;
+          }
+          if (s.type === "text" && origin.x != null && origin.y != null) {
+            return { ...s, x: origin.x + dx, y: origin.y + dy } as TextShape;
+          }
+          if (s.type === "moisture" && origin.x != null && origin.y != null) {
+            return { ...s, x: origin.x + dx, y: origin.y + dy } as MoisturePin;
+          }
+          if (s.type === "circle" && origin.cx != null && origin.cy != null) {
+            return { ...s, cx: origin.cx + dx, cy: origin.cy + dy } as CircleShape;
+          }
+          if (s.type === "arrow" && origin.x1 != null && origin.y1 != null && origin.x2 != null && origin.y2 != null) {
+            return { ...s, x1: origin.x1 + dx, y1: origin.y1 + dy, x2: origin.x2 + dx, y2: origin.y2 + dy } as ArrowShape;
+          }
+          return s;
+        }),
+      }));
     }
   }, [tool, toWorld, sketch, selectedId, offset, zoom, color, roomLabel]);
 
@@ -650,9 +699,14 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
     } else if (tool === "freehand") {
       currentFreehandId.current = null;
       pushHistory(sketch);
-    } else if (tool === "select" && selectedId && moved) {
+    } else if (tool === "select" && draggingShapeId.current && moved) {
+      // Snapshot the post-drag sketch for undo.
       pushHistory(sketch);
     }
+    // Always clear the per-drag refs on mouseup so the next click starts
+    // fresh even if it lands on empty canvas.
+    draggingShapeId.current = null;
+    dragShapeOrigin.current = null;
   }, [tool, toWorld, sketch, selectedId, color, roomLabel, pushHistory]);
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -911,7 +965,12 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
         <canvas
           ref={canvasRef}
           className="block w-full h-full"
-          style={{ cursor: tool === "eraser" ? "crosshair" : tool === "select" ? "default" : "crosshair" }}
+          style={{
+            cursor:
+              tool === "eraser" ? "crosshair"
+              : tool === "select" ? (selectedId ? "move" : "default")
+              : "crosshair",
+          }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
