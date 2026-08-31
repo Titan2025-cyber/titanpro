@@ -110,10 +110,20 @@ function insideOf(readings: PsychroReading[]): PsychroReading {
 }
 
 function calcGPP(tempF: number, rh: number): number {
-  // Simplified psychrometric: GPP = 0.62198 * Pws * (RH/100) / (P - Pws*(RH/100)) * 7000
+  // Grains of water per pound of dry air. Psychrometric formula:
+  //   W = 0.62198 * (Pw / (P - Pw))    (lb water / lb dry air)
+  //   Pw = Pws * RH/100
+  //   GPP = W * 7000
+  //
+  // Prior version used Antoine (Magnus form) which returns Pws in hPa
+  // (a.k.a. millibar) but paired it with total pressure P = 101.325 kPa.
+  // That unit mismatch inflated GPP by ~10× (e.g. 70°F/50%RH read as
+  // ~614 GPP instead of the correct ~54.5) and skewed every grain
+  // depression on the drying report. Fix: use 1013.25 hPa for P so both
+  // sides of the ratio are in the same units.
   const tempC = (tempF - 32) * 5 / 9;
-  const pws = 6.1078 * Math.exp(17.27 * tempC / (tempC + 237.3)); // Antoine approx (kPa * 10)
-  const p = 101.325;
+  const pws = 6.1078 * Math.exp(17.27 * tempC / (tempC + 237.3)); // hPa (mbar)
+  const p = 1013.25; // atmospheric pressure in hPa
   const w = 0.62198 * (pws * rh / 100) / (p - pws * rh / 100);
   return Math.round(w * 7000 * 10) / 10; // grains per pound
 }

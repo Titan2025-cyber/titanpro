@@ -48,10 +48,15 @@ const S500_TARGETS = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+// Grains of water per pound of dry air. Kept in sync with the client-side
+// calcGPP in DryingRecords.tsx (see that file for the full explanation).
+// Prior version used P = 101.325 kPa alongside Pws in hPa, which inflated
+// every GPP by ~10× and made every grain-depression on the drying report
+// wrong. Both saturation and total pressure are now in hPa (mbar).
 function calcGPP(tempF: number, rh: number): number {
   const tempC = (tempF - 32) * 5 / 9;
-  const pws = 6.1078 * Math.exp(17.27 * tempC / (tempC + 237.3));
-  const p = 101.325;
+  const pws = 6.1078 * Math.exp(17.27 * tempC / (tempC + 237.3)); // hPa
+  const p = 1013.25; // hPa
   const w = 0.62198 * (pws * rh / 100) / (p - pws * rh / 100);
   return Math.round(w * 7000 * 10) / 10;
 }
