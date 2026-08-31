@@ -867,20 +867,16 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
               </div>
               <div className="flex items-center gap-1">
                 <span className="text-xs text-muted-foreground">W</span>
-                <Input
-                  type="number" min={1}
-                  className="h-7 w-14 text-xs"
-                  value={roomW}
-                  onChange={e => setRoomW(Math.max(1, Number(e.target.value) || 1))}
-                  data-testid="input-sketch-room-w"
+                <RoomDimInput
+                  valueFt={roomW}
+                  onCommit={setRoomW}
+                  testId="input-sketch-room-w"
                 />
                 <span className="text-xs text-muted-foreground">×</span>
-                <Input
-                  type="number" min={1}
-                  className="h-7 w-14 text-xs"
-                  value={roomH}
-                  onChange={e => setRoomH(Math.max(1, Number(e.target.value) || 1))}
-                  data-testid="input-sketch-room-h"
+                <RoomDimInput
+                  valueFt={roomH}
+                  onCommit={setRoomH}
+                  testId="input-sketch-room-h"
                 />
                 <span className="text-xs text-muted-foreground">ft</span>
               </div>
@@ -952,22 +948,16 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="text-muted-foreground">W</span>
-                  <Input
-                    type="number" min={1}
-                    className="h-7 w-14 text-xs"
-                    value={Math.round(pxToFt((selectedShape as RoomShape).w))}
-                    onChange={e => updateRoom(selectedShape.id, { wFt: Math.max(1, Number(e.target.value) || 1) })}
-                    onBlur={commitRoomEdit}
-                    data-testid="input-sketch-selected-room-w"
+                  <RoomDimInput
+                    valueFt={Math.round(pxToFt((selectedShape as RoomShape).w))}
+                    onCommit={(ft) => { updateRoom(selectedShape.id, { wFt: ft }); commitRoomEdit(); }}
+                    testId="input-sketch-selected-room-w"
                   />
                   <span className="text-muted-foreground">×</span>
-                  <Input
-                    type="number" min={1}
-                    className="h-7 w-14 text-xs"
-                    value={Math.round(pxToFt((selectedShape as RoomShape).h))}
-                    onChange={e => updateRoom(selectedShape.id, { hFt: Math.max(1, Number(e.target.value) || 1) })}
-                    onBlur={commitRoomEdit}
-                    data-testid="input-sketch-selected-room-h"
+                  <RoomDimInput
+                    valueFt={Math.round(pxToFt((selectedShape as RoomShape).h))}
+                    onCommit={(ft) => { updateRoom(selectedShape.id, { hFt: ft }); commitRoomEdit(); }}
+                    testId="input-sketch-selected-room-h"
                   />
                   <span className="text-muted-foreground">ft</span>
                 </div>
@@ -1072,5 +1062,59 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
         <span>Scroll = Zoom · Middle-click drag = Pan</span>
       </div>
     </div>
+  );
+}
+
+// Controlled dimension input for the selected-room editor. The previous
+// implementation was a plain <Input type="number"> bound directly to state
+// with a Math.max(1, …) clamp inside onChange, which meant every keystroke
+// snapped an empty or partial value back to 1 and reset the room's size
+// mid-edit — techs couldn't clear the field to retype a new number. This
+// component holds a local string draft while focused, commits the parsed
+// integer only on blur / Enter, and re-syncs from the room state when not
+// focused so external changes (drag-resize on canvas) still reflect here.
+function RoomDimInput({
+  valueFt, onCommit, testId,
+}: {
+  valueFt: number;
+  onCommit: (ft: number) => void;
+  testId?: string;
+}) {
+  const external = String(valueFt);
+  const [draft, setDraft] = useState(external);
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setDraft(external);
+  }, [external, focused]);
+
+  const commit = () => {
+    const n = parseInt(draft, 10);
+    if (Number.isFinite(n) && n >= 1) {
+      onCommit(n);
+      setDraft(String(n));
+    } else {
+      // Invalid / empty — revert to the last known good value instead of
+      // silently zeroing out the room.
+      setDraft(external);
+    }
+  };
+
+  return (
+    <Input
+      type="text"
+      inputMode="numeric"
+      pattern="[0-9]*"
+      className="h-7 w-14 text-xs"
+      value={draft}
+      onChange={e => setDraft(e.target.value.replace(/[^0-9]/g, ""))}
+      onFocus={e => { setFocused(true); e.target.select(); }}
+      onBlur={() => { setFocused(false); commit(); }}
+      onKeyDown={e => {
+        if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); }
+        if (e.key === "Escape") { setDraft(external); (e.target as HTMLInputElement).blur(); }
+      }}
+      data-testid={testId}
+    />
   );
 }
