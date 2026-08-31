@@ -674,7 +674,12 @@ function EquipmentTable({
           const dr = row.dailyReadings || [];
           const runtimeHrs = runtimeHoursBetween(row.startDate, row.endDate, row.startTime, row.endTime);
           return (
-            <div key={row.id} className="border rounded-md p-1.5 space-y-1">
+            <div key={row.id} className={`border rounded-md p-1.5 space-y-1 ${row.endDate ? "bg-muted/40 opacity-80" : ""}`}>
+              {row.endDate && (
+                <div className="text-[10px] font-medium text-amber-700 dark:text-amber-400 -mb-0.5">
+                  Pulled {row.endDate}{row.endTime ? ` · ${row.endTime}` : ""} — won't carry to next day
+                </div>
+              )}
               {/* Primary line: what it is + serial + actions. */}
               <div className="grid grid-cols-12 gap-1 items-center">
                 <Select value={row.type} onValueChange={v => upd(row.id, "type", v)} disabled={readOnly}>
@@ -683,8 +688,23 @@ function EquipmentTable({
                 </Select>
                 <Input className="col-span-1 h-7 text-xs" type="number" min="1" placeholder="Qty" value={row.qty || ""}
                   disabled={readOnly} onChange={e => upd(row.id, "qty", Number(e.target.value))} />
-                <Input className={`${isDehu ? "col-span-5" : "col-span-6"} h-7 text-xs`} placeholder="Serial / Asset #" value={row.serialNumber}
-                  disabled={readOnly} onChange={e => upd(row.id, "serialNumber", e.target.value)} />
+                {/* Serial width shrinks by one column per action button that's
+                    visible on the right side so the row still adds to 12.
+                    Static class strings so Tailwind JIT can pick them up. */}
+                {(() => {
+                  const actionCols = (isDehu ? 1 : 0) + (!readOnly && !row.endDate ? 1 : 0) + (!readOnly ? 1 : 0);
+                  const serialCol = 12 - 4 - 1 - actionCols; // type(4) + qty(1)
+                  const serialClass =
+                    serialCol === 3 ? "col-span-3" :
+                    serialCol === 4 ? "col-span-4" :
+                    serialCol === 5 ? "col-span-5" :
+                    serialCol === 6 ? "col-span-6" :
+                                       "col-span-7";
+                  return (
+                    <Input className={`${serialClass} h-7 text-xs`} placeholder="Serial / Asset #" value={row.serialNumber}
+                      disabled={readOnly} onChange={e => upd(row.id, "serialNumber", e.target.value)} />
+                  );
+                })()}
                 {isDehu && (
                   <Button size="sm" variant="outline" className="col-span-1 h-7 px-1 text-[10px]"
                     onClick={() => upd(row.id, "dailyReadings", dr.length ? dr : [{ id: Date.now(), date: new Date().toISOString().split("T")[0], intakeTemp: 0, intakeRh: 0, outTemp: 0, outRh: 0 }])}
@@ -692,7 +712,23 @@ function EquipmentTable({
                     <Droplets className="w-3 h-3" />{dr.length > 0 ? dr.length : ""}
                   </Button>
                 )}
-                {!readOnly && <Button size="sm" variant="ghost" className="col-span-1 h-7 px-1 text-destructive" onClick={() => del(row.id)}><Trash2 className="w-3 h-3" /></Button>}
+                {/* Pull button — the primary way to remove equipment. Stamps
+                    endDate + endTime with "now" so the row is preserved as
+                    audit history (report can still show total runtime) but
+                    stops seeding to future days. Trash next to it is for
+                    accidental adds and deletes the row entirely. */}
+                {!readOnly && !row.endDate && (
+                  <Button size="sm" variant="outline" className={`${isDehu ? "col-span-1" : "col-span-1"} h-7 px-1 text-[10px]`}
+                    onClick={() => onChange(rows.map(r => r.id === row.id ? {
+                      ...r,
+                      endDate: new Date().toLocaleDateString("en-CA"),   // YYYY-MM-DD local
+                      endTime: new Date().toTimeString().slice(0, 5),   // HH:MM local
+                    } : r))}
+                    title="Pull this equipment (stamps pulled date+time; keeps it in the report but won't carry to next day)">
+                    Pull
+                  </Button>
+                )}
+                {!readOnly && <Button size="sm" variant="ghost" className="col-span-1 h-7 px-1 text-destructive" onClick={() => del(row.id)} title="Delete this row entirely (use Pull instead if it was actually deployed)"><Trash2 className="w-3 h-3" /></Button>}
               </div>
               {/* Secondary line: WHERE the equipment sits. Placement is free-text
                   spot-inside-the-room (e.g. "NE corner"); Room is a dropdown
@@ -1320,13 +1356,33 @@ function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; o
   })();
 
   const seededEquip: EquipRow[] = (() => {
-    // Equipment stays installed across visits, so carry forward the most
-    // recent record's equipment list wholesale (including serial numbers and
-    // placement). Techs can then delete anything that was pulled that day.
-    if (!lastVisit) return [];
-    let rows: EquipRow[] = [];
-    try { rows = JSON.parse(lastVisit.equipment || "[]"); } catch { rows = []; }
-    return rows.filter(Boolean).map(r => ({
+    // Equipment stays installed across visits until a tech explicitly pulls
+    // it, so we carry forward everything that's STILL deployed as of the
+    // most recent record. Rows with an endDate set were already pulled on
+    // some prior day — those must NOT seed forward or they'd re-appear as
+    // active equipment the next day (the user reported exactly this).
+    //
+    // Dedupe across the whole history by (type, serial, room) so if the
+    // same asset was pulled and later re-deployed we keep only the current
+    // active instance. Serial-less rows collapse per (type, room).
+    if (chronoAsc.length === 0) return [];
+    const activeByKey = new Map<string, EquipRow>();
+    chronoAsc.forEach(rec => {
+      let rows: EquipRow[] = [];
+      try { rows = JSON.parse(rec.equipment || "[]"); } catch { rows = []; }
+      rows.filter(Boolean).forEach(r => {
+        const serial = (r.serialNumber || "").trim();
+        const key = `${(r.type || "").toLowerCase()}␟${serial || "∅"}␟${(r.room || "").toLowerCase()}`;
+        if (r.endDate) {
+          // Pulled — drop it from the active map. If it comes back later
+          // (same key, no endDate) the later record overwrites this.
+          activeByKey.delete(key);
+        } else {
+          activeByKey.set(key, r);
+        }
+      });
+    });
+    return Array.from(activeByKey.values()).map(r => ({
       ...r,
       id: Date.now() + Math.random(),
       // Drop yesterday's daily readings — those are per-visit.
