@@ -2236,8 +2236,70 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(r);
   });
   app.patch("/api/drying-records/:id", (req, res) => {
-    const r = storage.updateDryingRecord(Number(req.params.id), req.body);
+    const id = Number(req.params.id);
+    const before = storage.getDryingRecord(id);
+    const r = storage.updateDryingRecord(id, req.body);
     if (!r) return res.status(404).json({ error: "Not found" });
+
+    // Equipment carry-forward for retro-edits.
+    //
+    // When a tech goes back and adds equipment to a prior day's record, the
+    // days AFTER it were already saved and won't pick up the new deployment
+    // on their own. Walk forward from this record's date and merge any
+    // still-active equipment (no endDate, key not already tracked) into
+    // each later record. Key = (type, serial, room) mirrors the client-side
+    // seed logic so "same physical asset" is recognized consistently.
+    if (req.body?.equipment !== undefined && before) {
+      try {
+        const beforeRows = JSON.parse(before.equipment || "[]");
+        const afterRows = JSON.parse(r.equipment || "[]");
+        const keyOf = (row: any) => {
+          const serial = (row?.serialNumber || "").trim();
+          return `${(row?.type || "").toLowerCase()}␟${serial || "∅"}␟${(row?.room || "").toLowerCase()}`;
+        };
+        // Rows that are new on this edit OR flipped from pulled-→-active.
+        const beforeByKey = new Map(beforeRows.map((row: any) => [keyOf(row), row]));
+        const newlyActive = afterRows.filter((row: any) => {
+          if (row.endDate) return false; // still pulled — no need to propagate
+          const prev: any = beforeByKey.get(keyOf(row));
+          return !prev || prev.endDate; // truly new, or was pulled and is now active again
+        });
+        if (newlyActive.length > 0) {
+          const laterRecords = storage.getDryingRecords(r.jobId)
+            .filter((rec: any) => {
+              if (rec.id === r.id) return false;
+              // Compare by (readingDate, dayNumber) so same-day records with a
+              // later dayNumber still count as "after".
+              if (rec.readingDate > r.readingDate) return true;
+              if (rec.readingDate < r.readingDate) return false;
+              return (rec.dayNumber || 0) > (r.dayNumber || 0);
+            });
+          for (const rec of laterRecords) {
+            let recRows: any[] = [];
+            try { recRows = JSON.parse(rec.equipment || "[]"); } catch { recRows = []; }
+            const existingKeys = new Set(recRows.map(keyOf));
+            const toAdd = newlyActive
+              .filter((row: any) => !existingKeys.has(keyOf(row)))
+              .map((row: any) => ({
+                ...row,
+                // Fresh id per-record so React keys don't collide.
+                id: Date.now() + Math.random(),
+                // Per-record daily readings are always visit-specific.
+                dailyReadings: [],
+              }));
+            if (toAdd.length > 0) {
+              storage.updateDryingRecord(rec.id, {
+                equipment: JSON.stringify([...recRows, ...toAdd]),
+              } as any);
+            }
+          }
+        }
+      } catch (err) {
+        // Non-fatal — the primary save already succeeded. Log so we notice.
+        console.warn("[drying-records] retro equipment propagation failed:", err);
+      }
+    }
+
     res.json(r);
   });
   app.delete("/api/drying-records/:id", (req, res) => {
