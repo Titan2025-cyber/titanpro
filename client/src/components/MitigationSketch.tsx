@@ -350,7 +350,14 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
   // Snapshot of the shape's original geometry at mousedown, so a drag
   // computes newPos = origin + (cursor - dragStart) instead of chasing.
   // Fields are union of every movable shape's positional attrs.
-  const dragShapeOrigin = useRef<{ x?: number; y?: number; cx?: number; cy?: number; x1?: number; y1?: number; x2?: number; y2?: number } | null>(null);
+  const dragShapeOrigin = useRef<{ x?: number; y?: number; w?: number; h?: number; cx?: number; cy?: number; x1?: number; y1?: number; x2?: number; y2?: number } | null>(null);
+  // Which resize handle (if any) was grabbed on a selected room. Null = no
+  // active resize; grabbing a handle disables move-drag for the gesture.
+  const activeResizeHandle = useRef<null | "nw" | "ne" | "sw" | "se" | "n" | "s" | "e" | "w">(null);
+  // Pinch-to-zoom state (mobile). Records the distance between two touches
+  // and the zoom level at gesture start so mid-pinch we compute the target
+  // zoom as start * (current / initial).
+  const pinchStart = useRef<{ dist: number; zoom: number } | null>(null);
   const freehandPoints = useRef<{ x: number; y: number }[]>([]);
   const currentFreehandId = useRef<string | null>(null);
   const panStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
@@ -471,6 +478,31 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
     return () => ro.disconnect();
   }, [sketch, selectedId, offset, zoom]);
 
+  // ── Handle hit test ───────────────────────────────────────────────────────
+  // Returns which corner/edge handle of the given room was hit, or null.
+  // Handle world-radius is enlarged on coarse pointers so it's tappable on
+  // touch — 8 handles at 4px visual radius are unusable with a fingertip.
+  const hitTestRoomHandle = useCallback((r: RoomShape, wx: number, wy: number): typeof activeResizeHandle.current => {
+    // Convert cursor tolerance to world units so it stays constant on screen
+    // regardless of zoom. 12px hit radius on desktop, 20px on coarse pointers.
+    const coarse = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+    const tol = (coarse ? 20 : 12) / zoom;
+    // Normalize so w/h can be negative (rooms drawn right-to-left).
+    const x0 = Math.min(r.x, r.x + r.w), x1 = Math.max(r.x, r.x + r.w);
+    const y0 = Math.min(r.y, r.y + r.h), y1 = Math.max(r.y, r.y + r.h);
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    // Order matters: corners first so they win over adjacent edges when the
+    // cursor is near both.
+    const handles: [typeof activeResizeHandle.current, number, number][] = [
+      ["nw", x0, y0], ["ne", x1, y0], ["sw", x0, y1], ["se", x1, y1],
+      ["n", cx, y0], ["s", cx, y1], ["w", x0, cy], ["e", x1, cy],
+    ];
+    for (const [name, hx, hy] of handles) {
+      if (Math.abs(wx - hx) <= tol && Math.abs(wy - hy) <= tol) return name;
+    }
+    return null;
+  }, [zoom]);
+
   // ── Hit test ──────────────────────────────────────────────────────────────
   const hitTest = useCallback((wx: number, wy: number): string | null => {
     const shapes = [...sketch.shapes].reverse();
@@ -497,15 +529,15 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
   }, [sketch.shapes]);
 
   // ── Mouse events ──────────────────────────────────────────────────────────
-  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+  const beginInteraction = useCallback((clientX: number, clientY: number, forcePan = false) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const w = toWorld(e.clientX, e.clientY, canvas);
+    const w = toWorld(clientX, clientY, canvas);
 
-    // Middle mouse or space+drag = pan
-    if (e.button === 1) {
+    // Middle mouse button (or a two-finger touch we treat as pan) = pan.
+    if (forcePan) {
       isPanning.current = true;
-      panStart.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
+      panStart.current = { x: clientX, y: clientY, ox: offset.x, oy: offset.y };
       return;
     }
 
@@ -513,10 +545,27 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
     dragStart.current = { x: w.x, y: w.y };
 
     if (tool === "select") {
+      // Resize handles take priority. If the pointer landed on a handle of
+      // the currently-selected room, enter resize mode instead of falling
+      // through to the shape hit test. Only rooms have handles today.
+      if (selectedId) {
+        const sel = sketch.shapes.find(s => s.id === selectedId);
+        if (sel && sel.type === "room") {
+          const handle = hitTestRoomHandle(sel as RoomShape, w.x, w.y);
+          if (handle) {
+            activeResizeHandle.current = handle;
+            draggingShapeId.current = selectedId;
+            const r = sel as RoomShape;
+            dragShapeOrigin.current = { x: r.x, y: r.y, w: r.w, h: r.h };
+            return;
+          }
+        }
+      }
+      activeResizeHandle.current = null;
       const hit = hitTest(w.x, w.y);
       setSelectedId(hit);
-      // Reset drag target on every mousedown; only set it below when we
-      // hit a movable shape. Prevents a stale drag from a prior selection.
+      // Reset drag target on every pointerdown; only set below when we hit
+      // a movable shape. Prevents a stale drag from a prior selection.
       draggingShapeId.current = null;
       dragShapeOrigin.current = null;
       if (hit) {
@@ -568,22 +617,60 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
       }
       dragging.current = false;
     }
-  }, [tool, toWorld, hitTest, sketch, offset, color, lineWidth, pushHistory]);
+  }, [tool, toWorld, hitTest, hitTestRoomHandle, selectedId, sketch, offset, color, lineWidth, pushHistory]);
 
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+  const updateInteraction = useCallback((clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     if (isPanning.current) {
-      const dx = e.clientX - panStart.current.x;
-      const dy = e.clientY - panStart.current.y;
+      const dx = clientX - panStart.current.x;
+      const dy = clientY - panStart.current.y;
       setOffset({ x: panStart.current.ox + dx, y: panStart.current.oy + dy });
       return;
     }
 
     if (!dragging.current) return;
-    const w = toWorld(e.clientX, e.clientY, canvas);
+    const w = toWorld(clientX, clientY, canvas);
     const ds = dragStart.current;
+
+    // Room resize takes precedence over move-drag. Compute new rect based
+    // on which handle was grabbed and clamp to a 20px minimum on both axes
+    // so a room can't be shrunk out of existence.
+    if (tool === "select" && activeResizeHandle.current && draggingShapeId.current && dragShapeOrigin.current) {
+      const h = activeResizeHandle.current;
+      const dragId = draggingShapeId.current;
+      const o = dragShapeOrigin.current;
+      const ox = o.x!, oy = o.y!, ow = o.w!, oh = o.h!;
+      // Normalize origin rect (rooms drawn right-to-left have negative w/h).
+      const origLeft = Math.min(ox, ox + ow), origRight = Math.max(ox, ox + ow);
+      const origTop  = Math.min(oy, oy + oh), origBot   = Math.max(oy, oy + oh);
+      let left = origLeft, right = origRight, top = origTop, bot = origBot;
+      if (h === "w" || h === "nw" || h === "sw") left  = w.x;
+      if (h === "e" || h === "ne" || h === "se") right = w.x;
+      if (h === "n" || h === "nw" || h === "ne") top   = w.y;
+      if (h === "s" || h === "sw" || h === "se") bot   = w.y;
+      const MIN = 20;
+      if (right - left < MIN) {
+        if (h === "w" || h === "nw" || h === "sw") left = right - MIN;
+        else right = left + MIN;
+      }
+      if (bot - top < MIN) {
+        if (h === "n" || h === "nw" || h === "ne") top = bot - MIN;
+        else bot = top + MIN;
+      }
+      const newW = right - left, newH = bot - top;
+      const newSqft = Math.round((newW / 50 * 10) * (newH / 50 * 10));
+      setSketch(prev => ({
+        ...prev,
+        shapes: prev.shapes.map(s =>
+          s.id === dragId && s.type === "room"
+            ? { ...s, x: left, y: top, w: newW, h: newH, sqft: newSqft } as RoomShape
+            : s
+        ),
+      }));
+      return;
+    }
 
     if (tool === "room" || tool === "circle" || tool === "arrow") {
       // Preview draft on canvas directly
@@ -615,8 +702,8 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
             : s
         ),
       }));
-    } else if (tool === "select" && draggingShapeId.current && dragShapeOrigin.current) {
-      // Move whichever shape was grabbed on mousedown. Using the ref (not
+    } else if (tool === "select" && draggingShapeId.current && dragShapeOrigin.current && !activeResizeHandle.current) {
+      // Move whichever shape was grabbed on pointerdown. Using the ref (not
       // selectedId from state) so click-and-drag in a single gesture works
       // — the state update from setSelectedId hasn't landed yet.
       const dragId = draggingShapeId.current;
@@ -648,7 +735,7 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
     }
   }, [tool, toWorld, sketch, selectedId, offset, zoom, color, roomLabel]);
 
-  const handleMouseUp = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+  const endInteraction = useCallback((clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -656,7 +743,7 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
     if (!dragging.current) return;
     dragging.current = false;
 
-    const w = toWorld(e.clientX, e.clientY, canvas);
+    const w = toWorld(clientX, clientY, canvas);
     const ds = dragStart.current;
     const moved = Math.abs(w.x - ds.x) > 3 || Math.abs(w.y - ds.y) > 3;
 
@@ -700,14 +787,69 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
       currentFreehandId.current = null;
       pushHistory(sketch);
     } else if (tool === "select" && draggingShapeId.current && moved) {
-      // Snapshot the post-drag sketch for undo.
+      // Snapshot the post-drag / post-resize sketch for undo.
       pushHistory(sketch);
     }
-    // Always clear the per-drag refs on mouseup so the next click starts
-    // fresh even if it lands on empty canvas.
+    // Always clear per-gesture refs so the next pointerdown starts fresh.
     draggingShapeId.current = null;
     dragShapeOrigin.current = null;
+    activeResizeHandle.current = null;
   }, [tool, toWorld, sketch, selectedId, color, roomLabel, pushHistory]);
+
+  // Thin React adapters. Signatures unchanged so JSX doesn't move.
+  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    beginInteraction(e.clientX, e.clientY, e.button === 1);
+  }, [beginInteraction]);
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    updateInteraction(e.clientX, e.clientY);
+  }, [updateInteraction]);
+  const handleMouseUp = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    endInteraction(e.clientX, e.clientY);
+  }, [endInteraction]);
+
+  // Touch handlers. Single-finger mirrors mouse (draw/drag/resize).
+  // Two-finger is pinch-zoom. preventDefault suppresses page scroll and
+  // pull-to-refresh while a tech sketches on their phone.
+  const handleTouchStart = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (e.touches.length === 1) {
+      e.preventDefault();
+      const t = e.touches[0];
+      beginInteraction(t.clientX, t.clientY);
+    } else if (e.touches.length === 2) {
+      e.preventDefault();
+      // Cancel any in-progress single-touch gesture so we don't leave a
+      // dangling drag when a second finger drops.
+      if (dragging.current) {
+        const t0 = e.touches[0];
+        endInteraction(t0.clientX, t0.clientY);
+      }
+      const [a, b] = [e.touches[0], e.touches[1]];
+      pinchStart.current = { dist: Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY), zoom };
+    }
+  }, [beginInteraction, endInteraction, zoom]);
+  const handleTouchMove = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (e.touches.length === 1 && !pinchStart.current) {
+      e.preventDefault();
+      const t = e.touches[0];
+      updateInteraction(t.clientX, t.clientY);
+    } else if (e.touches.length === 2 && pinchStart.current) {
+      e.preventDefault();
+      const [a, b] = [e.touches[0], e.touches[1]];
+      const dist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+      const target = pinchStart.current.zoom * (dist / pinchStart.current.dist);
+      setZoom(Math.max(0.3, Math.min(4, target)));
+    }
+  }, [updateInteraction]);
+  const handleTouchEnd = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (pinchStart.current) {
+      // Only clear pinch when both fingers have lifted, otherwise a stray
+      // remaining finger falls through updateInteraction with a wrong ds.
+      if (e.touches.length === 0) pinchStart.current = null;
+      return;
+    }
+    const t = e.changedTouches[0];
+    if (t) endInteraction(t.clientX, t.clientY);
+  }, [endInteraction]);
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
@@ -970,10 +1112,18 @@ export default function MitigationSketch({ jobId, readOnly = false }: { jobId: n
               tool === "eraser" ? "crosshair"
               : tool === "select" ? (selectedId ? "move" : "default")
               : "crosshair",
+            // Stops the browser from stealing single-finger scroll and
+            // pinch-zoom gestures over the canvas so our touch handlers
+            // get every event. Without this, drawing on iOS just scrolls.
+            touchAction: "none",
           }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          onTouchCancel={handleTouchEnd}
           onWheel={handleWheel}
           data-testid="canvas-sketch"
         />
