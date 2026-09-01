@@ -2797,10 +2797,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (objectStorage.isConfigured()) {
       await Promise.all(docs.map(async (doc) => {
         if (doc.storageKey && !doc.fileData) {
-          try { doc.fileData = await objectStorage.getReadUrl(doc.storageKey); } catch {}
+          // Force the response MIME + inline disposition so PDFs open in the
+          // browser viewer instead of downloading as octet-stream (which
+          // renders as a blank/black tab in Chrome & Safari).
+          const mime = doc.fileMimeType || "application/pdf";
+          const safeName = (doc.fileName || `document-${doc.id}.pdf`).replace(/"/g, "");
+          try { doc.fileData = await objectStorage.getReadUrl(doc.storageKey, undefined, {
+            responseContentType: mime,
+            responseContentDisposition: `inline; filename="${safeName}"`,
+          }); } catch {}
         }
         if (doc.signatureStorageKey && !doc.signatureData) {
-          try { doc.signatureData = await objectStorage.getReadUrl(doc.signatureStorageKey); } catch {}
+          try { doc.signatureData = await objectStorage.getReadUrl(doc.signatureStorageKey, undefined, {
+            responseContentType: "image/png",
+          }); } catch {}
         }
       }));
     }
@@ -2830,12 +2840,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/documents/:id", wrapAsync(async (req, res) => {
     const doc = storage.getJobDocument(Number(req.params.id)) as any;
     if (!doc) return res.status(404).json({ error: "Not found" });
-    // Hydrate any bucket-backed fields on demand.
+    // Hydrate any bucket-backed fields on demand. Passing MIME + inline
+    // disposition so PDFs open in the browser viewer instead of downloading
+    // as octet-stream (which renders as a blank/black tab in Chrome & Safari).
     if (doc.storageKey && objectStorage.isConfigured()) {
-      try { doc.fileData = await objectStorage.getReadUrl(doc.storageKey); } catch {}
+      const mime = doc.fileMimeType || "application/pdf";
+      const safeName = (doc.fileName || `document-${doc.id}.pdf`).replace(/"/g, "");
+      try { doc.fileData = await objectStorage.getReadUrl(doc.storageKey, undefined, {
+        responseContentType: mime,
+        responseContentDisposition: `inline; filename="${safeName}"`,
+      }); } catch {}
     }
     if (doc.signatureStorageKey && objectStorage.isConfigured()) {
-      try { doc.signatureData = await objectStorage.getReadUrl(doc.signatureStorageKey); } catch {}
+      try { doc.signatureData = await objectStorage.getReadUrl(doc.signatureStorageKey, undefined, {
+        responseContentType: "image/png",
+      }); } catch {}
     }
     res.json(doc);
   }));
