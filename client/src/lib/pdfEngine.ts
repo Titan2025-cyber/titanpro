@@ -11,6 +11,22 @@
 import jsPDF from "jspdf";
 import { fmtDate } from "@/lib/dates";
 
+// jsPDF's `output("datauristring")` returns a URI shaped like
+//   data:application/pdf;filename=generated.pdf;base64,...
+// That extra `;filename=generated.pdf` parameter is NOT part of the standard
+// data-URI grammar; strict parsers (nodemailer, our own dataUriToBlob, Gmail
+// MIME builder) skip past it or fail entirely, which produced broken email
+// attachments and black-tab downloads. `finalizePdf()` normalizes every PDF
+// this engine emits into the canonical `data:application/pdf;base64,...` form
+// so every downstream path handles it identically.
+function finalizePdf(doc: jsPDF): string {
+  const uri = doc.output("datauristring");
+  const commaIdx = uri.indexOf(",");
+  if (commaIdx < 0) return uri;
+  const body = uri.slice(commaIdx + 1);
+  return `data:application/pdf;base64,${body}`;
+}
+
 // ─── Brand constants ─────────────────────────────────────────────────────────
 const RED   = [204, 0, 0]   as const;  // Titan red  #CC0000
 const BLUE  = [30, 90, 180] as const;  // Titan blue #1E5AB4
@@ -420,7 +436,7 @@ export function generateWorkAuthPDF(data: WorkAuthPDFData): string {
     drawFooter(doc, i, totalPages);
   }
 
-  return doc.output("datauristring");
+  return finalizePdf(doc);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -582,7 +598,7 @@ export function generateRightToRenovatePDF(data: RightToRenovatePDFData): string
     drawFooter(doc, i, totalPages);
   }
 
-  return doc.output("datauristring");
+  return finalizePdf(doc);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -746,7 +762,7 @@ export function generateDirectionToPayPDF(data: DirectionToPayPDFData): string {
     drawFooter(doc, i, totalPages);
   }
 
-  return doc.output("datauristring");
+  return finalizePdf(doc);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -904,7 +920,7 @@ export function generateCustomPricingPDF(data: CustomPricingPDFData): string {
     drawFooter(doc, i, totalPages);
   }
 
-  return doc.output("datauristring");
+  return finalizePdf(doc);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1112,7 +1128,7 @@ export function generateDeviationPDF(data: DeviationPDFData): string {
     drawFooter(doc, i, totalPages);
   }
 
-  return doc.output("datauristring");
+  return finalizePdf(doc);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1318,7 +1334,7 @@ export function generateEstimatePDF(data: EstimatePDFData): string {
     drawFooter(doc, i, totalPages);
   }
 
-  return doc.output("datauristring");
+  return finalizePdf(doc);
 }
 
 export function generateInvoicePDF(data: InvoicePDFData): string {
@@ -1454,7 +1470,7 @@ export function generateInvoicePDF(data: InvoicePDFData): string {
     drawFooter(doc, i, totalPages);
   }
 
-  return doc.output("datauristring");
+  return finalizePdf(doc);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1466,7 +1482,10 @@ export function generateInvoicePDF(data: InvoicePDFData): string {
 function dataUriToBlob(dataUri: string): Blob {
   let mime = "application/pdf";
   let b64 = dataUri;
-  const match = /^data:([^;]+);base64,(.*)$/s.exec(dataUri);
+  // Tolerant of extra media-type parameters (jsPDF sneaks in
+  // `;filename=generated.pdf` before `;base64,`). New PDFs go through
+  // finalizePdf() and no longer have this, but legacy rows in the DB do.
+  const match = /^data:([^;,]+)(?:;[^;,]+=[^;,]+)*;base64,(.*)$/s.exec(dataUri);
   if (match) {
     mime = match[1] || mime;
     b64 = match[2];

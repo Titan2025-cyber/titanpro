@@ -227,7 +227,7 @@ export function registerExternalDocRoutes(
       // If it's a data URL we can't redirect the browser to it directly for
       // download-friendly behavior; stream it back with the right headers.
       if (url.startsWith("data:")) {
-        const m = /^data:([^;]+);base64,(.+)$/.exec(url);
+        const m = /^data:([^;,]+)(?:;[^;,]+=[^;,]+)*;base64,(.+)$/s.exec(url);
         if (!m) return res.status(500).json({ error: "Malformed inline file" });
         const buf = Buffer.from(m[2], "base64");
         res.setHeader("Content-Type", row.external_file_mime || m[1] || "application/octet-stream");
@@ -253,7 +253,7 @@ export function registerExternalDocRoutes(
       const url = await externalFileViewUrl(row);
       if (!url) return res.status(404).json({ error: "No file attached" });
       if (url.startsWith("data:")) {
-        const m = /^data:([^;]+);base64,(.+)$/.exec(url);
+        const m = /^data:([^;,]+)(?:;[^;,]+=[^;,]+)*;base64,(.+)$/s.exec(url);
         if (!m) return res.status(500).json({ error: "Malformed inline file" });
         const buf = Buffer.from(m[2], "base64");
         res.setHeader("Content-Type", row.external_file_mime || m[1] || "application/octet-stream");

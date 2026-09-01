@@ -152,7 +152,11 @@ export async function sendEmail(opts: {
 
   // Translate our attachment shape to nodemailer's.
   const nmAttachments = opts.attachments?.map(a => {
-    const m = /^data:([^;]+);base64,(.*)$/s.exec(a.content);
+    // Tolerant of extra media-type parameters (jsPDF sneaks in
+    // `;filename=generated.pdf` before `;base64,`). Without this the whole
+    // data URI falls into `raw` and Buffer.from(...,'base64') silently
+    // produces garbage, so the emailed PDF opens to a black page.
+    const m = /^data:([^;,]+)(?:;[^;,]+=[^;,]+)*;base64,(.*)$/s.exec(a.content);
     const contentType = a.contentType || (m ? m[1] : "application/octet-stream");
     const raw = m ? m[2] : a.content;
     return {

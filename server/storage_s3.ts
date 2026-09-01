@@ -171,7 +171,11 @@ export async function objectExists(key: string): Promise<boolean> {
  * migration can skip the row cleanly.
  */
 export function parseDataUrl(dataUrl: string): { buffer: Buffer; contentType: string; extension: string } | null {
-  const m = /^data:([^;]+);base64,(.*)$/i.exec(dataUrl);
+  // Tolerant of extra media-type parameters (jsPDF sneaks in
+  // `;filename=generated.pdf` before `;base64,`). Without this jsPDF output
+  // fails the parse and gets stored inline as a raw URI instead of uploaded
+  // to S3 with the proper content-type.
+  const m = /^data:([^;,]+)(?:;[^;,]+=[^;,]+)*;base64,(.*)$/is.exec(dataUrl);
   if (!m) return null;
   const contentType = m[1] || "application/octet-stream";
   const buffer = Buffer.from(m[2], "base64");

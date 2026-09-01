@@ -1948,7 +1948,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const prompt = `You are analyzing a restoration/HVAC job site photo. Return STRICT JSON only with keys: room (short room name like "Kitchen", "Master Bath", "Living Room", or ""), damageType (one of: water, fire, mold, wind, impact, smoke, vandalism, other, or ""), severity (one of: minor, moderate, severe, catastrophic, or ""), caption (one short factual sentence).`;
     let imageBlock: any;
     if (src.startsWith("data:")) {
-      const m = src.match(/^data:([^;]+);base64,(.+)$/);
+      const m = src.match(/^data:([^;,]+)(?:;[^;,]+=[^;,]+)*;base64,(.+)$/s);
       if (!m) return res.json({ skipped: true, reason: "bad_data_url" });
       imageBlock = { type: "image", source: { type: "base64", media_type: m[1], data: m[2] } };
     } else {
@@ -2824,7 +2824,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/jobs/:id/documents", wrapAsync(async (req, res) => {
     const body: any = { ...req.body, jobId: Number(req.params.id) };
     if (body.fileData || body.file_data) {
-      const stored = await writeImageFieldSafe(body.fileData ?? body.file_data, "documents");
+      const rawUri = body.fileData ?? body.file_data;
+      // Capture MIME + a reasonable filename BEFORE we hoist to S3 so the
+      // read routes can slap them onto the signed URL. Otherwise Chrome
+      // gets application/octet-stream and paints a black tab.
+      if (!body.fileMimeType && typeof rawUri === "string") {
+        const m = /^data:([^;,]+)(?:;[^;,]+=[^;,]+)*;base64,/s.exec(rawUri);
+        if (m) body.fileMimeType = m[1];
+      }
+      if (!body.fileName) {
+        const safeTitle = String(body.title || "document").replace(/[^\w.\-]+/g, "_");
+        const ext = (body.fileMimeType || "application/pdf").split("/")[1] || "pdf";
+        body.fileName = `${safeTitle}.${ext}`;
+      }
+      const stored = await writeImageFieldSafe(rawUri, "documents");
       body.fileData = stored.dataUrl;
       if (stored.storageKey) body.storageKey = stored.storageKey;
     }

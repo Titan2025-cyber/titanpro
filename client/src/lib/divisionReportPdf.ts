@@ -342,5 +342,10 @@ export function generateDivisionReportPDF(data: DivisionReportData): string {
     drawFooter(doc, i, total, genLabel);
   }
 
-  return doc.output("datauristring");
+  // Strip jsPDF's non-standard `;filename=generated.pdf` param — see
+  // pdfEngine.finalizePdf for the full rationale. Kept inline here to avoid
+  // pulling pdfEngine's whole surface just for one call.
+  const uri = doc.output("datauristring");
+  const commaIdx = uri.indexOf(",");
+  return commaIdx < 0 ? uri : `data:application/pdf;base64,${uri.slice(commaIdx + 1)}`;
 }

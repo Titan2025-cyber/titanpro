@@ -6,6 +6,7 @@ import { Express, RequestHandler } from "express";
 import Database from "better-sqlite3";
 import crypto from "crypto";
 import { sendEmail } from "./notify";
+import { writeImageFieldSafe } from "./image_pipeline";
 import type { Notifier } from "./notify_bell";
 
 type Auth = { requireRole: (...roles: string[]) => RequestHandler };
@@ -606,19 +607,31 @@ export function registerQuickAddAndESignRoutes(
     if (saveToJob && Number.isFinite(jid) && jid > 0) {
       try {
         const now = new Date().toISOString();
+        // Hoist the PDF to S3 like the main POST /api/jobs/:id/documents
+        // path so we don't stuff 300 kB into SQLite per email, AND capture
+        // MIME + filename so future read-signed URLs render inline instead
+        // of black-tabbing as application/octet-stream.
+        const mimeMatch = /^data:([^;,]+)(?:;[^;,]+=[^;,]+)*;base64,/s.exec(String(pdfDataUri));
+        const fileMime = mimeMatch ? mimeMatch[1] : "application/pdf";
+        const fileName = safeName; // already `<title>.pdf`
+        const stored = await writeImageFieldSafe(pdfDataUri, "documents");
         const info = sqlite
           .prepare(
             `INSERT INTO job_documents (
-               job_id, doc_type, title, form_data, file_data,
+               job_id, doc_type, title, form_data, file_data, file_name,
+               file_mime_type, storage_key,
                status, signer_name, created_by, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             jid,
             String(docType || "document"),
             String(title),
             JSON.stringify({ source: "emailed-to-customer", to: String(to).trim(), subject, sentAt: now }),
-            pdfDataUri,
+            stored.dataUrl,
+            fileName,
+            fileMime,
+            stored.storageKey || null,
             "sent",
             null,
             `emailed-to:${String(to).trim()}`,

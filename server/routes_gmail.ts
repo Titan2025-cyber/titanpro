@@ -109,7 +109,11 @@ function base64Mime(buf: Buffer): string {
 function attachmentBuffer(att: GmailAttachment): { buf: Buffer; contentType: string } {
   let b64 = att.content || "";
   let contentType = att.contentType || "";
-  const m = /^data:([^;]+);base64,(.*)$/s.exec(b64);
+  // Tolerant of extra media-type parameters (jsPDF sneaks in
+  // `;filename=generated.pdf` before `;base64,`). Without this the whole
+  // data URI falls through to Buffer.from(...,'base64') and silently
+  // produces garbage bytes, so the Gmail attachment opens to a black page.
+  const m = /^data:([^;,]+)(?:;[^;,]+=[^;,]+)*;base64,(.*)$/s.exec(b64);
   if (m) {
     if (!contentType) contentType = m[1];
     b64 = m[2];
