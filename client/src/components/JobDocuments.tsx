@@ -2017,6 +2017,18 @@ export default function JobDocuments({ jobId, readOnly = false, phase }: { jobId
         return;
       }
 
+      // Heads-up for big jobs so users don't think the app froze while the
+      // photo grid downscales and merges. ≥20 photos or ≥8 docs is roughly
+      // when the build starts taking >10s on a mid-range laptop.
+      if (photos.length >= 20 || docs.length >= 8) {
+        toast({
+          title: "Building claim packet…",
+          description: `Compressing ${photos.length} photo${photos.length !== 1 ? "s" : ""} and merging ${docs.length} document${docs.length !== 1 ? "s" : ""}. This can take 15–60 seconds — please don't close the tab.`,
+        });
+        // Give the toast a paint tick before we hit the main-thread work.
+        await new Promise(r => setTimeout(r, 30));
+      }
+
       const uri = await buildDefensibleClaimPacket(job, contact, docs, { dryingRecords, aiNarrative, photos });
       downloadPdfDataUri(uri, `Titan_${job?.jobNumber || "job"}_Claim_Packet.pdf`);
       const parts: string[] = [`${docs.length} doc${docs.length !== 1 ? "s" : ""}`];

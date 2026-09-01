@@ -79,6 +79,57 @@ async function fetchImageDataUri(url: string): Promise<{ dataUri: string; format
   }
 }
 
+// Downscale a photo dataUri to ≤ maxDim px on the long side and re-encode as
+// JPEG at 0.72 quality. Full-resolution phone photos are 3-8 MB each; jsPDF
+// decompresses them into memory before embedding, and 20–30 photos at that
+// size will freeze or crash the browser tab ("the build claim packet feature
+// failed and made app quit responding"). Downscaling keeps the packet
+// readable while capping each embedded image at ~200 KB.
+async function downscaleImage(dataUri: string, maxDim = 1400, quality = 0.72): Promise<{ dataUri: string; format: "JPEG" } | null> {
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = reject;
+      el.decoding = "async";
+      el.src = dataUri;
+    });
+    const w0 = img.naturalWidth || img.width;
+    const h0 = img.naturalHeight || img.height;
+    if (!w0 || !h0) return null;
+    const scale = Math.min(1, maxDim / Math.max(w0, h0));
+    const w = Math.max(1, Math.round(w0 * scale));
+    const h = Math.max(1, Math.round(h0 * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(img, 0, 0, w, h);
+    const out = canvas.toDataURL("image/jpeg", quality);
+    return { dataUri: out, format: "JPEG" };
+  } catch {
+    return null;
+  }
+}
+
+// Yield to the event loop so the tab stays responsive between heavy items.
+function yieldToBrowser(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+// Convert a data-URI ("data:application/pdf;base64,...") into a Blob. Tolerant
+// of the malformed `;filename=` param that jsPDF's `datauristring` sometimes
+// emits.
+function dataUriToBlob(dataUri: string): Blob {
+  const match = /^data:([^;,]+)(?:;[^;,]+=[^;,]+)*;base64,(.*)$/s.exec(dataUri);
+  const mime = match?.[1] || "application/pdf";
+  const b64 = match?.[2] || dataUri.slice(dataUri.indexOf(",") + 1);
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
 /** Convert a base64 data-URI PDF into a Uint8Array of the raw bytes. */
 function dataUriToUint8(dataUri: string): Uint8Array {
   const comma = dataUri.indexOf(",");
@@ -306,8 +357,16 @@ async function buildShellPdf(
     let px = M;
     let py = 84;
     let col = 0;
-    for (const p of photos) {
-      const img = await fetchImageDataUri(p.uri);
+    for (let i = 0; i < photos.length; i++) {
+      const p = photos[i];
+      // Yield every 4 photos so the browser tab stays responsive during
+      // long merges. Without this a job with 60+ CompanyCam photos froze
+      // the tab until the OS killed it.
+      if (i > 0 && i % 4 === 0) await yieldToBrowser();
+      const fetched = await fetchImageDataUri(p.uri);
+      // Downscale to ≤ 1400px long side so jsPDF doesn't try to embed the
+      // full 4-8 MB original.
+      const img = fetched ? ((await downscaleImage(fetched.dataUri)) || fetched) : null;
       if (py + imgH + 28 > PH - 40) { doc.addPage(); py = M; px = M; col = 0; }
       // frame
       doc.setDrawColor(210, 210, 210);
@@ -372,9 +431,13 @@ export async function buildJobDocumentPacket(
   shellPages.forEach(p => merged.addPage(p));
 
   // Then each uploaded PDF, in the same order as `documents`
-  for (const d of documents) {
+  for (let di = 0; di < documents.length; di++) {
+    const d = documents[di];
     const hasPDF = !!(d.fileData && d.fileMimeType === "application/pdf");
     if (!hasPDF) continue;
+    // Yield between merges so the tab doesn't lock up on packets that pull
+    // in a dozen or more large signed PDFs.
+    if (di > 0 && di % 3 === 0) await yieldToBrowser();
     try {
       const bytes = dataUriToUint8(d.fileData!);
       const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
@@ -411,14 +474,27 @@ export function printPdfDataUri(dataUri: string) {
   win.document.close();
 }
 
-/** Download a PDF data URI as a file. */
+/** Download a PDF data URI as a file. Uses a Blob URL so large packets
+ *  (multi-MB claim packets with photos) actually download — Chrome silently
+ *  blocks anchor downloads whose data URI exceeds ~2 MB. */
 export function downloadPdfDataUri(dataUri: string, filename: string) {
+  const name = filename.endsWith(".pdf") ? filename : filename + ".pdf";
+  let url: string; let revoke = false;
+  try {
+    const blob = dataUriToBlob(dataUri);
+    url = URL.createObjectURL(blob);
+    revoke = true;
+  } catch {
+    // Fallback for degenerate inputs — keep the old behavior.
+    url = dataUri;
+  }
   const a = document.createElement("a");
-  a.href = dataUri;
-  a.download = filename.endsWith(".pdf") ? filename : filename + ".pdf";
+  a.href = url;
+  a.download = name;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
+  if (revoke) setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
 /**
@@ -643,26 +719,40 @@ async function buildEvidencePdf(
   }
 
   // ── 3. Photo Documentation with full metadata ───────────────────────────────
+  // Hard-cap + downscale so 100-photo jobs don't freeze the browser tab.
+  const PHOTO_CAP = 60;
   if (photos.length) {
     newSection();
+    const truncated = photos.length > PHOTO_CAP;
+    const shown = truncated ? photos.slice(0, PHOTO_CAP) : photos;
     evidenceHeader(doc, PW, M, "PHOTO DOCUMENTATION",
-      `${photos.length} photo${photos.length !== 1 ? "s" : ""} with capture metadata  •  Job ${jobNo}`, BLUE);
+      `${shown.length} of ${photos.length} photo${photos.length !== 1 ? "s" : ""} with capture metadata  •  Job ${jobNo}`, BLUE);
 
     const colW = (PW - M * 2 - 16) / 2;
     const imgH = 150;
     let px = M, py = 84, col = 0;
-    for (const p of photos) {
+    for (let i = 0; i < shown.length; i++) {
+      const p = shown[i];
+      // Yield every 4 photos so the tab stays responsive.
+      if (i > 0 && i % 4 === 0) await yieldToBrowser();
       // metadata block is taller than the plain CompanyCam version → reserve room
       const metaH = 34;
       if (py + imgH + metaH > PH - 40) { doc.addPage(); py = 60; px = M; col = 0; }
       doc.setDrawColor(210, 210, 210); doc.setLineWidth(0.5);
       doc.rect(px, py, colW, imgH);
       let img: { dataUri: string; format: "PNG" | "JPEG" } | null = null;
+      // Downscale every photo to ≤ 1400px long side. Full-res phone photos
+      // are 3-8 MB each and jsPDF blows up trying to embed 20+ of them,
+      // which is what was making the tab freeze / "quit responding".
       if (p.dataUrl) {
-        const fmt: "PNG" | "JPEG" = /png/i.test(p.dataUrl.slice(0, 30)) ? "PNG" : "JPEG";
-        img = { dataUri: p.dataUrl, format: fmt };
+        img = await downscaleImage(p.dataUrl);
+        if (!img) {
+          const fmt: "PNG" | "JPEG" = /png/i.test(p.dataUrl.slice(0, 30)) ? "PNG" : "JPEG";
+          img = { dataUri: p.dataUrl, format: fmt };
+        }
       } else if (p.uri) {
-        img = await fetchImageDataUri(p.uri);
+        const fetched = await fetchImageDataUri(p.uri);
+        if (fetched) img = (await downscaleImage(fetched.dataUri)) || fetched;
       }
       if (img) {
         try { doc.addImage(img.dataUri, img.format, px + 2, py + 2, colW - 4, imgH - 4); }
@@ -687,6 +777,11 @@ async function buildEvidencePdf(
       }
       if (col === 0) { px = M + colW + 16; col = 1; }
       else { px = M; col = 0; py += imgH + 40; }
+    }
+    if (truncated) {
+      if (py > PH - 80) { doc.addPage(); py = 60; }
+      doc.setFont("helvetica", "italic"); doc.setFontSize(9); doc.setTextColor(120, 120, 120);
+      doc.text(asciiSafe(`Photo documentation truncated at ${PHOTO_CAP} of ${photos.length} photos to keep the packet openable. Full library available in the job file.`), M, py + 20);
     }
   }
 
