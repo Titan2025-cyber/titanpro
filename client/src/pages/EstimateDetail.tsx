@@ -1,7 +1,8 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useParams, Link, useLocation } from "wouter";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Plus, Trash2, Zap, Shield, FileText, Sparkles, AlertTriangle, CheckCircle2, ChevronRight, Copy, GripVertical, ChevronUp, ChevronDown, StickyNote, Wrench, Package, HardHat, Save, Loader2 } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Zap, Shield, FileText, Sparkles, AlertTriangle, CheckCircle2, ChevronRight, Copy, GripVertical, ChevronUp, ChevronDown, StickyNote, Wrench, Package, HardHat, Save, Loader2, BookOpen } from "lucide-react";
+import PriceListPicker, { type PickedItem } from "@/components/PriceListPicker";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -236,6 +237,9 @@ export default function EstimateDetail() {
   const [localItems, setLocalItems] = useState<LineItem[] | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const pendingSaveRef = useRef(false);
+  // Price-list picker dialog state. Opened by the "From Price List" button
+  // in the add-toolbar; commits selected items via addFromPriceList below.
+  const [priceListOpen, setPriceListOpen] = useState(false);
 
   // Track which rows have their notes accordion expanded. Multiple rows can
   // be open at once so a user can write notes on several items in a row.
@@ -334,6 +338,30 @@ export default function EstimateDetail() {
     // Auto-expand the new row's notes if the caller seeded a note (rare
     // but keeps the UX consistent when templates carry details).
     if (template?.notes) setExpandedNoteIds(prev => new Set(prev).add(newItem.id));
+  };
+
+  // Bulk-append a batch chosen from the price-list picker in a single save.
+  // The picker can span multiple categories; each entry becomes its own line
+  // item preserving the source category so a mixed-category estimate reads
+  // clearly on the PDF.
+  const addFromPriceList = (picked: PickedItem[]) => {
+    if (!picked.length) return;
+    let seed = Date.now();
+    const rows: LineItem[] = picked.map(p => {
+      const qty = Number(p.qty) || 1;
+      const unitPrice = Number(p.unitPrice) || 0;
+      return {
+        id: seed++,
+        description: p.description,
+        category: p.category || "general",
+        qty,
+        unit: p.unit || "EA",
+        unitPrice,
+        total: qty * unitPrice,
+        notes: p.notes,
+      } as LineItem;
+    });
+    saveItems([...lineItems, ...rows], true);
   };
 
   // Auto-learn: whenever a line item is saved with a real description AND a
@@ -569,6 +597,15 @@ export default function EstimateDetail() {
             <Button
               size="sm"
               variant="default"
+              className="h-7 text-xs"
+              onClick={() => setPriceListOpen(true)}
+              data-testid="button-from-pricelist"
+            >
+              <BookOpen className="w-3 h-3 mr-1" />From Price List
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
               className="h-7 text-xs"
               onClick={() => addItem()}
               data-testid="button-add-blank"
@@ -1206,6 +1243,13 @@ export default function EstimateDetail() {
           )}
         </TabsContent>
       </Tabs>
+
+      <PriceListPicker
+        open={priceListOpen}
+        onOpenChange={setPriceListOpen}
+        onAdd={addFromPriceList}
+        title="Add from Price List"
+      />
     </div>
   );
 }

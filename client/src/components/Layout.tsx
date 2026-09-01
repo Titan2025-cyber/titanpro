@@ -126,7 +126,7 @@ const navGroups: NavGroup[] = [
       { href: "/carrier-hub", label: "Carrier Intelligence", icon: Shield, permission: "supplements" },
       { href: "/adjuster-hub", label: "Adjusters", icon: UserRound, permission: "supplements" },
       // — Standalone claim tools —
-      { href: "/line-items", label: "Line Item Library", icon: BookOpen, permission: "supplements" },
+      { href: "/line-items", label: "Price Lists", icon: BookOpen, permission: "supplements" },
       { href: "/claim-explainer", label: "Claim Explainer", icon: BookOpen, permission: "supplements" },
       { href: "/invoice-escalation", label: "Invoice Escalation", icon: Scale, permission: "supplements" },
       { href: "/claim-file-checker", label: "Claim File Checker", icon: ShieldCheck, permission: "supplements" },

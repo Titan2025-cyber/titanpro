@@ -13,6 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { generateInvoicePDF, downloadPDF } from "@/lib/pdfEngine";
 import { SendAndSavePanel } from "@/components/SendAndSavePanel";
+import PriceListPicker, { type PickedItem } from "@/components/PriceListPicker";
 import type { Invoice, Job, Contact } from "@shared/schema";
 import { fmtDate, fmtDateShort } from "@/lib/dates";
 
@@ -62,6 +63,10 @@ export default function Invoices() {
     phase: _prefillPhase,
   });
   const [items, setItems] = useState<LineItemRow[]>([blankRow()]);
+  // Price-list picker for both the new-invoice form and the edit dialog.
+  // We share one picker component; a small `target` flag tells its onAdd
+  // callback which row array to append to.
+  const [priceListOpen, setPriceListOpen] = useState<null | "new" | "edit">(null);
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState("check");
   const [sendViaQb, setSendViaQb] = useState(true); // auto-send new invoices through QuickBooks
@@ -349,10 +354,16 @@ export default function Invoices() {
               <div className="rounded-md border p-3 space-y-2">
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-semibold">Line Items</p>
-                  <Button type="button" size="sm" variant="outline" data-testid="button-add-line-item"
-                    onClick={() => setItems(rows => [...rows, blankRow()])}>
-                    <Plus className="w-3 h-3 mr-1" />Add item
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button type="button" size="sm" variant="default" data-testid="button-invoice-from-pricelist"
+                      onClick={() => setPriceListOpen("new")}>
+                      <BookOpen className="w-3 h-3 mr-1" />From Price List
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" data-testid="button-add-line-item"
+                      onClick={() => setItems(rows => [...rows, blankRow()])}>
+                      <Plus className="w-3 h-3 mr-1" />Add item
+                    </Button>
+                  </div>
                 </div>
                 <div className="grid grid-cols-[1fr_54px_78px_78px_28px] gap-2 text-[10px] font-semibold text-muted-foreground px-1">
                   <span>DESCRIPTION</span><span className="text-right">QTY</span><span className="text-right">UNIT $</span><span className="text-right">AMOUNT</span><span></span>
@@ -757,10 +768,16 @@ export default function Invoices() {
                   <div className="rounded-md border p-3 space-y-2">
                     <div className="flex items-center justify-between">
                       <p className="text-xs font-semibold">Line Items</p>
-                      <Button type="button" size="sm" variant="outline" data-testid="button-edit-add-line-item"
-                        onClick={() => setEditItems(rows => [...rows, blankRow()])}>
-                        <Plus className="w-3 h-3 mr-1" />Add item
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button type="button" size="sm" variant="default" data-testid="button-invoice-edit-from-pricelist"
+                          onClick={() => setPriceListOpen("edit")}>
+                          <BookOpen className="w-3 h-3 mr-1" />From Price List
+                        </Button>
+                        <Button type="button" size="sm" variant="outline" data-testid="button-edit-add-line-item"
+                          onClick={() => setEditItems(rows => [...rows, blankRow()])}>
+                          <Plus className="w-3 h-3 mr-1" />Add item
+                        </Button>
+                      </div>
                     </div>
                     <div className="grid grid-cols-[1fr_54px_84px_84px_28px] gap-2 text-[10px] font-semibold text-muted-foreground px-1">
                       <span>DESCRIPTION</span><span className="text-right">QTY</span><span className="text-right">UNIT $</span><span className="text-right">AMOUNT</span><span></span>
@@ -899,6 +916,31 @@ export default function Invoices() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <PriceListPicker
+        open={priceListOpen !== null}
+        onOpenChange={(o) => { if (!o) setPriceListOpen(null); }}
+        title="Add from Price List"
+        onAdd={(picked: PickedItem[]) => {
+          const rows: LineItemRow[] = picked.map(p => ({
+            description: p.description,
+            quantity: String(p.qty || 1),
+            unitPrice: String(p.unitPrice || 0),
+          }));
+          if (priceListOpen === "new") {
+            setItems(prev => {
+              // If the only current row is empty, replace it — otherwise append.
+              const cleaned = prev.filter(r => r.description || Number(r.unitPrice) > 0);
+              return [...cleaned, ...rows, ...(cleaned.length + rows.length === 0 ? [blankRow()] : [])];
+            });
+          } else if (priceListOpen === "edit") {
+            setEditItems(prev => {
+              const cleaned = prev.filter(r => r.description || Number(r.unitPrice) > 0);
+              return [...cleaned, ...rows];
+            });
+          }
+        }}
+      />
     </div>
   );
 }

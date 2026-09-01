@@ -2858,6 +2858,46 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(doc);
   }));
 
+  // Email a saved job document to one or more 3rd-party recipients as an
+  // attachment. Requires the document to already be persisted so we have a
+  // stable filename and content. Body: { to, subject?, message? }.
+  app.post("/api/documents/:id/email", wrapAsync(async (req, res) => {
+    const doc = storage.getJobDocument(Number(req.params.id)) as any;
+    if (!doc) return res.status(404).json({ error: "document not found" });
+    let toRaw = req.body?.to;
+    if (typeof toRaw === "string") toRaw = toRaw.split(/[,;\s]+/).filter(Boolean);
+    const to: string[] = Array.isArray(toRaw) ? toRaw.filter(Boolean) : [];
+    if (!to.length) return res.status(400).json({ error: "to required" });
+    // Hydrate the file bytes: doc.fileData is either a base64 data-URI or
+    // an S3 storage key. sendEmail accepts data URIs directly, so we fetch
+    // and re-encode when the doc is bucket-backed.
+    let content: string | null = null;
+    if (doc.fileData && typeof doc.fileData === "string" && doc.fileData.startsWith("data:")) {
+      content = doc.fileData;
+    } else if (doc.storageKey && objectStorage.isConfigured()) {
+      try {
+        const url = await objectStorage.getReadUrl(doc.storageKey);
+        const r = await fetch(url);
+        const buf = Buffer.from(await r.arrayBuffer());
+        const mime = r.headers.get("content-type") || "application/pdf";
+        content = `data:${mime};base64,${buf.toString("base64")}`;
+      } catch (e: any) {
+        return res.status(500).json({ error: "could not read document from storage" });
+      }
+    }
+    if (!content) return res.status(400).json({ error: "document has no attachable content" });
+    const filename = String(doc.title || doc.filename || `document-${doc.id}.pdf`);
+    const subject = String(req.body?.subject || `${doc.title || "Document"} — Titan Restoration`);
+    const html = String(req.body?.message || `<p>Please find the attached document from Titan Restoration.</p>`);
+    const result = await sendEmail({
+      to,
+      subject,
+      html,
+      attachments: [{ filename, contentType: "application/pdf", content }],
+    });
+    res.json({ ok: true, result });
+  }));
+
   app.delete("/api/documents/:id", (req, res) => {
     storage.deleteJobDocument(Number(req.params.id));
     res.json({ success: true });
@@ -3674,8 +3714,84 @@ Titan Restoration LLC | Augusta, GA` },
 
 
   // ── Line Item Library ─────────────────────────────────────────────────────
+  // The library backs the org-wide price book. Categories are free-form
+  // strings so the admin can add / rename them without a schema change.
   app.get("/api/line-items", (req, res) => {
     res.json(storage.getLineItems(req.query.category as string | undefined));
+  });
+  // Distinct categories, sorted, so the estimate/invoice picker and the
+  // admin manager both use one source of truth for the tab list.
+  app.get("/api/line-items/categories", (_req, res) => {
+    const rows = sqlite.prepare(
+      "SELECT DISTINCT category FROM line_item_library ORDER BY category"
+    ).all() as { category: string }[];
+    res.json(rows.map(r => r.category).filter(Boolean));
+  });
+  // Bulk replace: wipe the entire library and repopulate from a CSV/JSON
+  // payload. Wrapped in a transaction so a bad payload can't leave the
+  // library half-empty. Admin-only intent — gated in the UI, not here, so
+  // the endpoint stays reachable from ops scripts.
+  app.post("/api/line-items/bulk-replace", (req, res) => {
+    const items = Array.isArray(req.body?.items) ? req.body.items : null;
+    if (!items) return res.status(400).json({ error: "items[] required" });
+    const now = new Date().toISOString();
+    const tx = sqlite.transaction(() => {
+      sqlite.prepare("DELETE FROM line_item_library").run();
+      const stmt = sqlite.prepare(
+        `INSERT INTO line_item_library (category, sub_category, code, description, unit, unit_price, iicrc_ref, notes, is_custom, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const it of items) {
+        const category = String(it.category || "").trim() || "General";
+        const code = String(it.code || "").trim();
+        const description = String(it.description || "").trim();
+        if (!description) continue; // rows without a description are useless
+        const unit = String(it.unit || "EA").trim() || "EA";
+        const unitPrice = Number(it.unitPrice ?? it.unit_price ?? 0) || 0;
+        const notes = it.notes ? String(it.notes) : null;
+        stmt.run(category, null, code, description, unit, unitPrice, null, notes, 0, now);
+      }
+    });
+    try { tx(); } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "bulk replace failed" });
+    }
+    const count = (sqlite.prepare("SELECT COUNT(*) c FROM line_item_library").get() as any).c;
+    res.json({ ok: true, count });
+  });
+  // Bulk-append (used when the admin re-uploads a CSV that should ADD to
+  // an existing library instead of replacing it — kept separate so the
+  // destructive path is always explicit).
+  app.post("/api/line-items/bulk-append", (req, res) => {
+    const items = Array.isArray(req.body?.items) ? req.body.items : null;
+    if (!items) return res.status(400).json({ error: "items[] required" });
+    const now = new Date().toISOString();
+    const stmt = sqlite.prepare(
+      `INSERT INTO line_item_library (category, sub_category, code, description, unit, unit_price, iicrc_ref, notes, is_custom, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const tx = sqlite.transaction((rows: any[]) => {
+      for (const it of rows) {
+        const description = String(it.description || "").trim();
+        if (!description) continue;
+        stmt.run(
+          String(it.category || "General").trim() || "General",
+          null,
+          String(it.code || "").trim(),
+          description,
+          String(it.unit || "EA").trim() || "EA",
+          Number(it.unitPrice ?? it.unit_price ?? 0) || 0,
+          null,
+          it.notes ? String(it.notes) : null,
+          0,
+          now,
+        );
+      }
+    });
+    try { tx(items); } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "bulk append failed" });
+    }
+    const count = (sqlite.prepare("SELECT COUNT(*) c FROM line_item_library").get() as any).c;
+    res.json({ ok: true, count });
   });
   app.post("/api/line-items", (req, res) => { res.json(storage.createLineItem(req.body)); });
   app.patch("/api/line-items/:id", (req, res) => {
@@ -3683,6 +3799,19 @@ Titan Restoration LLC | Augusta, GA` },
   });
   app.delete("/api/line-items/:id", (req, res) => {
     storage.deleteLineItem(Number(req.params.id)); res.json({ ok: true });
+  });
+  // Rename or delete a whole category in one call (updates all rows).
+  app.patch("/api/line-items/categories/:name", (req, res) => {
+    const from = String(req.params.name);
+    const to = String(req.body?.newName || "").trim();
+    if (!to) return res.status(400).json({ error: "newName required" });
+    const r = sqlite.prepare("UPDATE line_item_library SET category = ? WHERE category = ?").run(to, from);
+    res.json({ ok: true, updated: r.changes });
+  });
+  app.delete("/api/line-items/categories/:name", (req, res) => {
+    const name = String(req.params.name);
+    const r = sqlite.prepare("DELETE FROM line_item_library WHERE category = ?").run(name);
+    res.json({ ok: true, deleted: r.changes });
   });
 
   // ── Adjusters ─────────────────────────────────────────────────────────────
