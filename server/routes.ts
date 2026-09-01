@@ -3814,6 +3814,37 @@ Titan Restoration LLC | Augusta, GA` },
     res.json({ ok: true, deleted: r.changes });
   });
 
+  // Bulk adjust unit prices across every row (optionally scoped to a category).
+  // Body accepts either { addFlat: number } to add/subtract a flat dollar amount,
+  // or { multiplyBy: number } to scale prices (e.g. 1.10 for +10%).
+  // Category filter: { category: "Cat 1" } — omit to hit every row.
+  // Prices are stored as INTEGER cents on the row, so we round to the nearest cent
+  // and refuse to go below zero to avoid negative pricing bugs.
+  app.post("/api/line-items/bulk-adjust", (req, res) => {
+    const addFlat = Number(req.body?.addFlat);
+    const multiplyBy = Number(req.body?.multiplyBy);
+    const category = req.body?.category ? String(req.body.category) : null;
+    const hasAdd = Number.isFinite(addFlat) && addFlat !== 0;
+    const hasMul = Number.isFinite(multiplyBy) && multiplyBy > 0 && multiplyBy !== 1;
+    if (!hasAdd && !hasMul) {
+      return res.status(400).json({ error: "Provide addFlat or multiplyBy" });
+    }
+    const where = category ? "WHERE category = ?" : "";
+    const params: any[] = category ? [category] : [];
+    // Compute new price in SQL so we can wrap it in a single transaction.
+    // unit_price column is REAL in this table (dollar decimals).
+    const clauses: string[] = [];
+    const setParams: any[] = [];
+    if (hasMul) { clauses.push("unit_price * ?"); setParams.push(multiplyBy); }
+    // Always chain: start with (unit_price [* multiplier]) then + addFlat
+    const expr = (clauses[0] || "unit_price") + (hasAdd ? " + ?" : "");
+    if (hasAdd) setParams.push(addFlat);
+    // Round to nearest cent, clamp at 0.
+    const sql = `UPDATE line_item_library SET unit_price = MAX(0, ROUND((${expr}) * 100) / 100.0) ${where}`;
+    const r = sqlite.prepare(sql).run(...setParams, ...params);
+    res.json({ ok: true, updated: r.changes, addFlat: hasAdd ? addFlat : 0, multiplyBy: hasMul ? multiplyBy : 1, category });
+  });
+
   // ── Adjusters ─────────────────────────────────────────────────────────────
   app.get("/api/adjusters", (_req, res) => { res.json(storage.getAdjusters()); });
   app.post("/api/adjusters", (req, res) => { res.json(storage.createAdjuster(req.body)); });

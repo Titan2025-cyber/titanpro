@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Upload, Trash2, Edit2, Download, AlertTriangle } from "lucide-react";
+import { Plus, Search, Upload, Trash2, Edit2, Download, AlertTriangle, TrendingUp } from "lucide-react";
 
 // ── CSV helpers ─────────────────────────────────────────────────────────────
 // Very small CSV parser that handles quoted fields and embedded commas. This
@@ -63,6 +63,10 @@ export default function LineItemLibrary() {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [activeCat, setActiveCat] = useState<string>("__all__");
+  const [adjustOpen, setAdjustOpen] = useState(false);
+  const [adjustMode, setAdjustMode] = useState<"flat" | "percent">("flat");
+  const [adjustValue, setAdjustValue] = useState("0.15");
+  const [adjustScope, setAdjustScope] = useState<string>("__all__"); // "__all__" or a category name
   const [addOpen, setAddOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [csvPreview, setCsvPreview] = useState<any[] | null>(null);
@@ -120,6 +124,20 @@ export default function LineItemLibrary() {
       toast({ title: `Price list ${csvMode === "replace" ? "replaced" : "updated"}`, description: `${r.count} items now in the library.` });
     },
     onError: (e: any) => toast({ title: "Upload failed", description: e?.message || "See console", variant: "destructive" }),
+  });
+
+  const adjustMutation = useMutation({
+    mutationFn: (p: { addFlat?: number; multiplyBy?: number; category?: string | null }) =>
+      apiRequest("POST", "/api/line-items/bulk-adjust", p),
+    onSuccess: (r: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/line-items"] });
+      setAdjustOpen(false);
+      const parts: string[] = [];
+      if (r.multiplyBy && r.multiplyBy !== 1) parts.push(`× ${r.multiplyBy}`);
+      if (r.addFlat) parts.push(`${r.addFlat > 0 ? "+" : ""}$${r.addFlat.toFixed(2)}`);
+      toast({ title: "Prices adjusted", description: `${r.updated} items updated (${parts.join(", ") || "no change"})${r.category ? ` in ${r.category}` : ""}.` });
+    },
+    onError: (e: any) => toast({ title: "Adjust failed", description: e?.message || "See console", variant: "destructive" }),
   });
 
   const renameCatMutation = useMutation({
@@ -222,6 +240,9 @@ export default function LineItemLibrary() {
           </Button>
           <Button variant="outline" onClick={() => setUploadOpen(true)} data-testid="button-upload">
             <Upload className="w-4 h-4 mr-2" /> Upload CSV
+          </Button>
+          <Button variant="outline" onClick={() => { setAdjustScope(activeCat); setAdjustOpen(true); }} disabled={!items.length} data-testid="button-adjust-prices">
+            <TrendingUp className="w-4 h-4 mr-2" /> Adjust Prices
           </Button>
           <Button variant="outline" onClick={() => { setNewCatName(""); setNewCatOpen(true); }} data-testid="button-add-category">
             <Plus className="w-4 h-4 mr-2" /> New Category
@@ -516,6 +537,74 @@ export default function LineItemLibrary() {
                 }}
                 disabled={!newCatName.trim()}
               >Create category</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Adjust Prices dialog — bulk +/- flat or percent, scoped to All or one category */}
+      <Dialog open={adjustOpen} onOpenChange={setAdjustOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Adjust Prices</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label>Scope</Label>
+              <Select value={adjustScope} onValueChange={setAdjustScope}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">All categories ({items.length} items)</SelectItem>
+                  {categoriesToShow.map((c: string) => {
+                    const n = items.filter(i => i.category === c).length;
+                    return <SelectItem key={c} value={c}>{c} ({n} items)</SelectItem>;
+                  })}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Adjustment type</Label>
+              <Select value={adjustMode} onValueChange={(v: any) => setAdjustMode(v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="flat">Flat dollar amount (e.g. +0.15)</SelectItem>
+                  <SelectItem value="percent">Percent (e.g. 10 for +10%)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>{adjustMode === "flat" ? "Amount ($)" : "Percent (%)"}</Label>
+              <Input
+                type="number"
+                step={adjustMode === "flat" ? "0.01" : "0.1"}
+                value={adjustValue}
+                onChange={e => setAdjustValue(e.target.value)}
+                placeholder={adjustMode === "flat" ? "0.15 or -0.25" : "10 or -5"}
+                autoFocus
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                {adjustMode === "flat"
+                  ? "Adds this dollar amount to every unit price. Use a negative number to subtract. Prices are clamped at $0."
+                  : "Multiplies every unit price. 10 = mark up 10%. -5 = mark down 5%."}
+              </p>
+            </div>
+            <div className="rounded-md bg-warning/10 border border-warning/30 p-3 text-xs flex gap-2">
+              <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+              <div>This rewrites the stored unit prices. Export a snapshot first if you might need to revert.</div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setAdjustOpen(false)}>Cancel</Button>
+              <Button
+                onClick={() => {
+                  const n = Number(adjustValue);
+                  if (!Number.isFinite(n) || n === 0) { toast({ title: "Enter a non-zero value", variant: "destructive" }); return; }
+                  const scope = adjustScope === "__all__" ? null : adjustScope;
+                  const count = items.filter(i => !scope || i.category === scope).length;
+                  const label = adjustMode === "flat" ? `${n > 0 ? "+" : ""}$${n.toFixed(2)}` : `${n > 0 ? "+" : ""}${n}%`;
+                  if (!confirm(`Apply ${label} to ${count} item${count === 1 ? "" : "s"}${scope ? ` in ${scope}` : ""}?`)) return;
+                  if (adjustMode === "flat") adjustMutation.mutate({ addFlat: n, category: scope });
+                  else adjustMutation.mutate({ multiplyBy: 1 + n / 100, category: scope });
+                }}
+                disabled={adjustMutation.isPending}
+              >{adjustMutation.isPending ? "Adjusting…" : "Apply"}</Button>
             </div>
           </div>
         </DialogContent>
