@@ -14,6 +14,7 @@ import { useAuth } from "@/lib/auth";
 import { generateInvoicePDF, downloadPDF } from "@/lib/pdfEngine";
 import { SendAndSavePanel } from "@/components/SendAndSavePanel";
 import PriceListPicker, { type PickedItem } from "@/components/PriceListPicker";
+import JobCombobox from "@/components/JobCombobox";
 import type { Invoice, Job, Contact } from "@shared/schema";
 import { fmtDate, fmtDateShort } from "@/lib/dates";
 
@@ -318,13 +319,17 @@ export default function Invoices() {
             <div className="space-y-3">
               <div>
                 <Label>Job</Label>
-                <Select value={form.jobId} onValueChange={v => {
-                  const job = jobs.find(j => j.id === Number(v));
-                  setForm(f => ({ ...f, jobId: v, contactId: job?.contactId ? String(job.contactId) : f.contactId }));
-                }}>
-                  <SelectTrigger><SelectValue placeholder="Select job" /></SelectTrigger>
-                  <SelectContent>{jobs.map(j => <SelectItem key={j.id} value={String(j.id)}>{j.jobNumber}</SelectItem>)}</SelectContent>
-                </Select>
+                <JobCombobox
+                  jobs={jobs}
+                  contacts={contacts}
+                  value={form.jobId}
+                  onChange={(v) => {
+                    const job = jobs.find(j => j.id === Number(v));
+                    setForm(f => ({ ...f, jobId: v, contactId: job?.contactId ? String(job.contactId) : f.contactId }));
+                  }}
+                  placeholder="Search jobs by number, address, customer…"
+                  data-testid="select-invoice-job"
+                />
               </div>
               <div>
                 <Label>Customer</Label>

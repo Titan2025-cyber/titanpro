@@ -11,7 +11,8 @@ import { Label } from "@/components/ui/label";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
-import type { Estimate, Job } from "@shared/schema";
+import type { Estimate, Job, Contact } from "@shared/schema";
+import JobCombobox from "@/components/JobCombobox";
 
 const STATUS_COLORS: Record<string, string> = {
   draft: "bg-gray-100 text-gray-600", sent: "bg-blue-100 text-blue-800",
@@ -36,6 +37,7 @@ export default function Estimates() {
 
   const { data: estimates = [], isLoading } = useQuery<Estimate[]>({ queryKey: ["/api/estimates"] });
   const { data: jobs = [] } = useQuery<Job[]>({ queryKey: ["/api/jobs"] });
+  const { data: contacts = [] } = useQuery<Contact[]>({ queryKey: ["/api/contacts"] });
 
   const { toast } = useToast();
   const { user } = useAuth();
@@ -91,12 +93,14 @@ export default function Estimates() {
             <div className="space-y-3">
               <div>
                 <Label>Job</Label>
-                <Select value={form.jobId} onValueChange={v => setForm(f => ({ ...f, jobId: v }))}>
-                  <SelectTrigger><SelectValue placeholder="Select job" /></SelectTrigger>
-                  <SelectContent>
-                    {jobs.map(j => <SelectItem key={j.id} value={String(j.id)}>{j.jobNumber} — {j.lossType}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <JobCombobox
+                  jobs={jobs}
+                  contacts={contacts}
+                  value={form.jobId}
+                  onChange={(v) => setForm(f => ({ ...f, jobId: v }))}
+                  placeholder="Search jobs by number, address, customer…"
+                  data-testid="select-estimate-job"
+                />
               </div>
               <div>
                 <Label>Title</Label>
