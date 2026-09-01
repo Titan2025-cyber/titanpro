@@ -531,7 +531,9 @@ export default function EstimateDetail() {
                 },
                 lineItems: lineItems.map(it => ({
                   description: it.description || "Item",
-                  quantity: Number(it.quantity) || 1,
+                  // Estimate rows use `qty`; the PDF engine reads `quantity`.
+                  // Read both so imported / legacy rows still render correctly.
+                  quantity: Number((it as any).quantity ?? it.qty ?? 1) || 1,
                   unitPrice: Number(it.unitPrice) || 0,
                   total: Number(it.total) || 0,
                   unit: (it as any).unit || undefined,
