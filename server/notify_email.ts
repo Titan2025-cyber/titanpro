@@ -86,7 +86,12 @@ export async function sendMentionEmails(
     const origin = appOrigin();
     const jobLabel = input.jobNumber ? `Job ${input.jobNumber}` : `Job #${input.jobId}`;
     const jobLink = `${origin}/#/jobs/${input.jobId}`;
-    const subject = `${input.authorName} tagged you on ${jobLabel}${input.customerName ? " — " + input.customerName : ""}`;
+    // Use ASCII hyphen (not em dash) as the separator. The Gmail send path
+    // now RFC-2047-encodes non-ASCII subject headers, but keeping the subject
+    // plain ASCII makes it render identically in every mail client search,
+    // preview snippet, and mobile notification without depending on the
+    // recipient's client decoding the encoded-word correctly.
+    const subject = `${input.authorName} tagged you on ${jobLabel}${input.customerName ? " - " + input.customerName : ""}`;
     const html = renderMentionEmail({
       authorName: input.authorName,
       jobLabel,

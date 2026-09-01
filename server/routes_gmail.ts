@@ -106,6 +106,21 @@ function base64Mime(buf: Buffer): string {
 
 // Given the loose input (data URI or bare base64), return a Buffer + inferred
 // content type. If the caller supplied a contentType, prefer it.
+// RFC 2047 encoded-word for email headers with non-ASCII content. Gmail's
+// raw-MIME send silently mangles non-ASCII bytes in the Subject header,
+// which is why the em dash in `Cody tagged you on Job … — Stephanie Hadley`
+// was rendering as a string of nonsense numbers and letters. This wraps
+// non-ASCII subjects in a UTF-8 base64 encoded-word so every mail client
+// decodes them cleanly.
+function encodeSubjectHeader(s: string): string {
+  const str = String(s ?? "");
+  // Fast path: 7-bit ASCII, no control chars — safe to inline.
+  // eslint-disable-next-line no-control-regex
+  if (/^[\x20-\x7E]*$/.test(str)) return str;
+  const b64 = Buffer.from(str, "utf8").toString("base64");
+  return `=?utf-8?B?${b64}?=`;
+}
+
 function attachmentBuffer(att: GmailAttachment): { buf: Buffer; contentType: string } {
   let b64 = att.content || "";
   let contentType = att.contentType || "";
@@ -218,7 +233,7 @@ export async function sendGmailAsEmployee(
     `To: ${toList}`,
     from ? `From: ${from}` : "",
     args.replyTo ? `Reply-To: ${args.replyTo}` : "",
-    `Subject: ${subject}`,
+    `Subject: ${encodeSubjectHeader(subject)}`,
     "MIME-Version: 1.0",
     `Content-Type: ${outerContentType}`,
   ].filter(Boolean);
@@ -614,7 +629,7 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
         cc ? `Cc: ${cc}` : "",
         bcc ? `Bcc: ${bcc}` : "",
         from ? `From: ${from}` : "",
-        `Subject: ${subject || "(no subject)"}`,
+        `Subject: ${encodeSubjectHeader(subject || "(no subject)")}`,
         "Content-Type: text/plain; charset=UTF-8",
         "MIME-Version: 1.0",
         "",
