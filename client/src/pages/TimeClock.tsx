@@ -6,8 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import JobCombobox from "@/components/JobCombobox";
 import { useToast } from "@/hooks/use-toast";
 import { Clock, MapPin, LogIn, LogOut, Users, Timer, Briefcase } from "lucide-react";
 import { fmtDateShort, todayLocalISO } from "@/lib/dates";
@@ -34,6 +34,13 @@ export default function TimeClock() {
   const { data: jobs = [] } = useQuery<any[]>({
     queryKey: ["/api/jobs"],
     queryFn: () => apiRequest("/api/jobs").then(r => r.json()),
+  });
+
+  // Feeds the JobCombobox so techs can also match a job by the customer's
+  // name, not just the address / job number.
+  const { data: contacts = [] } = useQuery<any[]>({
+    queryKey: ["/api/contacts"],
+    queryFn: () => apiRequest("/api/contacts").then(r => r.json()),
   });
 
   const { data: laborReport = [] } = useQuery<any[]>({
@@ -114,13 +121,14 @@ export default function TimeClock() {
             </div>
             <div>
               <Label>Job (optional)</Label>
-              <Select value={selectedJob} onValueChange={setSelectedJob}>
-                <SelectTrigger data-testid="select-job"><SelectValue placeholder="Select job..." /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">No specific job</SelectItem>
-                  {jobs.map((j: any) => <SelectItem key={j.id} value={String(j.id)}>TP-{String(j.id).padStart(4, "0")} — {j.address?.substring(0, 22) || "N/A"}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <JobCombobox
+                jobs={jobs}
+                contacts={contacts}
+                value={selectedJob}
+                onChange={setSelectedJob}
+                placeholder="Search jobs by number, address, customer…"
+                data-testid="select-job"
+              />
             </div>
             {geoError && <p className="text-xs text-yellow-600">{geoError}</p>}
             <Button className="w-full" onClick={handleClockIn} disabled={!selectedEmployee || clockingIn || clockInMutation.isPending} data-testid="button-clock-in">
