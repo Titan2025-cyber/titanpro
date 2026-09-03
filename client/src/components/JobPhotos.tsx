@@ -424,19 +424,31 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
 
   // Touch-swipe: left swipe = next, right swipe = prev. 60px threshold so an
   // accidental scroll doesn't count as a swipe.
+  // Track both X and Y at touchstart so we can distinguish a horizontal
+  // navigation swipe from a vertical scroll gesture. Otherwise a normal
+  // “scroll down to see metadata” slide can drift enough on X to trip the
+  // 60px threshold and unexpectedly change photos.
+  const swipeStartYRef = useRef<number | null>(null);
   const handleTouchStart = (e: React.TouchEvent) => {
     swipeStartXRef.current = e.touches[0]?.clientX ?? null;
+    swipeStartYRef.current = e.touches[0]?.clientY ?? null;
   };
   const handleTouchEnd = (e: React.TouchEvent) => {
     const startX = swipeStartXRef.current;
-    if (startX === null) return;
+    const startY = swipeStartYRef.current;
+    swipeStartXRef.current = null;
+    swipeStartYRef.current = null;
+    if (startX === null || startY === null) return;
     const endX = e.changedTouches[0]?.clientX ?? startX;
+    const endY = e.changedTouches[0]?.clientY ?? startY;
     const dx = endX - startX;
-    if (Math.abs(dx) > 60) {
+    const dy = endY - startY;
+    // Only navigate on a clearly horizontal swipe: >60px on X AND |dx| beats
+    // |dy| by at least 1.5×. Everything else is treated as scroll.
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
       if (dx < 0) showNext();
       else showPrev();
     }
-    swipeStartXRef.current = null;
   };
 
   // ── Photo report (PDF) helpers ───────────────────────────────────────
@@ -1028,7 +1040,7 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
       {lightbox && (
         <div
           ref={lightboxScrollRef}
-          className="fixed inset-0 z-50 bg-black/90 flex items-start justify-center p-4 pt-12 overflow-y-auto overscroll-contain"
+          className="fixed inset-0 z-50 bg-black/90 flex items-start justify-center p-4 overflow-y-auto overscroll-contain"
           onClick={() => setLightbox(null)}
         >
           {/* Left / right navigation arrows — large, edge-hugging so they're
@@ -1058,24 +1070,32 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
             </button>
           )}
 
-          <div className="relative max-w-3xl w-full" onClick={e => e.stopPropagation()}>
-            {/* Top row: position counter + close */}
-            <div className="absolute -top-10 left-0 right-0 flex items-center justify-between">
+          <div className="relative max-w-3xl w-full pb-8" onClick={e => e.stopPropagation()}>
+            {/* Top row: position counter + close — inline (not absolute) so it
+                sits inside the scrollable panel instead of hiding behind the
+                page's top padding. */}
+            <div className="flex items-center justify-between mb-2">
               <div className="text-white/80 text-xs font-medium tabular-nums bg-white/10 rounded px-2 py-1 backdrop-blur-sm">
                 {lightboxIndex + 1} / {filtered.length}
               </div>
               <button
-                className="text-white hover:text-gray-300 transition-colors"
+                className="text-white hover:text-gray-300 transition-colors p-1"
                 onClick={() => setLightbox(null)}
                 aria-label="Close"
               >
                 <X className="w-6 h-6" />
               </button>
             </div>
+            {/* Image: capped at 55vh on mobile so metadata below is visible on
+                first paint (image + first row of metadata fit above the fold).
+                touch-action:pan-y so the vertical page scroll is preserved on
+                iOS — horizontal swipe handlers still fire because we only
+                intercept in touchend when |dx| clearly beats |dy|. */}
             <img
               src={lightbox.dataUrl}
               alt={lightbox.caption || lightbox.filename}
-              className="w-full rounded-lg max-h-[75vh] object-contain select-none"
+              className="w-full rounded-lg max-h-[55vh] md:max-h-[70vh] object-contain select-none"
+              style={{ touchAction: "pan-y" }}
               draggable={false}
               onTouchStart={handleTouchStart}
               onTouchEnd={handleTouchEnd}
