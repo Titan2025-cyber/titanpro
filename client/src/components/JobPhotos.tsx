@@ -1095,7 +1095,7 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
             onClick={() => setLightbox(null)}
             style={{ WebkitOverflowScrolling: "touch" as any }}
           >
-            <div className="max-w-3xl w-full mx-auto p-4 pb-10" onClick={e => e.stopPropagation()}>
+            <div className="max-w-3xl w-full mx-auto px-4 pt-6 pb-10" onClick={e => e.stopPropagation()}>
             <img
               src={lightbox.dataUrl}
               alt={lightbox.caption || lightbox.filename}
