@@ -1033,72 +1033,75 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
         </div>
       )}
 
-      {/* Lightbox — items-start + overflow-y-auto so tall photo+metadata
-          panels open with the image at the TOP of the viewport instead of
-          being centered (which pushed the image offscreen when the
-          metadata + notes section made the panel taller than the screen). */}
+      {/* Lightbox — clean column layout: fixed top bar (counter + Prev/Next +
+          close), then a scrollable body containing the image + metadata.
+          Full viewport height, so nothing is ever pushed offscreen.
+          Prev/Next live in the top bar (thumb-friendly on phones) rather
+          than being absolute-positioned mid-screen — the previous side
+          arrows fought with the scrollable panel and got covered as soon
+          as the tech scrolled down. */}
       {lightbox && (
         <div
-          ref={lightboxScrollRef}
-          className="fixed inset-0 z-50 bg-black/90 flex items-start justify-center p-4 overflow-y-auto overscroll-contain"
+          className="fixed inset-0 z-50 bg-black/95 flex flex-col"
           onClick={() => setLightbox(null)}
         >
-          {/* Left / right navigation arrows — large, edge-hugging so they're
-              easy to hit on mobile without covering the image. Rendered
-              OUTSIDE the inner content wrapper so clicks on them don't get
-              swallowed by the stopPropagation() below. */}
-          {canPrev && (
-            <button
-              type="button"
-              onClick={e => { e.stopPropagation(); showPrev(); }}
-              className="absolute left-2 md:left-6 top-1/2 -translate-y-1/2 z-10 w-11 h-11 md:w-14 md:h-14 rounded-full bg-white/10 hover:bg-white/25 text-white flex items-center justify-center backdrop-blur-sm transition-colors"
-              aria-label="Previous photo"
-              data-testid="button-lightbox-prev"
-            >
-              <ChevronLeft className="w-6 h-6 md:w-7 md:h-7" />
-            </button>
-          )}
-          {canNext && (
-            <button
-              type="button"
-              onClick={e => { e.stopPropagation(); showNext(); }}
-              className="absolute right-2 md:right-6 top-1/2 -translate-y-1/2 z-10 w-11 h-11 md:w-14 md:h-14 rounded-full bg-white/10 hover:bg-white/25 text-white flex items-center justify-center backdrop-blur-sm transition-colors"
-              aria-label="Next photo"
-              data-testid="button-lightbox-next"
-            >
-              <ChevronRight className="w-6 h-6 md:w-7 md:h-7" />
-            </button>
-          )}
-
-          <div className="relative max-w-3xl w-full pb-8" onClick={e => e.stopPropagation()}>
-            {/* Top row: position counter + close — inline (not absolute) so it
-                sits inside the scrollable panel instead of hiding behind the
-                page's top padding. */}
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-white/80 text-xs font-medium tabular-nums bg-white/10 rounded px-2 py-1 backdrop-blur-sm">
+          {/* Top toolbar: prev/next + counter + close */}
+          <div
+            className="flex items-center justify-between px-3 py-2 border-b border-white/10 bg-black/60 backdrop-blur-sm"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={!canPrev}
+                onClick={showPrev}
+                className="h-10 w-10 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white transition-colors"
+                aria-label="Previous photo"
+                data-testid="button-lightbox-prev"
+              >
+                <ChevronLeft className="w-6 h-6" />
+              </button>
+              <button
+                type="button"
+                disabled={!canNext}
+                onClick={showNext}
+                className="h-10 w-10 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white transition-colors"
+                aria-label="Next photo"
+                data-testid="button-lightbox-next"
+              >
+                <ChevronRight className="w-6 h-6" />
+              </button>
+              <div className="ml-2 text-white/80 text-xs font-medium tabular-nums">
                 {lightboxIndex + 1} / {filtered.length}
               </div>
-              <button
-                className="text-white hover:text-gray-300 transition-colors p-1"
-                onClick={() => setLightbox(null)}
-                aria-label="Close"
-              >
-                <X className="w-6 h-6" />
-              </button>
             </div>
-            {/* Image: capped at 55vh on mobile so metadata below is visible on
-                first paint (image + first row of metadata fit above the fold).
-                touch-action:pan-y so the vertical page scroll is preserved on
-                iOS — horizontal swipe handlers still fire because we only
-                intercept in touchend when |dx| clearly beats |dy|. */}
+            <button
+              className="h-10 w-10 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors"
+              onClick={() => setLightbox(null)}
+              aria-label="Close"
+              data-testid="button-lightbox-close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Scrollable body: image + metadata. flex-1 + min-h-0 so it takes
+              all remaining space and its inner overflow-y-auto is the
+              scroll container (fixes iOS Safari where a parent overflow on
+              a fixed element can be ignored). */}
+          <div
+            ref={lightboxScrollRef}
+            className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
+            onClick={() => setLightbox(null)}
+            style={{ WebkitOverflowScrolling: "touch" as any }}
+          >
+            <div className="max-w-3xl w-full mx-auto p-4 pb-10" onClick={e => e.stopPropagation()}>
             <img
               src={lightbox.dataUrl}
               alt={lightbox.caption || lightbox.filename}
-              className="w-full rounded-lg max-h-[55vh] md:max-h-[70vh] object-contain select-none"
-              style={{ touchAction: "pan-y" }}
+              className="w-full rounded-lg object-contain select-none bg-black"
+              style={{ maxHeight: "70vh", touchAction: "pan-y" }}
               draggable={false}
-              onTouchStart={handleTouchStart}
-              onTouchEnd={handleTouchEnd}
             />
             <div className="mt-3 flex items-center justify-between">
               <div>
@@ -1175,6 +1178,7 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
                 </div>
               </div>
             )}
+            </div>
           </div>
         </div>
       )}
