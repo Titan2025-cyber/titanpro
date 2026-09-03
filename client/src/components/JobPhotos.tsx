@@ -64,6 +64,7 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
   const [bulkProgress, setBulkProgress] = useState<{ name: string; status: "pending"|"uploading"|"done"|"failed"; error?: string }[]>([]);
   const [activeFilter, setActiveFilter] = useState("all");
   const [lightbox, setLightbox] = useState<Photo | null>(null);
+  const lightboxScrollRef = useRef<HTMLDivElement | null>(null);
   // Ref for the touch-swipe tracking on the lightbox image. Populated by
   // handleTouchStart, consumed by handleTouchEnd. Kept in a ref so we don't
   // trigger re-renders on every touchmove event.
@@ -391,6 +392,16 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
   const canNext = lightboxIndex >= 0 && lightboxIndex < filtered.length - 1;
   const showPrev = () => { if (canPrev) setLightbox(filtered[lightboxIndex - 1]); };
   const showNext = () => { if (canNext) setLightbox(filtered[lightboxIndex + 1]); };
+
+  // Snap the lightbox overlay back to the top each time a new photo is
+  // opened (initial open OR prev/next nav). Otherwise, if the previous
+  // photo’s metadata panel had been scrolled, the next one appears mid-
+  // page instead of at the top of its own image.
+  useEffect(() => {
+    if (lightbox && lightboxScrollRef.current) {
+      lightboxScrollRef.current.scrollTop = 0;
+    }
+  }, [lightbox?.id]);
 
   // Global keyboard shortcuts while the lightbox is open: ←/→ to navigate,
   // Esc to close. Listener is cleaned up when the lightbox closes or the
@@ -1010,10 +1021,14 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
         </div>
       )}
 
-      {/* Lightbox */}
+      {/* Lightbox — items-start + overflow-y-auto so tall photo+metadata
+          panels open with the image at the TOP of the viewport instead of
+          being centered (which pushed the image offscreen when the
+          metadata + notes section made the panel taller than the screen). */}
       {lightbox && (
         <div
-          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+          ref={lightboxScrollRef}
+          className="fixed inset-0 z-50 bg-black/90 flex items-start justify-center p-4 pt-12 overflow-y-auto overscroll-contain"
           onClick={() => setLightbox(null)}
         >
           {/* Left / right navigation arrows — large, edge-hugging so they're
