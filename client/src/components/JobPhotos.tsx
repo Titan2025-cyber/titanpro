@@ -1096,11 +1096,16 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
             style={{ WebkitOverflowScrolling: "touch" as any }}
           >
             <div className="max-w-3xl w-full mx-auto px-4 pt-6 pb-10" onClick={e => e.stopPropagation()}>
+            {/* Image: no vh-based cap. The scroll container handles overflow,
+                so we just let the image render at its natural aspect ratio
+                inside the max-w-3xl column. Prior versions used max-h: 70vh
+                which iOS Safari mis-measures inside a scrollable flex child
+                and clipped the bottom of portrait photos. */}
             <img
               src={lightbox.dataUrl}
               alt={lightbox.caption || lightbox.filename}
-              className="w-full rounded-lg object-contain select-none bg-black"
-              style={{ maxHeight: "70vh", touchAction: "pan-y" }}
+              className="w-full h-auto rounded-lg object-contain select-none bg-black"
+              style={{ touchAction: "pan-y" }}
               draggable={false}
             />
             <div className="mt-3 flex items-center justify-between">
