@@ -3089,6 +3089,114 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const estGrandTotal = +items.reduce((s, i) => s + (i.estCost || 0), 0).toFixed(2);
     res.json({ count: items.length, items, groups, estGrandTotal });
   });
+  // ── "Attention Today" owner dashboard ───────────────────────────────
+  // Surfaces the things a business owner needs to react to today across
+  // the entire company. Each bucket returns a count and the top few
+  // offending rows so the UI can render actionable list items directly.
+  //
+  // Owner/admin/general_manager only — exposes cross-employee
+  // information that a tech shouldn't see.
+  app.get("/api/dashboard/attention", requireRole("owner", "admin", "general_manager"), (_req, res) => {
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const dayAgo = new Date(now.getTime() - 24 * 3600 * 1000).toISOString();
+    const fiveDaysAgo = new Date(now.getTime() - 5 * 24 * 3600 * 1000).toISOString();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 3600 * 1000).toISOString();
+    const tenHoursAgo = new Date(now.getTime() - 10 * 3600 * 1000).toISOString();
+
+    const safe = <T>(fn: () => T, fallback: T): T => {
+      try { return fn(); } catch { return fallback; }
+    };
+
+    // Overdue invoices — unpaid past due_date, still open.
+    const overdueInvoices = safe(() => sqlite.prepare(`
+      SELECT id, invoice_number AS invoiceNumber, total, due_date AS dueDate, status, job_id AS jobId
+        FROM invoices
+       WHERE status NOT IN ('paid','void','cancelled')
+         AND due_date IS NOT NULL AND due_date <> '' AND due_date < ?
+       ORDER BY due_date ASC
+       LIMIT 25
+    `).all(nowIso) as any[], []);
+
+    // Signature requests still pending >24h.
+    const unsignedRequests = safe(() => sqlite.prepare(`
+      SELECT id, title, doc_type AS docType, recipient_name AS recipientName,
+             recipient_email AS recipientEmail, job_id AS jobId, created_at AS createdAt
+        FROM signature_requests
+       WHERE status = 'pending'
+         AND created_at < ?
+       ORDER BY created_at ASC
+       LIMIT 25
+    `).all(dayAgo) as any[], []);
+
+    // Drying jobs that have logged 3+ days of readings without a
+    // structural_drying_complete = 1 record and are on an open job.
+    // IICRC S500 typical benchmark is 3 days; beyond that needs owner
+    // eyes.
+    const dryingPastBenchmark = safe(() => sqlite.prepare(`
+      SELECT j.id AS jobId, j.job_number AS jobNumber, j.address,
+             MAX(d.day_number) AS days,
+             MAX(d.reading_date) AS lastReading
+        FROM drying_records d
+        JOIN jobs j ON j.id = d.job_id
+       WHERE j.status NOT IN ('closed','cancelled','complete','completed')
+       GROUP BY d.job_id
+      HAVING MAX(d.day_number) >= 3
+         AND SUM(CASE WHEN d.structural_drying_complete = 1 THEN 1 ELSE 0 END) = 0
+       ORDER BY days DESC
+       LIMIT 25
+    `).all() as any[], []);
+
+    // Stalled jobs — no drying record, note, invoice or estimate
+    // activity in the past 5 days and still open. Cheap approximation:
+    // no drying record and no invoice created in 5 days.
+    const stalledJobs = safe(() => sqlite.prepare(`
+      SELECT j.id AS jobId, j.job_number AS jobNumber, j.address, j.status,
+             MAX(COALESCE(d.reading_date, j.created_at)) AS lastActivity
+        FROM jobs j
+        LEFT JOIN drying_records d ON d.job_id = j.id
+       WHERE j.status NOT IN ('closed','cancelled','complete','completed')
+       GROUP BY j.id
+      HAVING lastActivity IS NULL OR lastActivity < ?
+       ORDER BY lastActivity ASC
+       LIMIT 25
+    `).all(fiveDaysAgo) as any[], []);
+
+    // Long clock-ins — someone still on the clock >10h means they
+    // probably forgot to clock out. Payroll accuracy risk.
+    const longClockIns = safe(() => sqlite.prepare(`
+      SELECT id, employee_name AS employeeName, job_id AS jobId, clock_in_at AS clockInAt
+        FROM time_clock
+       WHERE clock_out_at IS NULL
+         AND clock_in_at < ?
+       ORDER BY clock_in_at ASC
+       LIMIT 25
+    `).all(tenHoursAgo) as any[], []);
+
+    // Supplements pending >7 days without a response.
+    const stalePendingSupplements = safe(() => sqlite.prepare(`
+      SELECT id, job_id AS jobId, title, amount_requested AS amountRequested,
+             carrier, adjuster_name AS adjusterName, submitted_at AS submittedAt, follow_up_due AS followUpDue, status
+        FROM supplements
+       WHERE status = 'pending'
+         AND COALESCE(submitted_at, created_at) < ?
+       ORDER BY COALESCE(submitted_at, created_at) ASC
+       LIMIT 25
+    `).all(sevenDaysAgo) as any[], []);
+
+    res.json({
+      generatedAt: nowIso,
+      buckets: {
+        overdueInvoices: { count: overdueInvoices.length, items: overdueInvoices.slice(0, 5) },
+        unsignedRequests: { count: unsignedRequests.length, items: unsignedRequests.slice(0, 5) },
+        dryingPastBenchmark: { count: dryingPastBenchmark.length, items: dryingPastBenchmark.slice(0, 5) },
+        stalledJobs: { count: stalledJobs.length, items: stalledJobs.slice(0, 5) },
+        longClockIns: { count: longClockIns.length, items: longClockIns.slice(0, 5) },
+        stalePendingSupplements: { count: stalePendingSupplements.length, items: stalePendingSupplements.slice(0, 5) },
+      },
+    });
+  });
+
   // ── First-run setup checklist ─────────────────────────────────────────────
   // Powers the onboarding card on the Dashboard. Each item is either
   // "done", "todo", or "optional". Deliberately owner/admin only so techs

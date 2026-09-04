@@ -4,6 +4,7 @@ import titanLogo from "@/assets/titan-logo.png";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import SetupChecklist from "@/components/SetupChecklist";
+import AttentionToday from "@/components/AttentionToday";
 import { Link } from "wouter";
 import {
   Briefcase, FileText, DollarSign, AlertCircle, Plus, Phone, TrendingUp,
@@ -456,6 +457,12 @@ export default function Dashboard() {
           KPIs so a fresh tenant sees actionable next steps before empty
           revenue widgets. */}
       {isOwner && <SetupChecklist />}
+
+      {/* Attention Today — cross-company triage of overdue invoices,
+          unsigned WAs, drying benchmarks, stalled jobs, forgotten
+          clock-outs, stale supplements. Self-hides when everything is
+          clear. Owner/admin only. */}
+      {isOwner && <AttentionToday />}
 
       {/* KPI Cards — owner-only. These expose revenue, A/R, payouts and
           overall pipeline value; non-owner staff (admin/sales/tech) don't
