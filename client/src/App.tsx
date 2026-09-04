@@ -303,7 +303,10 @@ function AuthenticatedRoutes() {
         {/* Analytics folds into the Reports & BI Hub. */}
         <Route path="/analytics"><Redirect to="/reports-hub?tab=analytics" /></Route>
         <Route path="/trash" component={() => <Page component={TrashPage} name="Trash" />} />
-        <Route path="/scheduling"><Redirect to="/scheduling-hub?tab=schedule" /></Route>
+        {/* Schedule Calendar is a first-class Core route now (was previously a
+            tab inside the Scheduling & Dispatch hub). Renders the Scheduling
+            page directly so the sidebar entry loads without a redirect hop. */}
+        <Route path="/scheduling" component={() => <Page component={Scheduling} name="Scheduling" />} />
         <Route path="/technician"><Redirect to="/technician-hub?tab=technician" /></Route>
         <Route path="/equipment"><Redirect to="/equipment-hub?tab=inventory" /></Route>
         <Route path="/inventory"><Redirect to="/equipment-hub?tab=consumables" /></Route>

@@ -371,6 +371,106 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
     } catch { res.json([]); }
   });
 
+  // Manual edit / delete of a time_clock entry. Techs asked for the
+  // ability to fix their own clock-in / clock-out timestamps when GPS
+  // missed the punch, they forgot to clock out at end of day, etc.
+  //
+  // Auth model:
+  //   - Manager roles (owner, admin, office, general_manager) can edit
+  //     or delete anyone's entry.
+  //   - Everyone else can only touch their OWN rows (matched by
+  //     employee_id when present, else case-insensitive employee_name).
+  //
+  // Every edit stamps `edited_at`, `edited_by`, and (if provided) a
+  // short `edit_reason` so payroll has a paper trail if a dispute comes
+  // up later. The columns are added lazily below if the DB was created
+  // before this feature landed.
+  try {
+    const cols = sqlite.prepare("PRAGMA table_info(time_clock)").all() as any[];
+    const colNames = new Set(cols.map((c) => c.name));
+    if (!colNames.has("edited_at"))     sqlite.exec("ALTER TABLE time_clock ADD COLUMN edited_at TEXT");
+    if (!colNames.has("edited_by"))     sqlite.exec("ALTER TABLE time_clock ADD COLUMN edited_by TEXT");
+    if (!colNames.has("edit_reason"))   sqlite.exec("ALTER TABLE time_clock ADD COLUMN edit_reason TEXT");
+  } catch { /* older sqlite w/o pragma or first-run — ignore */ }
+
+  const managerRoles = new Set(["owner", "admin", "office", "general_manager"]);
+  const canEditEntry = (req: any, row: any) => {
+    const u = req.user;
+    if (!u) return true; // no auth wired — permissive (dev/pass-through)
+    if (u.role && managerRoles.has(String(u.role).toLowerCase())) return true;
+    // Fall back to owner-matches-employee. Employee IDs win over name.
+    if (u.employeeId && row.employee_id && Number(u.employeeId) === Number(row.employee_id)) return true;
+    if (u.name && row.employee_name && String(u.name).toLowerCase() === String(row.employee_name).toLowerCase()) return true;
+    return false;
+  };
+
+  app.patch("/api/time-clock/:id", (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const row = sqlite.prepare("SELECT * FROM time_clock WHERE id = ?").get(id) as any;
+      if (!row) return res.status(404).json({ error: "Time entry not found." });
+      if (!canEditEntry(req, row)) return res.status(403).json({ error: "You can only edit your own time entries." });
+
+      const { clockInAt, clockOutAt, notes, jobId, editReason } = req.body || {};
+
+      // Normalize incoming ISO strings; reject malformed dates outright so
+      // we don't stuff "Invalid Date" into the DB.
+      const parseIso = (v: any): string | null => {
+        if (v === null) return null;
+        if (v === undefined) return undefined as any;
+        const d = new Date(v);
+        if (isNaN(d.getTime())) throw new Error("invalid date");
+        return d.toISOString();
+      };
+
+      let nextIn: any = row.clock_in_at;
+      let nextOut: any = row.clock_out_at;
+      try {
+        if (clockInAt !== undefined)  nextIn  = parseIso(clockInAt) ?? row.clock_in_at;
+        if (clockOutAt !== undefined) nextOut = parseIso(clockOutAt);
+      } catch {
+        return res.status(400).json({ error: "Invalid clock-in / clock-out date." });
+      }
+      if (nextOut && new Date(nextOut).getTime() < new Date(nextIn).getTime()) {
+        return res.status(400).json({ error: "Clock-out must be after clock-in." });
+      }
+
+      const nextDuration = nextOut
+        ? Math.round((new Date(nextOut).getTime() - new Date(nextIn).getTime()) / 60000)
+        : null;
+
+      const now = new Date().toISOString();
+      const editor = req.user?.name || req.user?.email || "self";
+
+      const updated = sqlite.prepare(
+        `UPDATE time_clock
+           SET clock_in_at   = ?,
+               clock_out_at  = ?,
+               duration_minutes = ?,
+               notes         = COALESCE(?, notes),
+               job_id        = COALESCE(?, job_id),
+               edited_at     = ?,
+               edited_by     = ?,
+               edit_reason   = COALESCE(?, edit_reason)
+         WHERE id = ?
+         RETURNING *`
+      ).get(nextIn, nextOut, nextDuration, notes ?? null, jobId ?? null, now, editor, editReason ?? null, id);
+
+      res.json(updated);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete("/api/time-clock/:id", (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const row = sqlite.prepare("SELECT * FROM time_clock WHERE id = ?").get(id) as any;
+      if (!row) return res.status(404).json({ error: "Time entry not found." });
+      if (!canEditEntry(req, row)) return res.status(403).json({ error: "You can only delete your own time entries." });
+      sqlite.prepare("DELETE FROM time_clock WHERE id = ?").run(id);
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
   app.get("/api/reports/labor-by-job", (req, res) => {
     try {
       const rows = sqlite.prepare(`

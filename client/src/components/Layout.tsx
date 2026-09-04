@@ -68,6 +68,10 @@ const navGroups: NavGroup[] = [
       { href: "/", label: "Dashboard", icon: LayoutDashboard, permission: "dashboard" },
       { href: "/jobs", label: "Jobs", icon: Briefcase, permission: "jobs" },
       { href: "/jobs/closed", label: "Closed Jobs", icon: Lock, permission: "jobs", adminOnly: true },
+      // Schedule Calendar promoted to a standalone Core entry (was previously
+      // buried inside the Scheduling & Dispatch hub). Points at /scheduling
+      // which now renders the Scheduling page directly, no redirect hop.
+      { href: "/scheduling", label: "Schedule", icon: Calendar, permission: "scheduling" },
       { href: "/contacts", label: "Contacts", icon: Users, permission: "contacts" },
       { href: "/estimates", label: "Estimates", icon: FileText, permission: "estimates" },
       { href: "/invoices", label: "Invoices", icon: Receipt, permission: "invoices" },
@@ -85,7 +89,9 @@ const navGroups: NavGroup[] = [
     description: "Techs, scheduling & mitigation",
     items: [
       // — Consolidated hubs (each combines several tools as tabs) —
-      { href: "/scheduling-hub", label: "Scheduling & Dispatch", icon: Calendar, permission: "scheduling" },
+      // Dispatch (was "Scheduling & Dispatch" — Schedule tab moved to Core).
+      // Hub still bundles Dispatch, Appt Reminders, and Departure Checklist.
+      { href: "/scheduling-hub", label: "Dispatch", icon: Grid3X3, permission: "scheduling" },
       { href: "/technician-hub", label: "Technicians", icon: HardHat, permission: "technician" },
       { href: "/safety-hub", label: "Safety", icon: ShieldAlert, permission: "safety" },
       { href: "/drying-hub", label: "Drying & Compliance", icon: Droplets, permission: "technician" },

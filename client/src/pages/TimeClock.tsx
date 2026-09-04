@@ -9,8 +9,9 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import JobCombobox from "@/components/JobCombobox";
 import { useToast } from "@/hooks/use-toast";
-import { Clock, MapPin, LogIn, LogOut, Users, Timer, Briefcase } from "lucide-react";
+import { Clock, MapPin, LogIn, LogOut, Users, Timer, Briefcase, Pencil, Trash2 } from "lucide-react";
 import { fmtDateShort, todayLocalISO } from "@/lib/dates";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 
 
 export default function TimeClock() {
@@ -58,6 +59,84 @@ export default function TimeClock() {
     mutationFn: (data: any) => apiRequest("/api/time-clock/clock-out", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).then(r => r.json()),
     onSuccess: (data) => { queryClient.invalidateQueries({ queryKey: ["/api/time-clock"] }); queryClient.invalidateQueries({ queryKey: ["/api/time-clock/open"] }); toast({ title: `Clocked out — ${data.duration_minutes} min logged` }); },
   });
+
+  // ── Manual edit / delete of a time entry ─────────────────────────────
+  //
+  // Techs need this when GPS missed a punch, they forgot to clock out
+  // at end of day, or they clocked into the wrong job. The dialog
+  // shows local datetime inputs so field guys don't have to think in
+  // UTC — we convert to ISO before submitting.
+  const [editing, setEditing] = useState<any | null>(null);
+  const [editIn, setEditIn] = useState<string>("");
+  const [editOut, setEditOut] = useState<string>("");
+  const [editReason, setEditReason] = useState<string>("");
+
+  // Convert an ISO string to the value shape a <input type="datetime-local">
+  // expects (YYYY-MM-DDTHH:mm in the browser's local timezone).
+  const toLocalInput = (iso?: string | null) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  const openEdit = (row: any) => {
+    setEditing(row);
+    setEditIn(toLocalInput(row.clock_in_at));
+    setEditOut(toLocalInput(row.clock_out_at));
+    setEditReason("");
+  };
+
+  const editMutation = useMutation({
+    mutationFn: (payload: { id: number; body: any }) =>
+      apiRequest(`/api/time-clock/${payload.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload.body),
+      }).then(async (r) => {
+        if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || "Update failed");
+        return r.json();
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/time-clock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/time-clock/open"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/reports/labor-by-job"] });
+      toast({ title: "Time entry updated" });
+      setEditing(null);
+    },
+    onError: (e: any) => toast({ title: "Update failed", description: e?.message || "", variant: "destructive" }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) =>
+      apiRequest(`/api/time-clock/${id}`, { method: "DELETE" }).then(async (r) => {
+        if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || "Delete failed");
+        return r.json();
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/time-clock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/time-clock/open"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/reports/labor-by-job"] });
+      toast({ title: "Time entry deleted" });
+      setEditing(null);
+    },
+    onError: (e: any) => toast({ title: "Delete failed", description: e?.message || "", variant: "destructive" }),
+  });
+
+  const submitEdit = () => {
+    if (!editing) return;
+    if (!editIn) { toast({ title: "Clock-in is required", variant: "destructive" }); return; }
+    // datetime-local values are wall-clock in the browser's TZ. new Date()
+    // interprets them that way — exactly what we want — so we can just
+    // hand it .toISOString() for the server.
+    const inIso  = new Date(editIn).toISOString();
+    const outIso = editOut ? new Date(editOut).toISOString() : null;
+    editMutation.mutate({
+      id: editing.id,
+      body: { clockInAt: inIso, clockOutAt: outIso, editReason: editReason.trim() || null },
+    });
+  };
 
   function handleClockIn() {
     if (!selectedEmployee) { toast({ title: "Select an employee first", variant: "destructive" }); return; }
@@ -193,9 +272,29 @@ export default function TimeClock() {
                       </div>
                       <p className="text-xs text-muted-foreground">{fmtDateShort(e.clock_in_at)}{e.clock_out_at ? ` → ${new Date(e.clock_out_at).toLocaleTimeString()}` : ""}</p>
                     </div>
-                    <div className="text-right shrink-0">
-                      {e.duration_minutes != null && <p className="font-semibold">{(e.duration_minutes / 60).toFixed(1)}h</p>}
-                      {e.clock_in_lat && <p className="text-xs text-muted-foreground flex items-center gap-0.5 justify-end"><MapPin className="w-2.5 h-2.5" />GPS</p>}
+                    <div className="text-right shrink-0 flex items-center gap-2">
+                      <div>
+                        {e.duration_minutes != null && <p className="font-semibold">{(e.duration_minutes / 60).toFixed(1)}h</p>}
+                        {e.clock_in_lat && <p className="text-xs text-muted-foreground flex items-center gap-0.5 justify-end"><MapPin className="w-2.5 h-2.5" />GPS</p>}
+                        {e.edited_at && (
+                          <p className="text-[10px] text-amber-600 dark:text-amber-500 mt-0.5" title={`Edited by ${e.edited_by || "unknown"}${e.edit_reason ? ` — ${e.edit_reason}` : ""}`}>edited</p>
+                        )}
+                      </div>
+                      {/* Manual edit button. Works for open (still-active)
+                          entries too so a tech can back-date their clock-in
+                          if they realize the app didn't punch them in when
+                          they arrived on-site. */}
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-8 w-8"
+                        onClick={() => openEdit(e)}
+                        title="Edit time entry"
+                        aria-label="Edit time entry"
+                        data-testid={`button-edit-time-entry-${e.id}`}
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </Button>
                     </div>
                   </div>
                 );
@@ -204,6 +303,79 @@ export default function TimeClock() {
           )}
         </CardContent>
       </Card>
+
+      {/* Manual edit dialog. Opened by the pencil on any row. Server-side
+          auth restricts non-managers to editing their own entries. */}
+      <Dialog open={!!editing} onOpenChange={(o) => { if (!o) setEditing(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit time entry</DialogTitle>
+            <DialogDescription>
+              {editing?.employee_name} — adjust the clock-in / clock-out times. Enter times in your local timezone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <div>
+              <Label className="text-xs">Clock in</Label>
+              <Input
+                type="datetime-local"
+                value={editIn}
+                onChange={(e) => setEditIn(e.target.value)}
+                data-testid="input-edit-clock-in"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">
+                Clock out <span className="text-muted-foreground font-normal">(leave blank to keep the entry open)</span>
+              </Label>
+              <Input
+                type="datetime-local"
+                value={editOut}
+                onChange={(e) => setEditOut(e.target.value)}
+                data-testid="input-edit-clock-out"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Reason for edit <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <Input
+                placeholder="e.g. GPS missed clock-in, forgot to clock out"
+                value={editReason}
+                onChange={(e) => setEditReason(e.target.value)}
+                data-testid="input-edit-reason"
+              />
+            </div>
+            {editIn && editOut && new Date(editOut).getTime() > new Date(editIn).getTime() && (
+              <p className="text-xs text-muted-foreground">
+                Duration: <span className="font-semibold tabular-nums">{((new Date(editOut).getTime() - new Date(editIn).getTime()) / 3600000).toFixed(2)}h</span>
+              </p>
+            )}
+          </div>
+          <DialogFooter className="flex-col-reverse sm:flex-row gap-2 sm:justify-between">
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (editing && confirm("Delete this time entry? This cannot be undone.")) {
+                  deleteMutation.mutate(editing.id);
+                }
+              }}
+              disabled={deleteMutation.isPending}
+              data-testid="button-delete-time-entry"
+            >
+              <Trash2 className="w-4 h-4 mr-1.5" />Delete
+            </Button>
+            <div className="flex gap-2 sm:justify-end">
+              <Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button>
+              <Button
+                onClick={submitEdit}
+                disabled={editMutation.isPending}
+                data-testid="button-save-time-entry"
+              >
+                Save changes
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
