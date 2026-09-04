@@ -15,6 +15,94 @@ import { CheckCircle2, AlertTriangle, Loader2, Eraser, ShieldCheck } from "lucid
 const loadPdfEngine = () => import("@/lib/pdfEngine");
 const loadCertEngine = () => import("@/components/CertificateOfCompletion");
 
+// ─── Doc-type-specific acknowledgment body ─────────────────────────────────
+// What the customer actually sees and agrees to on-page. The PDF has the
+// same language in the ACKNOWLEDGMENT OF RECEIPT section, but the customer
+// should not have to open the PDF to know what they're signing. Keeping this
+// wording in sync with pdfEngine.ts is important — update both when either
+// one changes.
+type AckSection = { heading: string; intro?: string; bullets: string[]; footer?: string };
+
+function ackBody(docType: string, propertyAddress?: string): AckSection | null {
+  const stateName = propertyAddress?.includes(", SC") ? "South Carolina" : "Georgia";
+  switch (docType) {
+    case "right_to_renovate":
+      return {
+        heading: "Acknowledgment of Receipt — EPA Renovate Right",
+        intro:
+          "Federal law (the EPA Renovation, Repair and Painting Rule, 40 CFR Part 745) requires that contractors performing renovation, repair, or painting projects that disturb painted surfaces in homes, child-care facilities, or schools built before 1978 provide the owner and/or occupants with the EPA-approved lead-hazard information pamphlet \u201cRenovate Right: Important Lead Hazard Information for Families, Child Care Providers and Schools\u201d before work begins. By signing below, I acknowledge that:",
+        bullets: [
+          "Receipt of pamphlet — I received a copy of the EPA \u201cRenovate Right\u201d lead-hazard information pamphlet from Titan Restoration LLC before any renovation, repair, or painting work that may disturb painted surfaces began at the property.",
+          "Right to renovate — I understand my rights regarding lead-safe work practices and that Titan Restoration LLC will follow EPA lead-safe work practices where the RRP Rule applies.",
+          "Pre-1978 housing — If this property was built before 1978, I understand that lead-safe work practices are required by federal law unless the components affected have been documented as lead-free.",
+          "Recordkeeping — This signed acknowledgment will be retained in the job file for a minimum of three (3) years as required by federal recordkeeping rules.",
+        ],
+        footer: `This acknowledgment is governed by the laws of the State of ${stateName} and applicable federal EPA regulations.`,
+      };
+    case "work_authorization":
+      return {
+        heading: "Work Authorization & Direction to Pay",
+        intro: "By signing below, I authorize Titan Restoration LLC to perform the emergency mitigation and/or restoration services described in the scope of work and agree to the terms below:",
+        bullets: [
+          "Authority — I am the property owner or an authorized representative and have the right to authorize this work at the property listed above.",
+          "Pricing — Work is priced using Contractor\u2019s published pricing schedule, which may differ from insurance software defaults (e.g., Xactimate). Contractor\u2019s Custom Pricing Acknowledgment is incorporated by reference.",
+          "Insurance proceeds — I direct my insurance carrier and mortgagee to name Titan Restoration LLC as a co-payee on any drafts issued for this work, and I agree to endorse and forward proceeds attributable to this work within 5 business days of receipt.",
+          "Lien rights — I acknowledge Contractor may file and enforce a mechanic\u2019s/materialman\u2019s lien for unpaid work under S.C. Code Title 29, Ch. 5 (SC) or O.C.G.A. Title 44, Ch. 14, Art. 8 (GA).",
+          "Right of rescission — I understand I may cancel this authorization within 3 business days (or as required by state law).",
+        ],
+        footer: `This authorization is governed by the laws of the State of ${stateName}.`,
+      };
+    case "direction_to_pay_notice":
+      return {
+        heading: "Direction to Pay — Notice to Carrier and Mortgagee",
+        intro: "By signing below, I direct and authorize the following:",
+        bullets: [
+          "Co-payee — My insurance carrier shall name Titan Restoration LLC as a co-payee on any insurance draft, check, or wire issued for the loss described above.",
+          "Mortgagee cooperation — My mortgagee is directed to promptly endorse any co-payee draft naming Titan Restoration LLC and release funds attributable to completed work.",
+          "Prompt pay — I understand my carrier is subject to state prompt-payment laws (S.C. Code \u00a7 38-59-20 and O.C.G.A. \u00a7\u00a7 13-11-1 to 13-11-11) and that Contractor may reference these statutes in follow-up correspondence.",
+          "Proof of loss — I will cooperate in a sworn proof of loss when required by my carrier.",
+        ],
+        footer: `This direction to pay is governed by the laws of the State of ${stateName}.`,
+      };
+    case "custom_pricing_acknowledgment":
+      return {
+        heading: "Custom Pricing Acknowledgment",
+        intro: "By signing below, I acknowledge and agree that:",
+        bullets: [
+          "Published pricing — Titan Restoration LLC prices work using its published pricing schedule for labor, materials, equipment, and services actually performed at the property.",
+          "Differs from Xactimate — Contractor\u2019s pricing may differ from insurance software defaults (Xactimate, Symbility, or similar) and reflects local market conditions in the Augusta MSA.",
+          "Owner\u2019s obligation — I remain responsible for the full amount of Contractor\u2019s invoice for work performed, whether or not my carrier pays that amount in full.",
+          "Reasonableness — Contractor\u2019s pricing is based on Bureau of Labor Statistics wage data, RSMeans city cost index for the local metro area, and current supplier quotes, and is available for review on request.",
+        ],
+        footer: `This acknowledgment is governed by the laws of the State of ${stateName}.`,
+      };
+    case "deviation_of_standard":
+      return {
+        heading: "IICRC Standard-of-Care Deviation",
+        intro: "By signing below, I acknowledge that:",
+        bullets: [
+          "Standard identified — I have been informed of the specific IICRC standard listed above and the requirement that would ordinarily apply.",
+          "Alternative method — I understand the alternative method Titan Restoration LLC is proposing and the reason it is being used in place of the ordinary standard.",
+          "Consent — I consent to the alternative method being used on this loss.",
+          "Carrier notice — I understand my insurance carrier will be notified of this deviation and that it may affect coverage decisions.",
+        ],
+      };
+    case "certificate_of_completion":
+      return {
+        heading: "Certificate of Completion",
+        intro: "By signing below, I confirm the following about the completed work:",
+        bullets: [
+          "Work complete — Titan Restoration LLC has completed the work described above at the property to my satisfaction, subject to any reservations noted.",
+          "Final walk-through — A final walk-through has been offered and either completed or waived.",
+          "Warranty — I have been informed of the workmanship warranty offered on this job.",
+          "Release — This certificate does not release any lien rights for unpaid amounts owed to Contractor.",
+        ],
+      };
+    default:
+      return null;
+  }
+}
+
 type SignRequest = {
   id: number;
   token: string;
@@ -459,6 +547,35 @@ export default function SignDocument() {
                   ))}
                 </div>
               )}
+
+              {/* Acknowledgment body — shows the customer what they're
+                  actually agreeing to. Matches the ACKNOWLEDGMENT OF RECEIPT
+                  section in the corresponding PDF (see pdfEngine.ts). */}
+              {(() => {
+                const propAddr =
+                  req.formData?.propertyAddress ||
+                  [req.job?.address, req.job?.city, req.job?.state, req.job?.zip].filter(Boolean).join(", ");
+                const ack = ackBody(req.docType, propAddr);
+                if (!ack) return null;
+                return (
+                  <div className="border rounded-lg bg-[#F3F6FB] p-4 space-y-3" data-testid="section-ack-body">
+                    <div className="text-sm font-semibold text-[#0A2540] uppercase tracking-wide">
+                      {ack.heading}
+                    </div>
+                    {ack.intro && (
+                      <p className="text-sm text-[#0A2540] leading-relaxed">{ack.intro}</p>
+                    )}
+                    <ul className="list-decimal pl-5 space-y-2 text-sm text-[#0A2540] leading-relaxed">
+                      {ack.bullets.map((b, i) => (
+                        <li key={i}>{b}</li>
+                      ))}
+                    </ul>
+                    {ack.footer && (
+                      <p className="text-xs text-muted-foreground pt-1">{ack.footer}</p>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Full legal name */}
               <div>
