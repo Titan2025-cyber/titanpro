@@ -2114,17 +2114,38 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return "";
     };
 
-    const customer = grab(["customer", "client", "homeowner", "insured", "name"]);
+    const customer = grab(["name", "customer", "client", "homeowner", "insured"]);
     const address = grab(["address", "addr", "property", "location", "loss location"]);
-    let lossRaw = grab(["loss type", "loss", "type", "damage"]).toLowerCase();
-    const carrier = grab(["carrier", "insurance", "insurance carrier"]);
-    const claimNumber = grab(["claim", "claim #", "claim number", "claim no"]);
+    // Titan's real-world format uses "Description of Loss" for the narrative;
+    // the loss TYPE (water/fire/etc.) is inferred from keywords inside it.
+    const description = grab(["description of loss", "description", "notes", "details"]);
+    let lossRaw = (grab(["loss type", "loss", "type", "damage"]) || description).toLowerCase();
+    const carrier = grab(["insurance", "carrier", "insurance carrier"]);
+    const claimNumber = grab(["claim #", "claim number", "claim no", "claim"]);
     const adjusterName = grab(["adjuster", "adjuster name"]);
     const adjusterPhone = grab(["adjuster phone", "adj phone"]);
     const adjusterEmail = grab(["adjuster email", "adj email"]);
-    const policyNumber = grab(["policy", "policy #", "policy number"]);
+    const policyNumber = grab(["policy #", "policy number", "policy"]);
     const assignedTech = grab(["tech", "technician", "assigned", "assigned tech"]);
-    let leadSourceRaw = grab(["source", "lead source", "lead", "referred by", "referral"]).toLowerCase();
+    let leadSourceRaw = grab(["referral source", "source", "lead source", "lead", "referred by", "referral"]).toLowerCase();
+
+    // ── Customer contact info (Titan dispatch format) ──
+    // "Number:" or "Phone:" for the primary line; then any additional bare
+    // phone-shaped lines are captured as an alt. phone (e.g. spouse).
+    const customerPhone = grab(["number", "phone", "cell", "contact"]);
+    const customerEmail = grab(["email", "e-mail"]);
+    // Look for a second phone-formatted line that isn't the primary.
+    const phoneRe = /\(?\d{3}\)?[\s\-.]*\d{3}[\s\-.]*\d{4}/g;
+    const allPhones = (body.match(phoneRe) || []).map(s => s.trim());
+    const normalize = (s: string) => s.replace(/\D/g, "");
+    const primaryDigits = normalize(customerPhone);
+    const altPhone = allPhones.map(p => ({ raw: p, d: normalize(p) }))
+      .find(p => p.d && p.d !== primaryDigits)?.raw || "";
+
+    // ── Optional pre-assigned Job # (Titan dispatchers often paste one in) ──
+    // Accept anything shaped like TP-YYYY-... or TP-YY-<market>-NNNN; if
+    // present and not already used, we honor it instead of auto-numbering.
+    const providedJobNumber = grab(["job #", "job number", "job", "file #", "file number"]);
 
     // Normalize loss type to allowed values
     const LOSS = ["water", "fire", "mold", "storm", "biohazard", "reconstruction"];
@@ -2147,7 +2168,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!lossType) missing.push("loss type (water/fire/mold/storm/biohazard/reconstruction)");
     const ok = missing.length === 0;
 
-    // ── Generate next job number ──
+    // ── Job number: honor a dispatcher-provided one when unique, else auto ──
     const year = new Date().getFullYear();
     const jobs = storage.getJobs();
     let maxSeq = 0;
@@ -2155,9 +2176,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const m = String(j.jobNumber || "").match(/TP-\d{4}-(\d+)/);
       if (m) maxSeq = Math.max(maxSeq, parseInt(m[1], 10));
     }
-    const jobNumber = `TP-${year}-${String(maxSeq + 1).padStart(3, "0")}`;
+    let jobNumber = `TP-${year}-${String(maxSeq + 1).padStart(3, "0")}`;
+    if (providedJobNumber) {
+      const clean = providedJobNumber.replace(/\s+/g, "");
+      // Only accept if it looks like a Titan job number AND isn't already taken.
+      const looksReal = /^TP-[\w-]+/i.test(clean);
+      const collision = jobs.some(j => String(j.jobNumber || "").toLowerCase() === clean.toLowerCase());
+      if (looksReal && !collision) jobNumber = clean;
+    }
 
     const division = lossType === "reconstruction" ? "reconstruction" : "mitigation";
+
+    // Description: prefer the dispatcher's own "Description of Loss" text,
+    // fall back to "customer — market" so job cards always show something.
+    const finalDescription = description
+      || (customer ? `${customer}${market ? ` — ${market}` : ""}` : (market || null));
 
     const draft: Record<string, any> = {
       jobNumber,
@@ -2165,7 +2198,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       status: "new",
       progressStage: "pending_sale",
       address: address || null,
-      description: customer ? `${customer}${market ? ` — ${market}` : ""}` : (market || null),
+      description: finalDescription,
       assignedTech: assignedTech || null,
       insuranceCarrier: carrier || null,
       claimNumber: claimNumber || null,
@@ -2176,15 +2209,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       leadSource: leadSource || null,
       leadSourceDetail: leadSourceDetail || null,
       division,
+      // Customer phone/email are NOT job columns — they flow onto the
+      // linked customer contact record below so both the job and the
+      // customer file are complete after one click.
     };
 
-    const parsed = { customer, address, lossType, carrier, claimNumber, adjusterName, adjusterPhone, adjusterEmail, policyNumber, assignedTech, leadSource, market };
+    const parsed = { customer, customerPhone, altPhone, customerEmail, address, description: finalDescription, lossType, carrier, claimNumber, adjusterName, adjusterPhone, adjusterEmail, policyNumber, assignedTech, leadSource, market };
 
     if (preview || !ok) {
       return res.json({ ok, missing, market, jobNumber, draft, parsed });
     }
 
     // ── Create: optionally link/create a customer contact ──
+    // Also propagate phone/email onto the contact so the customer record is
+    // usable immediately (not just the job draft copy).
     let contactId: number | null = null;
     if (customer) {
       const existing = storage.getContacts().find(
@@ -2192,7 +2230,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       );
       if (existing) contactId = existing.id;
       else {
-        const c = storage.createContact({ name: customer, type: "customer", address: address || null } as any);
+        const c = storage.createContact({
+          name: customer,
+          type: "customer",
+          address: address || null,
+          phone: customerPhone || null,
+          email: customerEmail || null,
+        } as any);
         contactId = c.id;
       }
     }

@@ -31,9 +31,11 @@ const marketFor = (name?: string) => {
 const looksLikeIntake = (body: string) => {
   const b = body.toLowerCase();
   if (b.trim().startsWith("/job")) return true;
-  const hasIdentity = /(customer|client|homeowner|insured|address|property|location)\s*[:\-]/i.test(body);
-  const hasLoss = /(loss|damage|type)\s*[:\-]/i.test(body) ||
-    /\b(water|fire|mold|storm|biohazard|reconstruction)\b/i.test(body);
+  // Titan's actual dispatch format uses "Name:" and "Description of Loss:";
+  // legacy patterns also included "Customer:", "Address:", "Loss:", etc.
+  const hasIdentity = /(customer|client|homeowner|insured|name|address|property|location)\s*[:\-]/i.test(body);
+  const hasLoss = /(loss|damage|type|description of loss)\s*[:\-]/i.test(body) ||
+    /\b(water|fire|mold|storm|biohazard|reconstruction|leak|flood|smoke)\b/i.test(body);
   return hasIdentity && hasLoss;
 };
 
@@ -46,14 +48,20 @@ interface ParseResult {
   parsed: Record<string, any>;
 }
 
-const SAMPLE = `Customer: Jane Doe
-Address: 123 Oak St, Augusta, GA 30901
-Loss: water
-Carrier: State Farm
-Claim: SF-88231
-Adjuster: Bob Smith
-Tech: John
-Source: referral`;
+// Titan's real-world lead layout. Copy-paste-friendly for dispatchers so a
+// message dropped into #augusta or #columbia parses cleanly into a job file.
+// Empty labels are OK — the parser only requires enough to derive a customer
+// or address plus a loss keyword in the description.
+const SAMPLE = `Job #: TP-26-Augusta-0490
+Name: Horace Johnson
+Number: (706) 699-1413
+(706) 445-4848 (sherry)
+Address: 929 Earle Street, Thomson, GA 30824
+Email: 
+Insurance: 
+Claim #: 
+Description of Loss: Drain leak under home and possible leak from fiberglass tub surround..floor on bath is done..lots of water under home when they use the tub.. leak in cast iron under home.
+Referral Source: Nick - universal`;
 
 /** Preview dialog: parses a message server-side, shows the draft, confirms create. */
 function CreateJobDialog({
@@ -117,7 +125,9 @@ function CreateJobDialog({
 
   const p = parse?.parsed || {};
   const rows: [string, any][] = [
-    ["Customer", p.customer], ["Address", p.address], ["Loss type", p.lossType],
+    ["Customer", p.customer], ["Phone", p.customerPhone], ["Alt. phone", p.altPhone],
+    ["Email", p.customerEmail], ["Address", p.address],
+    ["Description", p.description], ["Loss type", p.lossType],
     ["Market", parse?.market], ["Carrier", p.carrier], ["Claim #", p.claimNumber],
     ["Adjuster", p.adjusterName], ["Adjuster phone", p.adjusterPhone],
     ["Adjuster email", p.adjusterEmail], ["Policy #", p.policyNumber],
@@ -276,7 +286,7 @@ export default function Messaging() {
               <Sparkles className="w-3.5 h-3.5" />Post a job here to create a {marketFor(activeChannel?.name)} job file
             </p>
             <p className="text-muted-foreground mt-1">
-              Include labeled lines like <span className="font-mono">Customer:</span>, <span className="font-mono">Address:</span>, <span className="font-mono">Loss:</span>, <span className="font-mono">Carrier:</span>, <span className="font-mono">Claim:</span>, <span className="font-mono">Adjuster:</span>, <span className="font-mono">Tech:</span>. You'll get a "Create job file" button on the message.
+              Use labels: <span className="font-mono">Job #</span>, <span className="font-mono">Name</span>, <span className="font-mono">Number</span>, <span className="font-mono">Address</span>, <span className="font-mono">Email</span>, <span className="font-mono">Insurance</span>, <span className="font-mono">Claim #</span>, <span className="font-mono">Description of Loss</span>, <span className="font-mono">Referral Source</span>. You'll get a "Create job file" button on the message.
             </p>
             <button
               className="mt-1.5 text-[hsl(var(--titan-blue))] hover:underline font-medium"
