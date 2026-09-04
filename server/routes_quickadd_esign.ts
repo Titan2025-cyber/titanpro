@@ -221,6 +221,30 @@ export function registerQuickAddAndESignRoutes(
     let emailSent = false;
     let emailError: string | null = null;
     let emailProvider: string = "none";
+    // Resolve the sender's display name once so both the send-time email
+    // and the fallback text include "Prepared by <name>" — customers see
+    // who at Titan is expecting them to sign, not just a generic company.
+    let senderDisplay: string | null = null;
+    if (sentBy) {
+      try {
+        const emp: any = sqlite
+          .prepare("SELECT name FROM employees WHERE LOWER(gmail_email) = LOWER(?) LIMIT 1")
+          .get(sentBy);
+        if (emp?.name) senderDisplay = String(emp.name);
+      } catch { /* ignore */ }
+      if (!senderDisplay) {
+        const local = String(sentBy).split("@")[0] || "";
+        senderDisplay = local
+          .split(/[._-]+/)
+          .filter(Boolean)
+          .map((w) => w[0].toUpperCase() + w.slice(1))
+          .join(" ") || null;
+      }
+    }
+    const preparedBy = senderDisplay
+      ? `${senderDisplay} at Titan Restoration has`
+      : `Titan Restoration has`;
+
     try {
       const nameLine = recipientName ? `Hi ${recipientName},` : "Hello,";
       // sendEmail() returns per-recipient SendResult[] rather than throwing on
@@ -229,16 +253,17 @@ export function registerQuickAddAndESignRoutes(
       const results = await sendEmail({
         to: recipientEmail,
         subject: `Titan Restoration — ${title} ready to sign`,
+        replyTo: sentBy || undefined,
         text:
           `${nameLine}\n\n` +
-          `Titan Restoration has prepared a document for your signature: ${title}.\n\n` +
+          `${preparedBy} prepared a document for your signature: ${title}.\n\n` +
           `Sign here (link expires in 7 days):\n${link}\n\n` +
           `If you didn't expect this, please ignore this email.\n\n` +
-          `— Titan Restoration\n(803) 528-8683 · https://titanaugusta.pro`,
+          `— ${senderDisplay ? `${senderDisplay}\nTitan Restoration` : "Titan Restoration"}\n(803) 528-8683 · https://titanaugusta.pro`,
         html:
           `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:560px;margin:0 auto;color:#111;line-height:1.5">
              <p>${nameLine}</p>
-             <p>Titan Restoration has prepared a document for your signature: <strong>${escapeHtml(title)}</strong>.</p>
+             <p>${escapeHtml(preparedBy)} prepared a document for your signature: <strong>${escapeHtml(title)}</strong>.</p>
              <p style="text-align:center;margin:28px 0">
                <a href="${link}" style="background:#0A2540;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;display:inline-block">Open & sign document</a>
              </p>
@@ -293,6 +318,7 @@ export function registerQuickAddAndESignRoutes(
       await sendEmail({
         to: row.recipient_email,
         subject: `Titan Restoration — reminder: ${row.title}`,
+        replyTo: row.sent_by || undefined,
         text:
           `Reminder: Titan Restoration is still waiting on your signature for ${row.title}.\n\n` +
           `Sign here:\n${link}\n\n— Titan Restoration`,
@@ -330,11 +356,36 @@ export function registerQuickAddAndESignRoutes(
         `SELECT id, token, job_id AS jobId, doc_type AS docType, title, form_data AS formData,
                 recipient_email AS recipientEmail, recipient_name AS recipientName,
                 recipient_role AS recipientRole, status, expires_at AS expiresAt,
-                signed_at AS signedAt, completed_document_id AS completedDocumentId
+                signed_at AS signedAt, completed_document_id AS completedDocumentId,
+                sent_by AS sentBy
          FROM signature_requests WHERE token = ?`,
       )
       .get(token) as any;
     if (!row) return res.status(404).json({ error: "Signing link not found." });
+
+    // Resolve the sender's display name (best-effort) so the customer sees
+    // "Prepared by <person>" rather than a raw email. Falls back to the
+    // email local-part titlecased when we can't find a matching employee.
+    let sentByName: string | null = null;
+    if (row.sentBy) {
+      try {
+        const emp: any = sqlite
+          .prepare(
+            "SELECT name FROM employees WHERE LOWER(gmail_email) = LOWER(?) LIMIT 1",
+          )
+          .get(row.sentBy);
+        if (emp?.name) sentByName = String(emp.name);
+      } catch { /* ignore */ }
+      if (!sentByName) {
+        const local = String(row.sentBy).split("@")[0] || "";
+        sentByName = local
+          .split(/[._-]+/)
+          .filter(Boolean)
+          .map((w) => w[0].toUpperCase() + w.slice(1))
+          .join(" ") || null;
+      }
+    }
+    row.sentByName = sentByName;
 
     if (row.status === "cancelled") return res.status(410).json({ error: "This signing link was cancelled." });
     if (row.status === "signed")
@@ -370,6 +421,8 @@ export function registerQuickAddAndESignRoutes(
       job,
     });
   });
+
+  // ---- end public GET ------------------------------------------------------
 
   // Submit signed PDF + signature back to the server. The client-side sign
   // page generates the PDF with the same generator functions used internally
@@ -537,6 +590,7 @@ export function registerQuickAddAndESignRoutes(
       recipientName: row.recipient_name || null,
       pdfDataUrl,
       signedAt: now,
+      sentBy: row.sent_by || null,
     }).catch((e) => console.error("[signature] notify failed:", e?.message || e));
 
     res.json({ ok: true, documentId });
@@ -691,6 +745,11 @@ async function notifyOnSignatureCompleted(args: {
   signedAt: string;
   stageAdvanced?: boolean;
   stageAdvancedLabel?: string | null;
+  // Email of the staff user who created the signature request. This is
+  // the ONLY person the signed PDF is returned to — we intentionally do
+  // NOT fan out to every owner/admin, because in a multi-user org the
+  // person who sent the form is the person who wants the response.
+  sentBy?: string | null;
 }): Promise<void> {
   const {
     sqlite,
@@ -707,6 +766,7 @@ async function notifyOnSignatureCompleted(args: {
     signedAt,
     stageAdvanced,
     stageAdvancedLabel,
+    sentBy,
   } = args;
   const stageLabel = stageAdvancedLabel || "WIP";
 
@@ -731,21 +791,31 @@ async function notifyOnSignatureCompleted(args: {
     timeStyle: "short",
   });
 
-  // 1) In-app bell notifications for owners + admins + general managers.
-  //    Also target the assigned tech by name (legacy fanout) if one is set.
-  if (notifier) {
+  // 1) In-app bell notification — to the SENDER only (whoever created the
+  //    signature request). We intentionally do NOT fan out to every owner
+  //    or admin: in a multi-user org, only the person who sent the form
+  //    should get pinged when it comes back. If we can't resolve the
+  //    sender to an employee id, we skip the bell rather than misfire.
+  if (notifier && sentBy) {
     try {
-      notifier.notifyOwnersAndAdmins({
-        type: "signature_completed",
-        title: stageAdvanced
-          ? `✓ ${signerName} signed the ${title} — job moved to ${stageLabel}`
-          : `✓ ${signerName} signed the ${title}`,
-        body: stageAdvanced
-          ? `${signerName} completed the ${title} for ${jobLabel} at ${signedAtDisplay}. Job auto-advanced to ${stageLabel}. Signed PDF is in the job's Documents tab.`
-          : `${signerName} completed the ${title} for ${jobLabel} at ${signedAtDisplay}. The signed PDF is now in the job's Documents tab.`,
-        jobId,
-        link: `/jobs/${jobId}?tab=documents`,
-      });
+      const emp: any = sqlite
+        .prepare(
+          "SELECT id FROM employees WHERE LOWER(gmail_email) = LOWER(?) LIMIT 1",
+        )
+        .get(sentBy);
+      if (emp?.id) {
+        notifier.notifyMany([Number(emp.id)], {
+          type: "signature_completed",
+          title: stageAdvanced
+            ? `✓ ${signerName} signed the ${title} — job moved to ${stageLabel}`
+            : `✓ ${signerName} signed the ${title}`,
+          body: stageAdvanced
+            ? `${signerName} completed the ${title} for ${jobLabel} at ${signedAtDisplay}. Job auto-advanced to ${stageLabel}. Signed PDF is in the job's Documents tab.`
+            : `${signerName} completed the ${title} for ${jobLabel} at ${signedAtDisplay}. The signed PDF is now in the job's Documents tab.`,
+          jobId,
+          link: `/jobs/${jobId}?tab=documents`,
+        });
+      }
     } catch (e: any) {
       console.error("[signature] bell notify failed:", e?.message || e);
     }
@@ -759,9 +829,16 @@ async function notifyOnSignatureCompleted(args: {
     content: pdfDataUrl,
   };
 
-  // 2) Team email — assigned tech (if we can resolve their gmail_email) plus
-  //    every active owner/admin. Deduped by lowercased address.
+  // 2) Team email — delivered to the SENDER only. Whoever clicked "Send
+  //    for signature" is the person who wants the signed PDF back; we
+  //    stopped fanning it out to every owner/admin because that meant
+  //    Cody was getting other people's returned forms in a multi-user
+  //    org. If the assigned tech is different from the sender, we CC
+  //    them so the field team still has visibility. As a last-resort
+  //    fallback (no sender captured), we fall back to OWNER_NOTIFY_EMAIL
+  //    so a fresh install with only Cody set up still notifies someone.
   const teamRecipients = new Set<string>();
+  if (sentBy) teamRecipients.add(String(sentBy).toLowerCase());
   if (job?.assignedTech) {
     const techRow: any = sqlite
       .prepare(
@@ -770,17 +847,6 @@ async function notifyOnSignatureCompleted(args: {
       .get(job.assignedTech);
     if (techRow?.gmail_email) teamRecipients.add(String(techRow.gmail_email).toLowerCase());
   }
-  try {
-    const owners: any[] = sqlite
-      .prepare(
-        "SELECT gmail_email FROM employees WHERE is_active = 1 AND role IN ('owner','admin','general_manager') AND gmail_email IS NOT NULL AND gmail_email != ''",
-      )
-      .all();
-    for (const r of owners) if (r?.gmail_email) teamRecipients.add(String(r.gmail_email).toLowerCase());
-  } catch (_e) { /* ignore — optional */ }
-
-  // As a last resort, fall back to the OWNER_NOTIFY_EMAIL env var so a fresh
-  // install with no employee emails still notifies someone.
   if (teamRecipients.size === 0 && process.env.OWNER_NOTIFY_EMAIL) {
     teamRecipients.add(String(process.env.OWNER_NOTIFY_EMAIL).toLowerCase());
   }
@@ -813,6 +879,7 @@ async function notifyOnSignatureCompleted(args: {
       await sendEmail({
         to: Array.from(teamRecipients),
         subject: `✓ ${signerName} signed the ${title} — ${jobLabel}`,
+        replyTo: recipientEmail,
         text: teamText,
         html: teamHtml,
         attachments: [attachment],

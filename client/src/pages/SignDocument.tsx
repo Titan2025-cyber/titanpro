@@ -116,6 +116,12 @@ type SignRequest = {
   status: string;
   expiresAt: string;
   alreadySigned?: boolean;
+  // Sender attribution — who at Titan actually sent this form. The
+  // signed copy is returned to this person (not automatically to the
+  // owner). `sentByName` is a friendly display label the server resolves
+  // from the sender's employee record; `sentBy` is the raw email.
+  sentBy?: string | null;
+  sentByName?: string | null;
   job?: {
     id: number;
     jobNumber?: string;
@@ -530,6 +536,11 @@ export default function SignDocument() {
                 <ShieldCheck className="w-5 h-5 text-[#0A2540]" />
                 {req.title}
               </CardTitle>
+              {req.sentByName && (
+                <p className="text-xs text-[#0A2540] font-medium">
+                  Prepared by {req.sentByName} at Titan Restoration
+                </p>
+              )}
               <p className="text-xs text-muted-foreground">
                 Please review the details below, type your full legal name, sign, and submit. This
                 link expires on {new Date(req.expiresAt).toLocaleDateString()}.

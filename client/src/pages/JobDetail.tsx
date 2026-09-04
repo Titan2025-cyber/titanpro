@@ -1,7 +1,7 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useParams, Link, useLocation } from "wouter";
 import { useState, lazy, Suspense, useEffect, useRef } from "react";
-import { ArrowLeft, MapPin, Phone, Mail, Shield, FileText, Receipt, Droplets, Camera, FolderOpen, TrendingUp, StickyNote, Lock, Globe, Pencil, Trash2, Plus, Check, X, Wrench, MessageSquare, Star, Send, KeyRound, Copy, RefreshCw, ExternalLink, ShieldCheck, HandCoins, Upload, Paperclip } from "lucide-react";
+import { ArrowLeft, MapPin, Phone, Mail, Shield, FileText, Receipt, Droplets, Camera, FolderOpen, TrendingUp, StickyNote, Lock, Globe, Pencil, Trash2, Plus, Check, X, Wrench, MessageSquare, Star, Send, KeyRound, Copy, RefreshCw, ExternalLink, ShieldCheck, HandCoins, Upload, Paperclip, Mic, MicOff } from "lucide-react";
 import UploadExternalDocDialog from "@/components/UploadExternalDocDialog";
 import { StageSelector, DateManager, PROGRESS_STAGES } from "@/components/JobPipeline";
 import { JobAnalytics } from "@/components/JobAnalytics";
@@ -181,7 +181,133 @@ interface JobNote {
   createdAt: string;
 }
 
-// ── Notes Tab Component ──────────────────────────────────────────────────────
+// ── Voice dictation hook (browser SpeechRecognition) ────────────────────────
+//
+// Thin wrapper over the Web Speech API that streams recognized text back
+// to the caller as it arrives. Interim results are kept separate from
+// finalized results so the caller can render "live" text without
+// double-committing it. On unsupported browsers (Firefox on desktop
+// currently, some in-app WebViews) the hook still returns; `supported`
+// will be false and `start()` becomes a no-op so the mic button can be
+// hidden or disabled gracefully.
+function useDictation(onFinalText: (text: string) => void) {
+  const [listening, setListening] = useState(false);
+  const [interim, setInterim] = useState("");
+  const recRef = useRef<any>(null);
+  const supported =
+    typeof window !== "undefined" &&
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+
+  const start = () => {
+    if (!supported || listening) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const Ctor: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const rec = new Ctor();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = "en-US";
+    rec.onresult = (evt: any) => {
+      let finalChunk = "";
+      let interimChunk = "";
+      for (let i = evt.resultIndex; i < evt.results.length; i++) {
+        const r = evt.results[i];
+        if (r.isFinal) finalChunk += r[0].transcript;
+        else interimChunk += r[0].transcript;
+      }
+      if (finalChunk) onFinalText(finalChunk);
+      setInterim(interimChunk);
+    };
+    rec.onend = () => { setListening(false); setInterim(""); };
+    rec.onerror = () => { setListening(false); setInterim(""); };
+    recRef.current = rec;
+    rec.start();
+    setListening(true);
+  };
+
+  const stop = () => {
+    try { recRef.current?.stop(); } catch { /* ignore */ }
+    setListening(false);
+    setInterim("");
+  };
+
+  useEffect(() => () => { try { recRef.current?.stop(); } catch { /* ignore */ } }, []);
+
+  return { supported, listening, interim, start, stop };
+}
+
+// ── NoteDictationField ───────────────────────────────────────────────────
+//
+// Textarea + inline mic. Kept as a dedicated component so the dictation
+// hook lives at a stable top level (React requires hooks be called from
+// the same place every render) instead of inside an IIFE in the parent.
+function NoteDictationField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const dict = useDictation((finalText) => {
+    // Append recognized speech to whatever's already typed. Insert a
+    // space when the current buffer doesn't end in whitespace so we
+    // don't concatenate words together across dictation chunks.
+    onChange(value + ((value && !/\s$/.test(value)) ? " " : "") + finalText.trim());
+  });
+
+  // Live preview: what the user sees while speaking = typed body + the
+  // in-flight interim result. Committing to `value` only happens on the
+  // final result callback above, so no double-writing.
+  const displayValue = value + (
+    dict.interim
+      ? ((value && !/\s$/.test(value)) ? " " : "") + dict.interim
+      : ""
+  );
+
+  return (
+    <div className="space-y-2">
+      <div className="relative">
+        <Textarea
+          className="text-sm min-h-[100px] pr-12"
+          placeholder={dict.listening ? "Listening… speak your note" : "Type your note here… or tap the mic to dictate"}
+          value={displayValue}
+          onChange={(e) => {
+            // If the user starts typing while dictation is running, cut
+            // it off so we don't fight them for the cursor position.
+            if (dict.listening) dict.stop();
+            onChange(e.target.value);
+          }}
+          data-testid="input-new-note"
+        />
+        {dict.supported && (
+          <button
+            type="button"
+            onClick={dict.listening ? dict.stop : dict.start}
+            title={dict.listening ? "Stop dictation" : "Dictate"}
+            aria-label={dict.listening ? "Stop dictation" : "Start voice dictation"}
+            className={`absolute top-2 right-2 h-8 w-8 rounded-full flex items-center justify-center transition-colors ${dict.listening ? "bg-red-500 text-white animate-pulse" : "bg-muted hover:bg-muted/70 text-muted-foreground"}`}
+            data-testid="button-note-dictate"
+          >
+            {dict.listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+          </button>
+        )}
+      </div>
+      {dict.listening && (
+        <p className="text-[11px] text-red-600 flex items-center gap-1">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+          Listening — tap the mic again to stop
+        </p>
+      )}
+      {!dict.supported && (
+        <p className="text-[11px] text-muted-foreground">
+          Voice dictation isn’t available in this browser. Try Chrome or Safari.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Notes Tab Component ────────────────────────────────────────────────────────
 function NotesTab({ jobId }: { jobId: number }) {
   // Author defaults to the currently signed-in user. Keeping the field
   // editable so a manager can still attribute a note to someone else if
@@ -297,13 +423,12 @@ function NotesTab({ jobId }: { jobId: number }) {
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-0 space-y-3">
-          <Textarea
-            className="text-sm min-h-[100px]"
-            placeholder="Type your note here…"
-            value={newBody}
-            onChange={e => setNewBody(e.target.value)}
-            data-testid="input-new-note"
-          />
+          {/* Voice dictation — tap the mic to stream field speech into the
+              textarea. Uses the browser SpeechRecognition API (Chrome +
+              Safari iOS). On unsupported browsers the button is hidden.
+              Recognized text is appended to what's already in the note so
+              techs can pause, tweak wording, and keep going. */}
+          <NoteDictationField value={newBody} onChange={setNewBody} />
 
           {/* Notify recipient picker — chip multi-select. Each selected
               teammate gets an email (via the author's Gmail) + a bell when

@@ -168,8 +168,10 @@ const navGroups: NavGroup[] = [
       { href: "/partner-portal-setup", label: "Partner Portal Setup", icon: KeyRound, permission: "partner-portal" },
       { href: "/follow-ups", label: "Follow-Ups", icon: Bell, permission: "follow-ups" },
       { href: "/reviews", label: "Review Requests", icon: Star, permission: "follow-ups" },
-      // Intake Hub bundles Emergency Intake, FNOL Bot, and Voice-to-Note.
-      { href: "/intake-hub", label: "Intake", icon: LifeBuoy, permission: "business-dev" },
+      // Intake Hub (Emergency, FNOL Bot, Voice-to-Note) removed from the
+      // sidebar. Voice-to-Note lives inline in the Job Notes tab now, so
+      // the Intake surface no longer needs a top-level entry. Files and
+      // /intake-hub routes are kept so existing links still open the hub.
       { href: "/route-planner", label: "Route Planner", icon: RouteIcon, permission: "route-planner" },
       { href: "/bd-calendar", label: "BD Calendar", icon: CalendarDays, permission: "business-dev" },
       // Subcontractors Hub bundles the roster + COI/License tracker.
