@@ -282,11 +282,23 @@ export default function PhotoSearch() {
         </div>
       )}
 
-      {/* Lightbox */}
+      {/* Lightbox. Backdrop is a fixed, full-screen scrollable container so
+          tall portrait photos, the metadata grid, and the GPS row are all
+          reachable by scrolling the modal itself — no viewport-height cap
+          clips the image on phones. `overscroll-contain` stops the body
+          behind from rubber-banding. */}
       {lightbox && (
-        <div className="fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-4" onClick={() => setLightbox(null)}>
-          <div className="max-w-5xl w-full bg-white rounded-lg overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="bg-slate-900 text-white px-4 py-2 flex items-center justify-between">
+        <div
+          className="fixed inset-0 bg-black/85 z-50 overflow-y-auto overscroll-contain"
+          style={{ WebkitOverflowScrolling: "touch" as any }}
+          onClick={() => setLightbox(null)}
+        >
+          <div
+            className="max-w-5xl w-full mx-auto my-4 bg-white rounded-lg overflow-hidden"
+            style={{ marginBottom: "calc(1rem + env(safe-area-inset-bottom))" }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="bg-slate-900 text-white px-4 py-2 flex items-center justify-between sticky top-0 z-10">
               <div className="text-sm font-semibold truncate">{lightbox.caption || lightbox.filename}</div>
               <div className="flex items-center gap-2">
                 <Button size="sm" variant="secondary" onClick={() => { navigate(`/jobs/${lightbox.jobId}`); setLightbox(null); }}>
@@ -297,8 +309,15 @@ export default function PhotoSearch() {
                 </Button>
               </div>
             </div>
-            <div className="bg-black flex items-center justify-center max-h-[70vh]">
-              {lightbox.dataUrl && <img src={lightbox.dataUrl} alt={lightbox.caption || lightbox.filename} className="max-h-[70vh] object-contain"/>}
+            <div className="bg-black flex items-center justify-center">
+              {lightbox.dataUrl && (
+                <img
+                  src={lightbox.dataUrl}
+                  alt={lightbox.caption || lightbox.filename}
+                  className="block w-full h-auto object-contain select-none"
+                  draggable={false}
+                />
+              )}
             </div>
             <div className="p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
               <div><div className="text-slate-500 uppercase text-[10px]">Job</div><div className="font-medium">#{lightbox.jobNumber || lightbox.jobId}</div></div>

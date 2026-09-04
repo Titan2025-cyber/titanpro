@@ -102,16 +102,53 @@ function PhotoBrowser({ photos }: { photos: any[] }) {
           </div>
         );
       })}
+      {/* Lightbox. Scrolls the whole backdrop so tall portrait shots and
+          the caption underneath are fully reachable — no 75vh cap. Nav
+          arrows + close pin to the top via a sticky bar so they don't
+          fly off-screen when the user scrolls down the image. */}
       {active !== null && flat[active] && (
-        <div className="fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-4" onClick={() => setActive(null)}>
-          <button className="absolute top-4 right-4 text-white/80 hover:text-white" onClick={() => setActive(null)}><X className="w-7 h-7" /></button>
-          {active > 0 && <button className="absolute left-3 text-white/80 hover:text-white" onClick={e => { e.stopPropagation(); setActive(active - 1); }}><ChevronLeft className="w-9 h-9" /></button>}
-          {active < flat.length - 1 && <button className="absolute right-3 text-white/80 hover:text-white" onClick={e => { e.stopPropagation(); setActive(active + 1); }}><ChevronRight className="w-9 h-9" /></button>}
-          <div className="max-w-2xl w-full" onClick={e => e.stopPropagation()}>
-            <img src={flat[active].data_url} alt={flat[active].caption || ""} className="w-full max-h-[75vh] object-contain rounded-lg" />
+        <div
+          className="fixed inset-0 bg-black/85 z-50 overflow-y-auto overscroll-contain"
+          style={{ WebkitOverflowScrolling: "touch" as any }}
+          onClick={() => setActive(null)}
+        >
+          <div
+            className="sticky top-0 z-10 flex items-center justify-between px-3 py-2 bg-black/70 backdrop-blur-sm"
+            style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))" }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2">
+              <button
+                disabled={active === 0}
+                className="h-10 w-10 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 disabled:opacity-30 text-white"
+                onClick={() => setActive(active - 1)}
+              ><ChevronLeft className="w-6 h-6" /></button>
+              <button
+                disabled={active === flat.length - 1}
+                className="h-10 w-10 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 disabled:opacity-30 text-white"
+                onClick={() => setActive(active + 1)}
+              ><ChevronRight className="w-6 h-6" /></button>
+              <span className="ml-2 text-white/80 text-xs tabular-nums">{active + 1} / {flat.length}</span>
+            </div>
+            <button
+              className="h-10 w-10 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white"
+              onClick={() => setActive(null)}
+            ><X className="w-5 h-5" /></button>
+          </div>
+          <div
+            className="max-w-2xl w-full mx-auto px-4 pt-2"
+            style={{ paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}
+            onClick={e => e.stopPropagation()}
+          >
+            <img
+              src={flat[active].data_url}
+              alt={flat[active].caption || ""}
+              className="block w-full h-auto object-contain rounded-lg bg-black select-none"
+              draggable={false}
+            />
             <div className="text-center text-white mt-3">
               <p className="text-sm font-medium">{flat[active].caption || "Job photo"}</p>
-              <p className="text-xs text-white/60">{CAT_LABELS[flat[active].category] || flat[active].category} · {fmtDate(flat[active].taken_at)} · {active + 1} of {flat.length}</p>
+              <p className="text-xs text-white/60">{CAT_LABELS[flat[active].category] || flat[active].category} · {fmtDate(flat[active].taken_at)}</p>
             </div>
           </div>
         </div>
