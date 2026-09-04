@@ -416,9 +416,44 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
       if (e.key === "ArrowLeft") { e.preventDefault(); showPrev(); }
       else if (e.key === "ArrowRight") { e.preventDefault(); showNext(); }
       else if (e.key === "Escape") { setLightbox(null); }
+      else if (e.key === "PageDown" || e.key === " ") {
+        // Space / PageDown — jump one screen down inside the lightbox.
+        if (lightboxScrollRef.current) {
+          e.preventDefault();
+          lightboxScrollRef.current.scrollBy({ top: window.innerHeight * 0.85, behavior: "smooth" });
+        }
+      }
+      else if (e.key === "PageUp") {
+        if (lightboxScrollRef.current) {
+          e.preventDefault();
+          lightboxScrollRef.current.scrollBy({ top: -window.innerHeight * 0.85, behavior: "smooth" });
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+
+    // Belt-and-suspenders wheel routing: whenever the wheel fires while the
+    // lightbox is open, forward the delta to the lightbox scroll container.
+    // This makes desktop mouse-wheel work even if the wheel event target is
+    // an image / button inside the modal that would otherwise not propagate
+    // scroll up to the container (e.g. some browsers suppress default wheel
+    // scroll on <button> and <img> elements). Listener is `passive: false`
+    // so we can preventDefault the underlying page scroll while we're open.
+    const onWheel = (e: WheelEvent) => {
+      const root = lightboxScrollRef.current;
+      if (!root) return;
+      // Only handle wheel events that landed inside our modal — anything
+      // else can bubble normally.
+      if (!root.contains(e.target as Node)) return;
+      e.preventDefault();
+      root.scrollTop += e.deltaY;
+      root.scrollLeft += e.deltaX;
+    };
+    window.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("wheel", onWheel);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lightbox, filtered]);
 
