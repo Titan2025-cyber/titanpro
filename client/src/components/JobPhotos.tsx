@@ -1033,22 +1033,33 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
         </div>
       )}
 
-      {/* Lightbox — clean column layout: fixed top bar (counter + Prev/Next +
-          close), then a scrollable body containing the image + metadata.
-          Full viewport height, so nothing is ever pushed offscreen.
-          Prev/Next live in the top bar (thumb-friendly on phones) rather
-          than being absolute-positioned mid-screen — the previous side
-          arrows fought with the scrollable panel and got covered as soon
-          as the tech scrolled down. */}
+      {/* Lightbox — single-scroll-container layout.
+
+          Prior structure (fixed flex-col > sticky bar > flex-1 min-h-0
+          overflow-y-auto) fought iOS Safari: nested overflow inside a
+          fixed flex child intermittently loses touch scroll and
+          mis-measures viewport height when the URL bar collapses. This
+          version puts the scroll on the outer container itself and pins
+          the toolbar with `sticky top-0`, which iOS handles reliably.
+
+          Click-to-close is only wired to a dedicated invisible backdrop
+          layer sitting behind the content column — the scroll container
+          no longer closes on tap, so a tech scrolling a tall portrait
+          photo can't accidentally dismiss the viewer. */}
       {lightbox && (
         <div
-          className="fixed inset-0 z-50 bg-black/95 flex flex-col"
-          onClick={() => setLightbox(null)}
+          ref={lightboxScrollRef}
+          className="fixed inset-0 z-50 bg-black/95 overflow-y-auto overscroll-contain"
+          style={{ WebkitOverflowScrolling: "touch" as any }}
+          data-testid="lightbox-root"
         >
-          {/* Top toolbar: prev/next + counter + close */}
+          {/* Sticky top toolbar: prev/next + counter + close.
+              `sticky top-0` keeps it pinned during scroll on iOS where a
+              nested flex-1 + overflow-y often drops the pin. Uses
+              env(safe-area-inset-top) so the notch never eats the buttons. */}
           <div
-            className="flex items-center justify-between px-3 py-2 border-b border-white/10 bg-black/60 backdrop-blur-sm"
-            onClick={e => e.stopPropagation()}
+            className="sticky top-0 z-10 flex items-center justify-between px-3 py-2 border-b border-white/10 bg-black/70 backdrop-blur-sm"
+            style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))" }}
           >
             <div className="flex items-center gap-2">
               <button
@@ -1085,27 +1096,37 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
             </button>
           </div>
 
-          {/* Scrollable body: image + metadata. flex-1 + min-h-0 so it takes
-              all remaining space and its inner overflow-y-auto is the
-              scroll container (fixes iOS Safari where a parent overflow on
-              a fixed element can be ignored). */}
-          <div
-            ref={lightboxScrollRef}
-            className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
+          {/* Invisible backdrop close-layer. Sits behind the content column
+              and covers the scrollable area so tapping the black margin
+              closes the lightbox, but scroll gestures on the content
+              itself don't dismiss it. `pointer-events-auto` on this layer,
+              content column stops propagation. */}
+          <button
+            type="button"
+            aria-label="Close photo viewer"
+            className="absolute inset-0 w-full h-full cursor-zoom-out"
+            style={{ background: "transparent" }}
             onClick={() => setLightbox(null)}
-            style={{ WebkitOverflowScrolling: "touch" as any }}
+            tabIndex={-1}
+          />
+
+          {/* Content column — sits above the backdrop button (relative + z-10).
+              Extra bottom padding respects the iOS home-indicator so the
+              last field / button is never covered. */}
+          <div
+            className="relative z-10 max-w-3xl w-full mx-auto px-4 pt-4"
+            style={{ paddingBottom: "calc(2.5rem + env(safe-area-inset-bottom))" }}
+            onClick={e => e.stopPropagation()}
           >
-            <div className="max-w-3xl w-full mx-auto px-4 pt-6 pb-10" onClick={e => e.stopPropagation()}>
-            {/* Image: no vh-based cap. The scroll container handles overflow,
-                so we just let the image render at its natural aspect ratio
-                inside the max-w-3xl column. Prior versions used max-h: 70vh
-                which iOS Safari mis-measures inside a scrollable flex child
-                and clipped the bottom of portrait photos. */}
+            {/* Image: no vh caps. Rendered at natural aspect inside the
+                max-w-3xl column so portrait shots aren't clipped and
+                landscape shots aren't stretched. `max-h-none` explicitly
+                overrides any inherited image caps from base CSS resets. */}
             <img
               src={lightbox.dataUrl}
               alt={lightbox.caption || lightbox.filename}
-              className="w-full h-auto rounded-lg object-contain select-none bg-black"
-              style={{ touchAction: "pan-y" }}
+              className="block w-full h-auto max-h-none rounded-lg object-contain select-none bg-black"
+              style={{ touchAction: "manipulation" }}
               draggable={false}
             />
             <div className="mt-3 flex items-center justify-between">
@@ -1183,7 +1204,6 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
                 </div>
               </div>
             )}
-            </div>
           </div>
         </div>
       )}
