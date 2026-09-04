@@ -300,6 +300,19 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
     sqlite.prepare("UPDATE employees SET must_change_pin = 1 WHERE pin IS NOT NULL").run();
   }
 
+  // ── Kiosk visibility ──
+  // show_on_kiosk gates whether a user appears on the unauthenticated Quick
+  // PIN picker at /api/auth/pin-users. This closes the pre-auth staff-name
+  // enumeration finding: privileged roles (owner/admin/general_manager) are
+  // never listed even if this column says otherwise; techs are opted in by
+  // default so field kiosks keep working. Users can be hidden individually
+  // from User Management.
+  if (!cols.includes("show_on_kiosk")) {
+    sqlite.exec("ALTER TABLE employees ADD COLUMN show_on_kiosk INTEGER NOT NULL DEFAULT 1");
+    // Immediately hide any privileged roles from the kiosk on migration.
+    sqlite.prepare("UPDATE employees SET show_on_kiosk = 0 WHERE role IN ('owner','admin','general_manager')").run();
+  }
+
   // Trusted devices — "remember this device for 30 days" tokens
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS trusted_devices (
@@ -581,8 +594,20 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
     // Clear failed attempts on success
     sqlite.prepare("DELETE FROM login_attempts WHERE employee_name = ? AND success = 0").run(emp.name);
 
-    // PIN logins (field techs on shared tablets) skip 2FA entirely — unchanged behavior.
+    // PIN logins (field techs on shared tablets) skip 2FA entirely — but only
+    // for non-privileged roles. Owner/admin/general_manager must complete a
+    // full password + 2FA flow; a PIN alone is never enough for privileged
+    // access. This closes the documented finding that a leaked PIN could
+    // hand a full owner session to an attacker.
     if (!password && pin) {
+      const privileged = ["owner", "admin", "general_manager"].includes(emp.role);
+      if (privileged) {
+        writeAudit(sqlite, emp.id, emp.name, "pin_denied_privileged", "auth", null,
+          `PIN login blocked for privileged role '${emp.role}' — password + 2FA required`, ip);
+        return res.status(403).json({
+          error: "Owner and admin accounts must sign in with password and 2FA. PIN sign-in is not permitted for this role.",
+        });
+      }
       // Stale/weak PIN → allow this one login but force a compliant reset before
       // issuing a real session. No full session token is returned yet.
       if (emp.must_change_pin) {
@@ -941,16 +966,35 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
     return inserted;
   };
 
+  // Hardened kiosk listing:
+  //  - Only rows where show_on_kiosk = 1 are returned.
+  //  - Privileged roles (owner/admin/general_manager) are ALWAYS excluded,
+  //    even if the column somehow flipped on — belt and suspenders against
+  //    the pre-auth enumeration finding.
+  //  - If show_on_kiosk hasn't been set on any row (fresh DB), we fall back
+  //    to non-privileged active employees so field kiosks keep working.
+  const KIOSK_HIDDEN_ROLES = ["owner", "admin", "general_manager"];
   app.get("/api/auth/pin-users", (_req, res) => {
+    const placeholders = KIOSK_HIDDEN_ROLES.map(() => "?").join(",");
     let rows: any[] = sqlite.prepare(
-      "SELECT name, avatar_initials FROM employees WHERE is_active = 1 ORDER BY name"
-    ).all();
+      `SELECT name, avatar_initials FROM employees
+         WHERE is_active = 1
+           AND COALESCE(show_on_kiosk, 1) = 1
+           AND role NOT IN (${placeholders})
+         ORDER BY name`
+    ).all(...KIOSK_HIDDEN_ROLES);
     if (rows.length === 0) {
+      // Empty-DB safety net (unchanged behavior): reseed then re-query with
+      // the same privileged-role filter.
       const inserted = inlineRosterSeed();
       console.log(`[auth] pin-users returned 0 rows — inline seeded ${inserted} row(s)`);
       rows = sqlite.prepare(
-        "SELECT name, avatar_initials FROM employees WHERE is_active = 1 ORDER BY name"
-      ).all();
+        `SELECT name, avatar_initials FROM employees
+           WHERE is_active = 1
+             AND COALESCE(show_on_kiosk, 1) = 1
+             AND role NOT IN (${placeholders})
+           ORDER BY name`
+      ).all(...KIOSK_HIDDEN_ROLES);
     }
     res.json(rows.map(r => ({
       name: r.name,
@@ -987,7 +1031,7 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
 
   // GET /api/staff — list all employees (owner/admin only)
   app.get("/api/staff", requireRole("owner", "admin"), (req, res) => {
-    const rows: any[] = sqlite.prepare("SELECT id, name, role, position, gmail_email, gmail_connected, gmail_connected_at, phone, is_active, last_login_at, permissions, avatar_initials, created_at, totp_enabled FROM employees ORDER BY id").all();
+    const rows: any[] = sqlite.prepare("SELECT id, name, role, position, gmail_email, gmail_connected, gmail_connected_at, phone, is_active, last_login_at, permissions, avatar_initials, created_at, totp_enabled, show_on_kiosk FROM employees ORDER BY id").all();
     res.json(rows.map(r => ({
       id: r.id, name: r.name, role: r.role, position: r.position,
       gmailEmail: r.gmail_email, gmailConnected: !!r.gmail_connected, gmailConnectedAt: r.gmail_connected_at,
@@ -996,6 +1040,7 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
       avatarInitials: r.avatar_initials || r.name.split(" ").map((w: string) => w[0]).join("").toUpperCase().slice(0, 2),
       createdAt: r.created_at,
       twoFactorEnabled: !!r.totp_enabled,
+      showOnKiosk: !!r.show_on_kiosk,
     })));
   });
 
@@ -1045,7 +1090,7 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
   // PATCH /api/staff/:id — update employee (owner/admin only)
   app.patch("/api/staff/:id", requireRole("owner", "admin"), (req, res) => {
     const id = Number(req.params.id);
-    const { name, role, position, phone, gmailEmail, password, pin, permissions, isActive, avatarInitials } = req.body;
+    const { name, role, position, phone, gmailEmail, password, pin, permissions, isActive, avatarInitials, showOnKiosk } = req.body;
     const emp: any = sqlite.prepare("SELECT * FROM employees WHERE id = ?").get(id);
     if (!emp) return res.status(404).json({ error: "Employee not found" });
     if (password) {
@@ -1066,14 +1111,23 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
       if (perr) return res.status(400).json({ error: perr });
     }
 
+    // Enforce the kiosk-visibility invariant regardless of what the client
+    // sends: privileged roles are NEVER shown on the pre-auth PIN kiosk.
+    // Determine the effective role first so we apply the rule even when the
+    // role is being changed in this same PATCH.
+    const effectiveRole = role ?? emp.role;
+    const effectiveKiosk = ["owner", "admin", "general_manager"].includes(effectiveRole)
+      ? 0
+      : (showOnKiosk !== undefined ? (showOnKiosk ? 1 : 0) : (emp.show_on_kiosk ?? 1));
+
     sqlite.prepare(`
       UPDATE employees SET
         name = ?, role = ?, position = ?, phone = ?, gmail_email = ?,
-        password_hash = ?, pin = ?, permissions = ?, is_active = ?, avatar_initials = ?, must_change_pin = ?
+        password_hash = ?, pin = ?, permissions = ?, is_active = ?, avatar_initials = ?, must_change_pin = ?, show_on_kiosk = ?
       WHERE id = ?
     `).run(
       name ?? emp.name,
-      role ?? emp.role,
+      effectiveRole,
       position ?? emp.position,
       phone ?? emp.phone,
       gmailEmail ?? emp.gmail_email,
@@ -1083,6 +1137,7 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
       isActive !== undefined ? (isActive ? 1 : 0) : emp.is_active,
       avatarInitials ?? emp.avatar_initials,
       pin ? 1 : emp.must_change_pin,
+      effectiveKiosk,
       id
     );
 

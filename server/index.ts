@@ -73,6 +73,18 @@ app.use("/api/auth/change-password", authLimiter);
 // 2FA code-entry endpoints get the same brute-force cap as password login.
 app.use("/api/auth/2fa/verify", authLimiter);
 app.use("/api/auth/2fa/setup/verify", authLimiter);
+// Kiosk roster is unauthenticated; the pre-auth staff-name enumeration
+// finding says a scripted client could poll it. Techs actually loading the
+// kiosk hit this endpoint a handful of times per session, so 30/15min per
+// IP is well above real usage while cheap against scraping.
+const kioskLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests." },
+});
+app.use("/api/auth/pin-users", kioskLimiter);
 app.use("/api/", apiLimiter);
 
 // Gzip/deflate every response (HTML, JS, CSS, JSON API payloads).
