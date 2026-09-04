@@ -10,6 +10,7 @@ import { registerQuickAddAndESignRoutes } from "./routes_quickadd_esign";
 import { registerAuthRoutes, makeAuthMiddleware } from "./routes_auth";
 import { makeNotifier } from "./notify_bell";
 import { sendMentionEmails } from "./notify_email";
+import { sendShiftAssignmentEmail } from "./notify_tags";
 import { initAuditAndTrash } from "./auditAndTrash";
 import { registerAnalyticsRoutes } from "./routes_analytics";
 import { registerSubcontractorRoutes } from "./routes_subcontractors";
@@ -2438,23 +2439,66 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.post("/api/shifts", (req, res) => {
     const shift = storage.createShift(req.body);
-    // Simulate email notification for assigned tech
-    if (shift.jobId) {
-      const job = storage.getJob(shift.jobId);
-      if (job) {
-        const subject = `[Titan Pro] New Job Assignment: ${job.jobNumber}`;
-        const body = `Hi ${shift.techName},\n\nYou have been assigned to a job:\n\nJob #: ${job.jobNumber}\nAddress: ${job.address || "See job file"}\nLoss Type: ${job.lossType.toUpperCase()}\nShift Date: ${shift.shiftDate}\nTime: ${shift.startTime || "TBD"}${shift.endTime ? ` – ${shift.endTime}` : ""}\n\nPlease review the job details in Titan Pro.\n\nTitan Restoration LLC | 706-922-0154`;
-        // Get employee's Gmail if linked
-        const emp = storage.getEmployeeByName(shift.techName);
-        const toEmail = emp?.gmailEmail || `${shift.techName.toLowerCase().replace(/\s/g, "")}@titanrestorationllc.com`;
-        storage.createEmail({ folder: "sent", from: "cody@titanrestorationllc.com", to: toEmail, subject, body, read: 1 });
-      }
+    // Notify the assigned tech by email (best-effort, fire-and-forget).
+    // Uses the real SMTP/Gmail transport when configured; silent no-op
+    // otherwise. Also drops an audit record in the internal mailbox so
+    // the sent history remains visible even when live email is off.
+    const job = shift.jobId ? storage.getJob(shift.jobId) : null;
+    void sendShiftAssignmentEmail(sqlite, {
+      techName: shift.techName,
+      shiftDate: shift.shiftDate,
+      startTime: shift.startTime,
+      endTime: shift.endTime,
+      title: (shift as any).title,
+      notes: (shift as any).notes,
+      job: job ? {
+        id: job.id,
+        jobNumber: job.jobNumber,
+        address: job.address,
+        lossType: job.lossType,
+        customerName: (job as any).customerName,
+      } : null,
+    });
+    if (job) {
+      const subject = `[Titan Pro] New Job Assignment: ${job.jobNumber}`;
+      const body = `Hi ${shift.techName},\n\nYou have been assigned to a job:\n\nJob #: ${job.jobNumber}\nAddress: ${job.address || "See job file"}\nLoss Type: ${job.lossType.toUpperCase()}\nShift Date: ${shift.shiftDate}\nTime: ${shift.startTime || "TBD"}${shift.endTime ? ` – ${shift.endTime}` : ""}\n\nPlease review the job details in Titan Pro.\n\nTitan Restoration LLC | 706-922-0154`;
+      const emp = storage.getEmployeeByName(shift.techName);
+      const toEmail = emp?.gmailEmail || `${shift.techName.toLowerCase().replace(/\s/g, "")}@titanrestorationllc.com`;
+      storage.createEmail({ folder: "sent", from: "cody@titanrestorationllc.com", to: toEmail, subject, body, read: 1 });
     }
     res.json(shift);
   });
   app.patch("/api/shifts/:id", (req, res) => {
+    const prev = storage.getShift(Number(req.params.id));
     const s = storage.updateShift(Number(req.params.id), req.body);
     if (!s) return res.status(404).json({ error: "Not found" });
+    // If the tech changed (reassignment) OR a shift-critical field moved,
+    // email the (new) assignee so they're not surprised. Same-tech patches
+    // like a notes tweak don't re-notify.
+    const techChanged = prev && prev.techName !== s.techName;
+    const timeChanged = prev && (
+      prev.shiftDate !== s.shiftDate ||
+      (prev.startTime || "") !== (s.startTime || "") ||
+      (prev.endTime || "") !== (s.endTime || "")
+    );
+    if (techChanged || timeChanged) {
+      const job = s.jobId ? storage.getJob(s.jobId) : null;
+      void sendShiftAssignmentEmail(sqlite, {
+        techName: s.techName,
+        shiftDate: s.shiftDate,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        title: (s as any).title,
+        notes: (s as any).notes,
+        job: job ? {
+          id: job.id,
+          jobNumber: job.jobNumber,
+          address: job.address,
+          lossType: job.lossType,
+          customerName: (job as any).customerName,
+        } : null,
+      });
+    }
     res.json(s);
   });
   app.delete("/api/shifts/:id", (req, res) => {

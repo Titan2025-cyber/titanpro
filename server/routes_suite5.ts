@@ -1,5 +1,6 @@
 import type { Express, RequestHandler } from "express";
 import type { Database } from "better-sqlite3";
+import { sendEventTagEmails, newlyAddedAttendees } from "./notify_tags";
 
 type SuiteAuth = { requireRole: (...roles: string[]) => RequestHandler };
 const suite5Passthrough: RequestHandler = (_req, _res, next) => next();
@@ -838,7 +839,22 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
         createdBy,
       );
       const row = sqlite.prepare("SELECT * FROM calendar_events WHERE id=?").get(info.lastInsertRowid) as any;
-      res.json(hydrateEvent(row));
+      const hydrated = hydrateEvent(row);
+      // Fire-and-forget email to every initial attendee. Best-effort; if
+      // SMTP/Gmail isn't configured or the tagged name isn't a real
+      // employee (e.g. a homeowner), we quietly skip.
+      void sendEventTagEmails(sqlite, {
+        eventId: hydrated.id,
+        title: hydrated.title,
+        eventDate: hydrated.eventDate,
+        startTime: hydrated.startTime,
+        endTime: hydrated.endTime,
+        location: hydrated.location,
+        notes: hydrated.notes,
+        createdBy: hydrated.createdBy,
+        attendeeNames: hydrated.attendees,
+      });
+      res.json(hydrated);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
@@ -870,7 +886,28 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
         id,
       );
       const row = sqlite.prepare("SELECT * FROM calendar_events WHERE id=?").get(id) as any;
-      res.json(hydrateEvent(row));
+      const hydrated = hydrateEvent(row);
+      // If new attendees were added on this update, notify only the
+      // new names — don't re-email existing attendees every save.
+      if (b.attendees !== undefined) {
+        let prevList: string[] = [];
+        try { prevList = JSON.parse(cur.attendees || "[]"); } catch { prevList = []; }
+        const added = newlyAddedAttendees(prevList, hydrated.attendees);
+        if (added.length > 0) {
+          void sendEventTagEmails(sqlite, {
+            eventId: hydrated.id,
+            title: hydrated.title,
+            eventDate: hydrated.eventDate,
+            startTime: hydrated.startTime,
+            endTime: hydrated.endTime,
+            location: hydrated.location,
+            notes: hydrated.notes,
+            createdBy: hydrated.createdBy,
+            attendeeNames: added,
+          });
+        }
+      }
+      res.json(hydrated);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 

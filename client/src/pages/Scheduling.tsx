@@ -762,6 +762,12 @@ export default function Scheduling() {
                 onChange={(v) => setEventForm({ ...eventForm, attendees: v })}
                 suggestions={assignableUsers.map(u => u.name)}
               />
+              {eventForm.attendees.length > 0 && (
+                <p className="text-[11px] text-muted-foreground mt-1 flex items-center gap-1">
+                  <Bell className="w-3 h-3" />
+                  Tagged team members will get an email when you save.
+                </p>
+              )}
             </div>
             <div>
               <Label>Notes <span className="text-muted-foreground text-xs font-normal">(optional)</span></Label>
