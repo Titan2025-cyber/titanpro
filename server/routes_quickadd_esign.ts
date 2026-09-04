@@ -182,7 +182,28 @@ export function registerQuickAddAndESignRoutes(
     const recipientEmail = String(req.body?.recipientEmail || "").trim();
     const recipientName = req.body?.recipientName ? String(req.body.recipientName) : null;
     const recipientRole = req.body?.recipientRole ? String(req.body.recipientRole) : "homeowner";
-    const sentBy = (req as any).user?.email || null;
+    // Resolve the *actual* logged-in employee so the customer email is
+    // sent AS them (Gmail) and the signed PDF is returned TO them. The
+    // auth middleware attaches req.employee = {id, name, role, ...} but
+    // not the email address, so we look it up here. Falls back to the
+    // legacy req.user.email path if some other middleware ever set it.
+    const authedEmp: any = (req as any).employee || null;
+    let senderEmployeeId: number | null = null;
+    let senderName: string | null = null;
+    let sentBy: string | null = (req as any).user?.email || null;
+    if (authedEmp?.id) {
+      try {
+        const row: any = sqlite
+          .prepare("SELECT id, name, gmail_email FROM employees WHERE id = ?")
+          .get(Number(authedEmp.id));
+        if (row) {
+          senderEmployeeId = Number(row.id);
+          senderName = row.name ? String(row.name) : (authedEmp.name || null);
+          if (!sentBy && row.gmail_email) sentBy = String(row.gmail_email);
+        }
+      } catch { /* fall through — we'll still stamp senderName from authedEmp */ }
+      if (!senderName) senderName = authedEmp.name || null;
+    }
 
     if (!jobId || !docType || !title) return res.status(400).json({ error: "jobId, docType, and title required" });
     if (!recipientEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)) {
@@ -221,25 +242,19 @@ export function registerQuickAddAndESignRoutes(
     let emailSent = false;
     let emailError: string | null = null;
     let emailProvider: string = "none";
-    // Resolve the sender's display name once so both the send-time email
-    // and the fallback text include "Prepared by <name>" — customers see
-    // who at Titan is expecting them to sign, not just a generic company.
-    let senderDisplay: string | null = null;
-    if (sentBy) {
-      try {
-        const emp: any = sqlite
-          .prepare("SELECT name FROM employees WHERE LOWER(gmail_email) = LOWER(?) LIMIT 1")
-          .get(sentBy);
-        if (emp?.name) senderDisplay = String(emp.name);
-      } catch { /* ignore */ }
-      if (!senderDisplay) {
-        const local = String(sentBy).split("@")[0] || "";
-        senderDisplay = local
-          .split(/[._-]+/)
-          .filter(Boolean)
-          .map((w) => w[0].toUpperCase() + w.slice(1))
-          .join(" ") || null;
-      }
+    // Sender display name — used both in the body text ("Karla at Titan
+    // Restoration has prepared…") and in the SMTP fallback From: header
+    // (so the customer sees "Karla Foster" instead of a shared no-reply).
+    // Prefer the name resolved from req.employee; last-resort titlecases
+    // the email local-part.
+    let senderDisplay: string | null = senderName;
+    if (!senderDisplay && sentBy) {
+      const local = String(sentBy).split("@")[0] || "";
+      senderDisplay = local
+        .split(/[._-]+/)
+        .filter(Boolean)
+        .map((w) => w[0].toUpperCase() + w.slice(1))
+        .join(" ") || null;
     }
     const preparedBy = senderDisplay
       ? `${senderDisplay} at Titan Restoration has`
@@ -254,6 +269,10 @@ export function registerQuickAddAndESignRoutes(
         to: recipientEmail,
         subject: `Titan Restoration — ${title} ready to sign`,
         replyTo: sentBy || undefined,
+        // Send AS the logged-in employee when Gmail is connected for them.
+        // Otherwise sendEmail falls back to the company sender / SMTP.
+        fromEmployeeId: senderEmployeeId,
+        fromName: senderDisplay ? `${senderDisplay} · Titan Restoration` : null,
         text:
           `${nameLine}\n\n` +
           `${preparedBy} prepared a document for your signature: ${title}.\n\n` +
@@ -313,12 +332,30 @@ export function registerQuickAddAndESignRoutes(
       return res.status(400).json({ error: `cannot resend a ${row.status} request` });
     }
 
+    // Resolve the original sender so the reminder shows up in the
+    // customer's inbox from the same person who first sent it.
+    let resendEmpId: number | null = null;
+    let resendName: string | null = null;
+    if (row.sent_by) {
+      try {
+        const emp: any = sqlite
+          .prepare("SELECT id, name FROM employees WHERE LOWER(gmail_email) = LOWER(?) AND is_active = 1 LIMIT 1")
+          .get(row.sent_by);
+        if (emp) {
+          resendEmpId = Number(emp.id) || null;
+          resendName = emp.name ? String(emp.name) : null;
+        }
+      } catch { /* ignore */ }
+    }
+
     const link = `${APP_ORIGIN}/#/sign/${row.token}`;
     try {
       await sendEmail({
         to: row.recipient_email,
         subject: `Titan Restoration — reminder: ${row.title}`,
         replyTo: row.sent_by || undefined,
+        fromEmployeeId: resendEmpId,
+        fromName: resendName ? `${resendName} · Titan Restoration` : null,
         text:
           `Reminder: Titan Restoration is still waiting on your signature for ${row.title}.\n\n` +
           `Sign here:\n${link}\n\n— Titan Restoration`,
@@ -645,6 +682,26 @@ export function registerQuickAddAndESignRoutes(
       textBody,
     ).replace(/\n/g, "<br>")}</div>`;
 
+    // Send AS the currently logged-in employee so the customer sees the
+    // real sender's inbox (Karla, Blake, etc.) instead of whichever
+    // shared mailbox pickCompanyGmailSender lands on.
+    const authedEmp: any = (req as any).employee || null;
+    let fromEmpId: number | null = null;
+    let fromName: string | null = null;
+    let replyToAddr: string | undefined = undefined;
+    if (authedEmp?.id) {
+      try {
+        const empRow: any = sqlite
+          .prepare("SELECT id, name, gmail_email FROM employees WHERE id = ?")
+          .get(Number(authedEmp.id));
+        if (empRow) {
+          fromEmpId = Number(empRow.id);
+          fromName = empRow.name ? String(empRow.name) : null;
+          if (empRow.gmail_email) replyToAddr = String(empRow.gmail_email);
+        }
+      } catch { /* ignore */ }
+    }
+
     // Attempt to send — sendEmail auto-picks Gmail then falls back to SMTP.
     const results = await sendEmail({
       to: String(to).trim(),
@@ -652,6 +709,9 @@ export function registerQuickAddAndESignRoutes(
       text: textBody,
       html: htmlBody,
       attachments: [{ filename: safeName, contentType: "application/pdf", content: pdfDataUri }],
+      fromEmployeeId: fromEmpId,
+      fromName: fromName ? `${fromName} · Titan Restoration` : null,
+      replyTo: replyToAddr,
     });
 
     // Optionally record a copy in the job's document library so ops can always

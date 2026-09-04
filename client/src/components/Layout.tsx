@@ -72,7 +72,9 @@ const navGroups: NavGroup[] = [
       // buried inside the Scheduling & Dispatch hub). Points at /scheduling
       // which now renders the Scheduling page directly, no redirect hop.
       { href: "/scheduling", label: "Schedule", icon: Calendar, permission: "scheduling" },
-      { href: "/contacts", label: "Contacts", icon: Users, permission: "contacts" },
+      // Contacts moved to Business Dev — it's a growth/CRM surface, not a
+      // daily-ops one. Keeping the route registered means old bookmarks and
+      // deep links still work.
       { href: "/estimates", label: "Estimates", icon: FileText, permission: "estimates" },
       { href: "/invoices", label: "Invoices", icon: Receipt, permission: "invoices" },
       { href: "/payments", label: "Payments", icon: DollarSign, permission: "payments" },
@@ -167,6 +169,10 @@ const navGroups: NavGroup[] = [
     icon: Building2,
     description: "Marketing, referrals & growth",
     items: [
+      // Contacts lives here now — customer / lead / referrer CRM is a
+      // Business Dev surface, not a Core one. Route unchanged; only sidebar
+      // placement moved.
+      { href: "/contacts", label: "Contacts", icon: Users, permission: "contacts" },
       // — Consolidated hubs (each combines several tools as tabs) —
       { href: "/partner-hub", label: "Referrals & Partners", icon: Handshake, permission: "partner-portal" },
       { href: "/marketing-hub", label: "Marketing", icon: Megaphone, permission: "marketing" },

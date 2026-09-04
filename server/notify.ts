@@ -103,12 +103,42 @@ export async function sendEmail(opts: {
   attachments?: EmailAttachment[];
   replyTo?: string;
   transport?: "auto" | "gmail" | "smtp";
+  // When set, and the given employee has Gmail connected, send AS that
+  // employee so the customer sees the actual sender (e.g. "karla@titan…"),
+  // not whoever the company auto-picker landed on. Falls back to the
+  // company sender if the employee isn't connected, and to SMTP if Gmail
+  // isn't configured at all.
+  fromEmployeeId?: number | null;
+  // Convenience header used by SMTP fallback: overrides the default
+  // "Titan Restoration <no-reply@…>" From: line so at least the customer
+  // sees the sender's name. Ignored on Gmail path (Gmail sends AS the
+  // authenticated user, so From: is set by Google).
+  fromName?: string | null;
 }): Promise<SendResult[]> {
   const tos = (Array.isArray(opts.to) ? opts.to : [opts.to]).filter(Boolean);
   if (!tos.length) return [];
 
   const wantGmail = opts.transport !== "smtp";
-  const sender = wantGmail && gmailConfigured() ? pickCompanyGmailSender(sharedSqlite) : null;
+  // Prefer the caller-specified employee (if connected), otherwise fall
+  // back to the company Gmail sender picker. We only accept the requested
+  // sender when they actually have a refresh token; a missing token means
+  // "send as company" instead of failing the mail.
+  let sender: { id: number; email: string } | null = null;
+  if (wantGmail && gmailConfigured()) {
+    if (opts.fromEmployeeId) {
+      try {
+        const row: any = sharedSqlite
+          .prepare(
+            "SELECT id, gmail_email, gmail_refresh_token FROM employees WHERE id = ? AND is_active = 1",
+          )
+          .get(Number(opts.fromEmployeeId));
+        if (row && row.gmail_refresh_token) {
+          sender = { id: Number(row.id), email: row.gmail_email || "" };
+        }
+      } catch { /* ignore, fall through to company picker */ }
+    }
+    if (!sender) sender = pickCompanyGmailSender(sharedSqlite);
+  }
 
   // ── 1) Gmail path ─────────────────────────────────────────────────────────
   if (sender) {
@@ -166,11 +196,23 @@ export async function sendEmail(opts: {
     };
   });
 
+  // If the caller passed a sender display name (e.g. "Karla Foster"), use
+  // it to build a From: header that keeps the shared SMTP mailbox but shows
+  // the sender's name in the customer's inbox. Falls back to SMTP_FROM.
+  const fromHeader = (() => {
+    if (!opts.fromName) return SMTP_FROM;
+    // Extract the addr-spec from SMTP_FROM ("Titan Restoration <foo@bar>") or
+    // treat SMTP_FROM as an addr-spec on its own.
+    const m = /<([^>]+)>/.exec(SMTP_FROM);
+    const addr = m ? m[1] : SMTP_FROM;
+    return `${opts.fromName.replace(/[<>\"]/g, "").trim()} <${addr}>`;
+  })();
+
   const out: SendResult[] = [];
   for (const to of tos) {
     try {
       const info = await t.sendMail({
-        from: SMTP_FROM,
+        from: fromHeader,
         to,
         subject: opts.subject,
         text: opts.text,
