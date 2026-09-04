@@ -15,7 +15,12 @@
  *     outbox handles offline writes and reads simply fail as before.
  */
 
-const CACHE = "titan-shell-v1";
+// Bump this version any time we ship a chunk whose behavior users must
+// see immediately (bug fixes, security fixes, interactive event handlers).
+// The `activate` step deletes every cache whose key !== CACHE, so bumping
+// this string invalidates the entire prior asset cache and forces a fresh
+// fetch of index.html + hashed chunks on the next load.
+const CACHE = "titan-shell-v2-2026-09-04";
 const CORE = ["./", "./index.html", "./manifest.json", "./favicon.png", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (event) => {
