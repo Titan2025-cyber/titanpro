@@ -1,5 +1,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { UserSelect } from "@/components/UserSelect";
+import JobCombobox from "@/components/JobCombobox";
 import { useState } from "react";
 import { Plus, ChevronLeft, ChevronRight, Briefcase, Bell, Plane, Trash2, Calendar as CalIcon, LayoutGrid, ListChecks, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -315,23 +316,21 @@ export default function Scheduling() {
 
               <div>
                 <Label>Assign Job (optional)</Label>
-                <Select value={form.jobId} onValueChange={v => {
-                  const job = jobs.find(j => j.id === Number(v));
-                  // Auto-fill the shift title with "<jobNumber> — <customer name>" when a job is chosen,
-                  // matching what the tech will see in the schedule dropdown itself.
-                  const label = job ? `${job.jobNumber} — ${job.customerName || job.lossType || "Untitled"}` : "";
-                  setForm(f => ({ ...f, jobId: v, title: label || f.title }));
-                }}>
-                  <SelectTrigger><SelectValue placeholder="Link to a job" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="">No job</SelectItem>
-                    {jobs.filter(j => j.status !== "closed").map(j => (
-                      <SelectItem key={j.id} value={String(j.id)}>
-                        {j.jobNumber} — {j.customerName || j.address?.split(",")[0] || j.lossType || "Untitled"}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {/* Searchable combobox replaces the plain <Select>. Types
+                    to filter by job number, loss type, address, or
+                    customer/contact name so dispatchers don't have to
+                    scroll a growing list. */}
+                <JobCombobox
+                  jobs={jobs.filter(j => j.status !== "closed")}
+                  value={form.jobId}
+                  onChange={(v) => {
+                    const job = jobs.find(j => j.id === Number(v));
+                    const label = job ? `${job.jobNumber} — ${job.customerName || job.lossType || "Untitled"}` : "";
+                    setForm(f => ({ ...f, jobId: v, title: label || f.title }));
+                  }}
+                  placeholder="Search jobs by number, customer, address, or loss type…"
+                  data-testid="combobox-shift-job"
+                />
               </div>
 
               <div><Label>Shift Title</Label><Input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="e.g. Day 1 Water Extraction" /></div>
