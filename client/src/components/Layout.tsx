@@ -91,13 +91,11 @@ const navGroups: NavGroup[] = [
       { href: "/drying-hub", label: "Drying & Compliance", icon: Droplets, permission: "technician" },
       // — Standalone field tools —
       { href: "/time-clock", label: "GPS Time Clock", icon: ClipboardCheck, permission: "time-clock" },
-      { href: "/photos", label: "Photos", icon: Camera, permission: "photos" },
-      { href: "/photos/search", label: "Photo Library", icon: Camera, permission: "photos" },
+      // Photos Hub (capture + search + AI classify) replaces three separate items.
+      { href: "/photos-hub", label: "Photos", icon: Camera, permission: "photos" },
       { href: "/inspections", label: "Pre-Job Inspections", icon: ClipboardList, permission: "technician" },
       { href: "/multilingual", label: "Multilingual Crew", icon: Languages, permission: "technician" },
       { href: "/drone-lidar", label: "Drone + LiDAR", icon: Radio, permission: "technician" },
-      { href: "/voice-note", label: "Voice-to-Note", icon: Mic, permission: "technician" },
-      { href: "/photo-classifier", label: "AI Photo Classifier", icon: Camera, permission: "photos" },
       { href: "/job-age-alerts", label: "Job Age Alerts", icon: Clock, permission: "jobs" },
     ],
   },
@@ -126,14 +124,12 @@ const navGroups: NavGroup[] = [
       { href: "/carrier-hub", label: "Carrier Intelligence", icon: Shield, permission: "supplements" },
       { href: "/adjuster-hub", label: "Adjusters", icon: UserRound, permission: "supplements" },
       // — Standalone claim tools —
+      // Supplement Hub now hosts: O&P Rebuttal, General Conditions,
+      // Approved Claims Library, Claim File Checker, Customer Claim Explainer,
+      // Subrogation Tracker, and Competitive Bid Intel as tabs. Only Invoice
+      // Escalation, Price Lists, and Job Costing remain top-level here.
       { href: "/line-items", label: "Price Lists", icon: BookOpen, permission: "supplements" },
-      { href: "/claim-explainer", label: "Claim Explainer", icon: BookOpen, permission: "supplements" },
       { href: "/invoice-escalation", label: "Invoice Escalation", icon: Scale, permission: "supplements" },
-      { href: "/claim-file-checker", label: "Claim File Checker", icon: ShieldCheck, permission: "supplements" },
-      { href: "/op-rebuttal", label: "O&P Rebuttal Builder", icon: Scale, permission: "supplements" },
-      { href: "/general-conditions", label: "General Conditions", icon: ClipboardCheck, permission: "supplements" },
-      { href: "/approved-claims", label: "Approved Claims Library", icon: Library, permission: "supplements" },
-      { href: "/subrogation", label: "Subrogation Tracker", icon: Gavel, permission: "supplements" },
       { href: "/job-costing", label: "Job Costing", icon: PieChart, permission: "job-costing" },
     ],
   },
@@ -153,9 +149,9 @@ const navGroups: NavGroup[] = [
       { href: "/cash-flow", label: "Cash Flow Calendar", icon: Calendar, permission: "finance" },
       { href: "/payment-plans", label: "Payment Plans", icon: DollarSign, permission: "finance" },
       { href: "/qb-sync", label: "QuickBooks Sync", icon: BookMarked, permission: "finance" },
-      { href: "/command-bi", label: "Command BI", icon: Brain, permission: "finance" },
-      { href: "/nps-surveys", label: "NPS Surveys", icon: Star, permission: "finance" },
-      { href: "/predictive-model", label: "Predictive Model", icon: TrendingUp, permission: "finance" },
+      // Command BI, NPS, Predictive Model, Analytics, Lead Attribution, and
+      // Reports are all consolidated into the Reports & BI Hub below.
+      { href: "/reports-hub", label: "Reports & BI", icon: BarChart3, permission: "reports" },
     ],
   },
 
@@ -169,22 +165,18 @@ const navGroups: NavGroup[] = [
       { href: "/partner-hub", label: "Referrals & Partners", icon: Handshake, permission: "partner-portal" },
       { href: "/marketing-hub", label: "Marketing", icon: Megaphone, permission: "marketing" },
       // — Standalone growth tools —
-      { href: "/lead-attribution", label: "Lead Attribution", icon: BarChart3, permission: "business-dev" },
       { href: "/partner-portal-setup", label: "Partner Portal Setup", icon: KeyRound, permission: "partner-portal" },
       { href: "/follow-ups", label: "Follow-Ups", icon: Bell, permission: "follow-ups" },
       { href: "/reviews", label: "Review Requests", icon: Star, permission: "follow-ups" },
-      { href: "/emergency-intake", label: "Emergency Intake", icon: LifeBuoy, permission: "business-dev" },
-      { href: "/fnol-chatbot", label: "FNOL Intake Bot", icon: Bot, permission: "business-dev" },
+      // Intake Hub bundles Emergency Intake, FNOL Bot, and Voice-to-Note.
+      { href: "/intake-hub", label: "Intake", icon: LifeBuoy, permission: "business-dev" },
       { href: "/route-planner", label: "Route Planner", icon: RouteIcon, permission: "route-planner" },
       { href: "/bd-calendar", label: "BD Calendar", icon: CalendarDays, permission: "business-dev" },
-      { href: "/coi-tracker", label: "COI & License Tracker", icon: Shield, permission: "business-dev" },
-      { href: "/subcontractors", label: "Subcontractors", icon: HardHat, permission: "business-dev" },
-      { href: "/bid-intel", label: "Competitive Bid Intel", icon: Target, permission: "business-dev" },
-      // — Builder, Migration & Reports —
+      // Subcontractors Hub bundles the roster + COI/License tracker.
+      { href: "/subcontractors-hub", label: "Subcontractors", icon: HardHat, permission: "business-dev" },
+      // — Builder & Migration —
       { href: "/document-builder", label: "Document Builder", icon: FileSpreadsheet, permission: "reports" },
       { href: "/migration-center", label: "Migration Center", icon: ArrowRightLeft, permission: "finance" },
-      { href: "/reports", label: "Reports", icon: BarChart3, permission: "reports" },
-      { href: "/analytics", label: "Analytics", icon: BarChart3, permission: "reports" },
       { href: "/trash", label: "Trash", icon: Trash2, permission: "admin", adminOnly: true },
     ],
   },

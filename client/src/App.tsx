@@ -85,6 +85,11 @@ const WeeklyBilling = lazy(() => import("@/pages/WeeklyBilling"));
 const DocumentBuilder = lazy(() => import("@/pages/DocumentBuilder"));
 const MigrationCenter = lazy(() => import("@/pages/MigrationCenter"));
 const Reports = lazy(() => import("@/pages/Reports"));
+// Consolidated hubs — collapse many previous top-level sidebar entries.
+const ReportsHub = lazy(() => import("@/pages/ReportsHub"));
+const PhotosHub = lazy(() => import("@/pages/PhotosHub"));
+const IntakeHub = lazy(() => import("@/pages/IntakeHub"));
+const SubcontractorsHub = lazy(() => import("@/pages/SubcontractorsHub"));
 const TeamActivity = lazy(() => import("@/pages/TeamActivity"));
 const AIAgentCenter = lazy(() => import("@/pages/AIAgentCenter"));
 const AdjusterDB = lazy(() => import("@/pages/AdjusterDB"));
@@ -288,9 +293,13 @@ function AuthenticatedRoutes() {
         {/* Field Ops */}
         {/* Cross-job photo library search — must come BEFORE /photos so wouter
             matches the more-specific /photos/search first. */}
-        <Route path="/photos/search" component={() => <Page component={PhotoSearch} name="PhotoSearch" />} />
-        <Route path="/photos" component={() => <Page component={Photos} name="Photos" />} />
-        <Route path="/analytics" component={() => <Page component={Analytics} name="Analytics" />} />
+        {/* Photos Hub — tabs: capture | search | classify. Old URLs redirect. */}
+        <Route path="/photos-hub" component={() => <Page component={PhotosHub} name="PhotosHub" />} />
+        <Route path="/photos/search"><Redirect to="/photos-hub?tab=search" /></Route>
+        <Route path="/photos"><Redirect to="/photos-hub?tab=capture" /></Route>
+        <Route path="/photo-classifier"><Redirect to="/photos-hub?tab=classify" /></Route>
+        {/* Analytics folds into the Reports & BI Hub. */}
+        <Route path="/analytics"><Redirect to="/reports-hub?tab=analytics" /></Route>
         <Route path="/trash" component={() => <Page component={TrashPage} name="Trash" />} />
         <Route path="/scheduling"><Redirect to="/scheduling-hub?tab=schedule" /></Route>
         <Route path="/technician"><Redirect to="/technician-hub?tab=technician" /></Route>
@@ -333,7 +342,7 @@ function AuthenticatedRoutes() {
         <Route path="/ai-estimate-review"><Redirect to="/xactimate-hub?tab=ai-review" /></Route>
 
         {/* Business Dev */}
-        <Route path="/lead-attribution" component={() => <Page component={LeadAttribution} name="LeadAttribution" />} />
+        <Route path="/lead-attribution"><Redirect to="/reports-hub?tab=attribution" /></Route>
         <Route path="/partner-roi"><Redirect to="/partner-hub?tab=roi" /></Route>
         <Route path="/partner-scorecard"><Redirect to="/partner-hub?tab=scorecard" /></Route>
         <Route path="/route-planner" component={() => <Page component={RoutePlanner} name="RoutePlanner" />} />
@@ -348,6 +357,10 @@ function AuthenticatedRoutes() {
         <Route path="/weekly-billing" component={() => <Page component={WeeklyBilling} name="WeeklyBilling" />} />
         <Route path="/document-builder" component={() => <Page component={DocumentBuilder} name="DocumentBuilder" />} />
         <Route path="/migration-center" component={() => <Page component={MigrationCenter} name="MigrationCenter" />} />
+        {/* Reports & BI Hub — tabs: overview | analytics | command-bi | predictive | nps | attribution.
+            /reports keeps its direct route so existing deep links like
+            #/reports?report=weekly-billing&print=1 still function. */}
+        <Route path="/reports-hub" component={() => <Page component={ReportsHub} name="ReportsHub" />} />
         <Route path="/reports" component={() => <Page component={Reports} name="Reports" />} />
         <Route path="/team-activity" component={() => <Page component={TeamActivity} name="TeamActivity" />} />
         <Route path="/ai-agent" component={() => <Page component={AIAgentCenter} name="AIAgentCenter" />} />
@@ -370,12 +383,14 @@ function AuthenticatedRoutes() {
 
         {/* Suite 4 — Insurance */}
         <Route path="/ai-supplement"><Redirect to="/supplement-hub?tab=engine" /></Route>
-        <Route path="/subrogation" component={() => <Page component={SubrogationTracker} name="SubrogationTracker" />} />
+        <Route path="/subrogation"><Redirect to="/supplement-hub?tab=subrogation" /></Route>
 
         {/* Suite 4 — Field Tech */}
         <Route path="/iot-drying"><Redirect to="/drying-hub?tab=iot" /></Route>
         <Route path="/iicrc-compliance"><Redirect to="/drying-hub?tab=iicrc" /></Route>
-        <Route path="/emergency-intake" component={() => <Page component={EmergencyIntake} name="EmergencyIntake" />} />
+        {/* Intake Hub — tabs: emergency | fnol | voice. */}
+        <Route path="/intake-hub" component={() => <Page component={IntakeHub} name="IntakeHub" />} />
+        <Route path="/emergency-intake"><Redirect to="/intake-hub?tab=emergency" /></Route>
         <Route path="/multilingual" component={() => <Page component={MultilingualCrew} name="MultilingualCrew" />} />
 
         {/* Suite 4 — Comms + Marketing */}
@@ -391,17 +406,17 @@ function AuthenticatedRoutes() {
         <Route path="/time-clock" component={() => <Page component={TimeClock} name="TimeClock" />} />
         <Route path="/departure-checklist"><Redirect to="/scheduling-hub?tab=departure" /></Route>
         <Route path="/appointment-reminders"><Redirect to="/scheduling-hub?tab=reminders" /></Route>
-        <Route path="/command-bi" component={() => <Page component={CommandBI} name="CommandBI" />} />
+        <Route path="/command-bi"><Redirect to="/reports-hub?tab=command-bi" /></Route>
         <Route path="/estimator-performance"><Redirect to="/profitability-hub?tab=estimators" /></Route>
         <Route path="/hazmat-flags"><Redirect to="/safety-hub?tab=hazmat" /></Route>
 
         {/* Suite 6 */}
         <Route path="/xact-audit"><Redirect to="/xactimate-hub?tab=audit" /></Route>
-        <Route path="/op-rebuttal" component={() => <Page component={OPRebuttal} name="OPRebuttal" />} />
+        <Route path="/op-rebuttal"><Redirect to="/supplement-hub?tab=op-rebuttal" /></Route>
         <Route path="/supplement-tracker"><Redirect to="/supplement-hub?tab=tracker" /></Route>
-        <Route path="/general-conditions" component={() => <Page component={GeneralConditions} name="GeneralConditions" />} />
+        <Route path="/general-conditions"><Redirect to="/supplement-hub?tab=general-conditions" /></Route>
         <Route path="/adjuster-ce"><Redirect to="/adjuster-hub?tab=ce" /></Route>
-        <Route path="/approved-claims" component={() => <Page component={ApprovedClaimsLibrary} name="ApprovedClaimsLibrary" />} />
+        <Route path="/approved-claims"><Redirect to="/supplement-hub?tab=approved-claims" /></Route>
         <Route path="/fleet" component={() => <Page component={FleetManager} name="FleetManager" />} />
 
         {/* Suite 7 — 11 Upgrades */}
@@ -431,18 +446,20 @@ function AuthenticatedRoutes() {
         <Route path="/cash-flow" component={() => <Page component={CashFlowCalendar} name="CashFlowCalendar" />} />
         <Route path="/payment-plans" component={() => <Page component={PaymentPlans} name="PaymentPlans" />} />
         <Route path="/safety-checklist"><Redirect to="/safety-hub?tab=checklist" /></Route>
-        <Route path="/nps-surveys" component={() => <Page component={NPSSurveys} name="NPSSurveys" />} />
+        <Route path="/nps-surveys"><Redirect to="/reports-hub?tab=nps" /></Route>
         <Route path="/tech-scorecard"><Redirect to="/technician-hub?tab=scorecard" /></Route>
         <Route path="/xactimate-alert"><Redirect to="/xactimate-hub?tab=alerts" /></Route>
         <Route path="/invoice-escalation" component={() => <Page component={InvoiceEscalation} name="InvoiceEscalation" />} />
         <Route path="/supplement-autodraft"><Redirect to="/supplement-hub?tab=draft" /></Route>
-        <Route path="/fnol-chatbot" component={() => <Page component={FNOLChatbot} name="FNOLChatbot" />} />
-        <Route path="/claim-file-checker" component={() => <Page component={ClaimFileChecker} name="ClaimFileChecker" />} />
+        <Route path="/fnol-chatbot"><Redirect to="/intake-hub?tab=fnol" /></Route>
+        <Route path="/claim-file-checker"><Redirect to="/supplement-hub?tab=file-checker" /></Route>
         <Route path="/carrier-escalation-ai"><Redirect to="/carrier-hub?tab=escalation" /></Route>
-        <Route path="/predictive-model" component={() => <Page component={PredictiveModel} name="PredictiveModel" />} />
+        <Route path="/predictive-model"><Redirect to="/reports-hub?tab=predictive" /></Route>
         <Route path="/iicrc-deviations"><Redirect to="/drying-hub?tab=deviations" /></Route>
-        <Route path="/coi-tracker" component={() => <Page component={COITracker} name="COITracker" />} />
-        <Route path="/subcontractors" component={() => <Page component={Subcontractors} name="Subcontractors" />} />
+        {/* Subcontractors Hub — tabs: roster | coi. */}
+        <Route path="/subcontractors-hub" component={() => <Page component={SubcontractorsHub} name="SubcontractorsHub" />} />
+        <Route path="/coi-tracker"><Redirect to="/subcontractors-hub?tab=coi" /></Route>
+        <Route path="/subcontractors"><Redirect to="/subcontractors-hub?tab=roster" /></Route>
         <Route path="/tech-lms"><Redirect to="/technician-hub?tab=lms" /></Route>
         <Route path="/dispatch-matrix"><Redirect to="/scheduling-hub?tab=dispatch" /></Route>
         <Route path="/global-search" component={() => <Page component={GlobalSearch} name="GlobalSearch" />} />
@@ -454,11 +471,10 @@ function AuthenticatedRoutes() {
         <Route path="/storm-cat"><Redirect to="/marketing-hub?tab=storm-cat" /></Route>
         <Route path="/margin-alert"><Redirect to="/profitability-hub?tab=margin-alert" /></Route>
         <Route path="/adjuster-profiler"><Redirect to="/adjuster-hub?tab=profiler" /></Route>
-        <Route path="/claim-explainer" component={() => <Page component={CustomerClaimExplainer} name="CustomerClaimExplainer" />} />
+        <Route path="/claim-explainer"><Redirect to="/supplement-hub?tab=explainer" /></Route>
         <Route path="/statute-demand"><Redirect to="/ar-hub?tab=statute" /></Route>
-        <Route path="/bid-intel" component={() => <Page component={CompetitiveBidIntel} name="CompetitiveBidIntel" />} />
-        <Route path="/voice-note" component={() => <Page component={VoiceToNote} name="VoiceToNote" />} />
-        <Route path="/photo-classifier" component={() => <Page component={PhotoClassifier} name="PhotoClassifier" />} />
+        <Route path="/bid-intel"><Redirect to="/supplement-hub?tab=bid-intel" /></Route>
+        <Route path="/voice-note"><Redirect to="/intake-hub?tab=voice" /></Route>
         <Route path="/marketing-suite"><Redirect to="/marketing-hub?tab=suite" /></Route>
         <Route path="/partner-value"><Redirect to="/partner-hub?tab=value" /></Route>
         <Route component={NotFound} />
