@@ -83,7 +83,9 @@ const LineItemLibrary = lazy(() => import("@/pages/LineItemLibrary"));
 const Profitability = lazy(() => import("@/pages/Profitability"));
 const WeeklyBilling = lazy(() => import("@/pages/WeeklyBilling"));
 const DocumentBuilder = lazy(() => import("@/pages/DocumentBuilder"));
-const MigrationCenter = lazy(() => import("@/pages/MigrationCenter"));
+// MigrationCenter removed from routing (not part of workflow). Page file is
+// preserved at client/src/pages/MigrationCenter.tsx for later restoration.
+// const MigrationCenter = lazy(() => import("@/pages/MigrationCenter"));
 const Reports = lazy(() => import("@/pages/Reports"));
 // Consolidated hubs — collapse many previous top-level sidebar entries.
 const ReportsHub = lazy(() => import("@/pages/ReportsHub"));
@@ -356,7 +358,6 @@ function AuthenticatedRoutes() {
         <Route path="/profitability"><Redirect to="/profitability-hub?tab=overview" /></Route>
         <Route path="/weekly-billing" component={() => <Page component={WeeklyBilling} name="WeeklyBilling" />} />
         <Route path="/document-builder" component={() => <Page component={DocumentBuilder} name="DocumentBuilder" />} />
-        <Route path="/migration-center" component={() => <Page component={MigrationCenter} name="MigrationCenter" />} />
         {/* Reports & BI Hub — tabs: overview | analytics | command-bi | predictive | nps | attribution.
             /reports keeps its direct route so existing deep links like
             #/reports?report=weekly-billing&print=1 still function. */}

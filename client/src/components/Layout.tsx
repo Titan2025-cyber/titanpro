@@ -17,7 +17,7 @@ import {
   ScanLine, Scale, Library, GraduationCap as GradCap, Truck, Route as RouteIcon, CalendarDays,
   Timer, User, Grid3X3, Building2, Banknote, HardDriveUpload,
   Droplets, Mic, FileSearch, UserRound, Trophy, UserCog, KeyRound,
-  FileSpreadsheet, ArrowRightLeft, QrCode, Handshake, ArrowLeft, LayoutDashboard as DashIcon,
+  FileSpreadsheet, QrCode, Handshake, ArrowLeft, LayoutDashboard as DashIcon,
   Package, Lock, Inbox,
   Trash2,
 } from "lucide-react";
@@ -176,9 +176,11 @@ const navGroups: NavGroup[] = [
       { href: "/bd-calendar", label: "BD Calendar", icon: CalendarDays, permission: "business-dev" },
       // Subcontractors Hub bundles the roster + COI/License tracker.
       { href: "/subcontractors-hub", label: "Subcontractors", icon: HardHat, permission: "business-dev" },
-      // — Builder & Migration —
+      // — Builder —
+      // Migration Center removed from the sidebar (not part of the day-to-day
+      // workflow). Page file is intentionally preserved so it can be restored
+      // later if needed — just re-add the route + sidebar entry.
       { href: "/document-builder", label: "Document Builder", icon: FileSpreadsheet, permission: "reports" },
-      { href: "/migration-center", label: "Migration Center", icon: ArrowRightLeft, permission: "finance" },
       { href: "/trash", label: "Trash", icon: Trash2, permission: "admin", adminOnly: true },
     ],
   },
