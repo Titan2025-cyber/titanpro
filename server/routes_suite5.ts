@@ -754,4 +754,131 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
       res.json(stats);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
+
+  // ── CALENDAR EVENTS ───────────────────────────────────────────
+  // Standalone entries on the schedule that are NOT tied to a job. Used
+  // for internal meetings, training, PTO days someone wants visible on
+  // dispatch, vendor visits, etc. Attendees are optional — stored as a
+  // JSON array of names so anyone (system user, subcontractor, or an
+  // ad-hoc "Homeowner Bob") can be tagged without needing to exist as a
+  // real record. Rendered by the Scheduling page alongside shifts.
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS calendar_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    event_date TEXT NOT NULL,
+    start_time TEXT,
+    end_time TEXT,
+    location TEXT,
+    notes TEXT,
+    attendees TEXT NOT NULL DEFAULT '[]',
+    color TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+
+  function parseAttendees(v: any): string[] {
+    if (Array.isArray(v)) return v.map(x => String(x || "").trim()).filter(Boolean);
+    if (typeof v === "string" && v.trim()) {
+      // Accept comma-separated strings too so the client can be lazy.
+      try { const j = JSON.parse(v); if (Array.isArray(j)) return j.map(x => String(x || "").trim()).filter(Boolean); } catch {}
+      return v.split(",").map(s => s.trim()).filter(Boolean);
+    }
+    return [];
+  }
+  function hydrateEvent(row: any) {
+    if (!row) return row;
+    let attendees: string[] = [];
+    try { attendees = JSON.parse(row.attendees || "[]"); } catch { attendees = []; }
+    return {
+      id: row.id,
+      title: row.title,
+      eventDate: row.event_date,
+      startTime: row.start_time || null,
+      endTime: row.end_time || null,
+      location: row.location || null,
+      notes: row.notes || null,
+      color: row.color || null,
+      attendees: Array.isArray(attendees) ? attendees : [],
+      createdBy: row.created_by || null,
+      createdAt: row.created_at,
+    };
+  }
+
+  app.get("/api/calendar-events", (req, res) => {
+    try {
+      const { start, end } = req.query as { start?: string; end?: string };
+      let rows: any[];
+      if (start && end) {
+        rows = sqlite.prepare("SELECT * FROM calendar_events WHERE event_date >= ? AND event_date <= ? ORDER BY event_date, COALESCE(start_time,'')").all(start, end) as any[];
+      } else {
+        rows = sqlite.prepare("SELECT * FROM calendar_events ORDER BY event_date DESC, COALESCE(start_time,'') LIMIT 500").all() as any[];
+      }
+      res.json(rows.map(hydrateEvent));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post("/api/calendar-events", (req, res) => {
+    try {
+      const b = req.body || {};
+      if (!b.title || !String(b.title).trim()) return res.status(400).json({ error: "title required" });
+      if (!b.eventDate) return res.status(400).json({ error: "eventDate required" });
+      const attendees = JSON.stringify(parseAttendees(b.attendees));
+      const createdBy = (req as any).user?.name || null;
+      const info = sqlite.prepare(`INSERT INTO calendar_events
+        (title, event_date, start_time, end_time, location, notes, attendees, color, created_by)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(
+        String(b.title).trim(),
+        b.eventDate,
+        b.startTime || null,
+        b.endTime || null,
+        b.location || null,
+        b.notes || null,
+        attendees,
+        b.color || null,
+        createdBy,
+      );
+      const row = sqlite.prepare("SELECT * FROM calendar_events WHERE id=?").get(info.lastInsertRowid) as any;
+      res.json(hydrateEvent(row));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.patch("/api/calendar-events/:id", (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const cur = sqlite.prepare("SELECT * FROM calendar_events WHERE id=?").get(id) as any;
+      if (!cur) return res.status(404).json({ error: "not found" });
+      const b = req.body || {};
+      const attendees = b.attendees !== undefined ? JSON.stringify(parseAttendees(b.attendees)) : cur.attendees;
+      sqlite.prepare(`UPDATE calendar_events SET
+        title = COALESCE(?, title),
+        event_date = COALESCE(?, event_date),
+        start_time = ?,
+        end_time = ?,
+        location = ?,
+        notes = ?,
+        attendees = ?,
+        color = ?
+        WHERE id = ?`).run(
+        b.title ?? null,
+        b.eventDate ?? null,
+        b.startTime !== undefined ? (b.startTime || null) : cur.start_time,
+        b.endTime   !== undefined ? (b.endTime   || null) : cur.end_time,
+        b.location  !== undefined ? (b.location  || null) : cur.location,
+        b.notes     !== undefined ? (b.notes     || null) : cur.notes,
+        attendees,
+        b.color     !== undefined ? (b.color     || null) : cur.color,
+        id,
+      );
+      const row = sqlite.prepare("SELECT * FROM calendar_events WHERE id=?").get(id) as any;
+      res.json(hydrateEvent(row));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete("/api/calendar-events/:id", (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const info = sqlite.prepare("DELETE FROM calendar_events WHERE id=?").run(id);
+      res.json({ ok: true, deleted: info.changes });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
 }
