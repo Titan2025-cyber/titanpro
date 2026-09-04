@@ -26,6 +26,7 @@ import Login from "@/pages/Login";
 import ForceEnroll2FA from "@/components/ForceEnroll2FA";
 import ForcePinChange from "@/components/ForcePinChange";
 import EnvBanner from "@/components/EnvBanner";
+import CommandPalette from "@/components/CommandPalette";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { PresenceTracker } from "@/lib/presence";
 import { LocationTracker } from "@/lib/locationTracker";
@@ -278,6 +279,10 @@ function AuthenticatedRoutes() {
   return (
     <AuthGate>
     <Layout>
+      {/* Global ⌘K / Ctrl-K palette — mounted inside <Router> so it can
+          navigate via wouter. Rendered as an overlay; no visible chrome
+          until the shortcut opens it. */}
+      <CommandPalette />
       <Suspense fallback={<PageLoader />}>
       <Switch>
         {/* Core */}
