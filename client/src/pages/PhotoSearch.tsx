@@ -282,41 +282,89 @@ export default function PhotoSearch() {
         </div>
       )}
 
-      {/* Lightbox */}
+      {/* Lightbox — same top-toolbar + scrollable-body layout as JobPhotos.
+          Hosted inside PhotosHub (which has a sticky header), so we rely on
+          a full-viewport fixed overlay + an inner overflow-y-auto region.
+          The old `items-center + max-h-[70vh]` layout clipped the bottom of
+          portrait photos on iOS Safari and left no room for the metadata
+          panel to scroll. Close (X) is the only affordance in the top-right;
+          "Open job" moved to a distinct button below the image so a mistap
+          near the close button no longer kicks the tech to a job page. */}
       {lightbox && (
-        <div className="fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-4" onClick={() => setLightbox(null)}>
-          <div className="max-w-5xl w-full bg-white rounded-lg overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="bg-slate-900 text-white px-4 py-2 flex items-center justify-between">
-              <div className="text-sm font-semibold truncate">{lightbox.caption || lightbox.filename}</div>
-              <div className="flex items-center gap-2">
-                <Button size="sm" variant="secondary" onClick={() => { navigate(`/jobs/${lightbox.jobId}`); setLightbox(null); }}>
-                  <ArrowRight className="w-3 h-3 mr-1"/> Open job
-                </Button>
-                <Button size="sm" variant="ghost" className="text-white hover:bg-white/10" onClick={() => setLightbox(null)}>
-                  <X className="w-4 h-4"/>
-                </Button>
-              </div>
+        <div
+          className="fixed inset-0 z-50 bg-black/95 flex flex-col"
+          onClick={() => setLightbox(null)}
+        >
+          {/* Top toolbar: title + close */}
+          <div
+            className="flex items-center justify-between px-3 py-2 border-b border-white/10 bg-black/60 backdrop-blur-sm gap-3"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="text-white text-sm font-medium truncate">
+              {lightbox.caption || lightbox.filename}
             </div>
-            <div className="bg-black flex items-center justify-center max-h-[70vh]">
-              {lightbox.dataUrl && <img src={lightbox.dataUrl} alt={lightbox.caption || lightbox.filename} className="max-h-[70vh] object-contain"/>}
-            </div>
-            <div className="p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-              <div><div className="text-slate-500 uppercase text-[10px]">Job</div><div className="font-medium">#{lightbox.jobNumber || lightbox.jobId}</div></div>
-              <div><div className="text-slate-500 uppercase text-[10px]">Customer</div><div className="font-medium truncate">{lightbox.customerName || "—"}</div></div>
-              <div><div className="text-slate-500 uppercase text-[10px]">Room</div><div className="font-medium">{lightbox.room || "—"}</div></div>
-              <div><div className="text-slate-500 uppercase text-[10px]">Damage</div><div className="font-medium">{lightbox.damageType || "—"}</div></div>
-              <div><div className="text-slate-500 uppercase text-[10px]">Category</div><div className="font-medium">{lightbox.category || "—"}</div></div>
-              <div><div className="text-slate-500 uppercase text-[10px]">Phase</div><div className="font-medium">{lightbox.phase || "—"}</div></div>
-              <div><div className="text-slate-500 uppercase text-[10px]">Taken</div><div className="font-medium">{(lightbox.originalTakenAt || lightbox.takenAt || "").slice(0, 16).replace("T", " ") || "—"}</div></div>
-              <div><div className="text-slate-500 uppercase text-[10px]">Address</div><div className="font-medium truncate">{lightbox.jobAddress || "—"}</div></div>
-              {(lightbox.latitude && lightbox.longitude) && (
-                <div className="col-span-2 md:col-span-4">
-                  <div className="text-slate-500 uppercase text-[10px]">GPS</div>
-                  <a href={`https://maps.google.com/?q=${lightbox.latitude},${lightbox.longitude}`} target="_blank" rel="noreferrer" className="text-teal-700 hover:underline flex items-center gap-1">
-                    <MapPin className="w-3 h-3"/> {lightbox.latitude.toFixed(5)}, {lightbox.longitude.toFixed(5)}
-                  </a>
-                </div>
+            <button
+              type="button"
+              className="h-10 w-10 shrink-0 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors"
+              onClick={() => setLightbox(null)}
+              aria-label="Close"
+              data-testid="button-photosearch-lightbox-close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Scrollable body: image + metadata + open-job action */}
+          <div
+            className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
+            onClick={() => setLightbox(null)}
+            style={{ WebkitOverflowScrolling: "touch" as any }}
+          >
+            <div
+              className="max-w-3xl w-full mx-auto px-4 pt-4 pb-10"
+              onClick={e => e.stopPropagation()}
+            >
+              {lightbox.dataUrl && (
+                <img
+                  src={lightbox.dataUrl}
+                  alt={lightbox.caption || lightbox.filename}
+                  className="w-full h-auto rounded-lg object-contain select-none bg-black"
+                  style={{ touchAction: "pan-y" }}
+                  draggable={false}
+                />
               )}
+
+              <div className="mt-4 bg-white/95 rounded-lg p-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                  <div><div className="text-slate-500 uppercase text-[10px]">Job</div><div className="font-medium">#{lightbox.jobNumber || lightbox.jobId}</div></div>
+                  <div><div className="text-slate-500 uppercase text-[10px]">Customer</div><div className="font-medium truncate">{lightbox.customerName || "—"}</div></div>
+                  <div><div className="text-slate-500 uppercase text-[10px]">Room</div><div className="font-medium">{lightbox.room || "—"}</div></div>
+                  <div><div className="text-slate-500 uppercase text-[10px]">Damage</div><div className="font-medium">{lightbox.damageType || "—"}</div></div>
+                  <div><div className="text-slate-500 uppercase text-[10px]">Category</div><div className="font-medium">{lightbox.category || "—"}</div></div>
+                  <div><div className="text-slate-500 uppercase text-[10px]">Phase</div><div className="font-medium">{lightbox.phase || "—"}</div></div>
+                  <div><div className="text-slate-500 uppercase text-[10px]">Taken</div><div className="font-medium">{(lightbox.originalTakenAt || lightbox.takenAt || "").slice(0, 16).replace("T", " ") || "—"}</div></div>
+                  <div><div className="text-slate-500 uppercase text-[10px]">Address</div><div className="font-medium truncate">{lightbox.jobAddress || "—"}</div></div>
+                  {(lightbox.latitude && lightbox.longitude) && (
+                    <div className="col-span-2 md:col-span-4">
+                      <div className="text-slate-500 uppercase text-[10px]">GPS</div>
+                      <a href={`https://maps.google.com/?q=${lightbox.latitude},${lightbox.longitude}`} target="_blank" rel="noreferrer" className="text-teal-700 hover:underline flex items-center gap-1">
+                        <MapPin className="w-3 h-3"/> {lightbox.latitude.toFixed(5)}, {lightbox.longitude.toFixed(5)}
+                      </a>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-3 pt-3 border-t flex justify-end">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => { navigate(`/jobs/${lightbox.jobId}`); setLightbox(null); }}
+                    data-testid="button-photosearch-open-job"
+                  >
+                    <ArrowRight className="w-3 h-3 mr-1"/> Open job #{lightbox.jobNumber || lightbox.jobId}
+                  </Button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
