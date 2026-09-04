@@ -1049,9 +1049,16 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
       {lightbox && (
         <div
           ref={lightboxScrollRef}
-          className="fixed inset-0 z-50 bg-black/95 overflow-y-auto overscroll-contain"
+          className="fixed inset-0 z-50 bg-black/95 overflow-y-scroll overscroll-contain"
           style={{ WebkitOverflowScrolling: "touch" as any }}
           data-testid="lightbox-root"
+          onClick={e => {
+            // Clicking the black backdrop area (not the content column)
+            // closes the viewer. We use event delegation here so we don't
+            // need a separate absolutely-positioned button eating scroll
+            // gestures on desktop.
+            if (e.target === e.currentTarget) setLightbox(null);
+          }}
         >
           {/* Sticky top toolbar: prev/next + counter + close.
               `sticky top-0` keeps it pinned during scroll on iOS where a
@@ -1096,25 +1103,14 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
             </button>
           </div>
 
-          {/* Invisible backdrop close-layer. Sits behind the content column
-              and covers the scrollable area so tapping the black margin
-              closes the lightbox, but scroll gestures on the content
-              itself don't dismiss it. `pointer-events-auto` on this layer,
-              content column stops propagation. */}
-          <button
-            type="button"
-            aria-label="Close photo viewer"
-            className="absolute inset-0 w-full h-full cursor-zoom-out"
-            style={{ background: "transparent" }}
-            onClick={() => setLightbox(null)}
-            tabIndex={-1}
-          />
-
-          {/* Content column — sits above the backdrop button (relative + z-10).
-              Extra bottom padding respects the iOS home-indicator so the
-              last field / button is never covered. */}
+          {/* Content column. Backdrop-close is handled by the parent's
+              onClick (event delegation on e.target === e.currentTarget)
+              so we don't need an absolutely positioned close-button layer
+              that captures desktop wheel/scroll events. Extra bottom
+              padding respects the iOS home-indicator so the last field
+              is never covered. */}
           <div
-            className="relative z-10 max-w-3xl w-full mx-auto px-4 pt-4"
+            className="max-w-3xl w-full mx-auto px-4 pt-4"
             style={{ paddingBottom: "calc(2.5rem + env(safe-area-inset-bottom))" }}
             onClick={e => e.stopPropagation()}
           >
