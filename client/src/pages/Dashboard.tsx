@@ -3,6 +3,7 @@ import { useState } from "react";
 import titanLogo from "@/assets/titan-logo.png";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
+import SetupChecklist from "@/components/SetupChecklist";
 import { Link } from "wouter";
 import {
   Briefcase, FileText, DollarSign, AlertCircle, Plus, Phone, TrendingUp,
@@ -449,6 +450,12 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       )}
+
+      {/* First-run setup checklist — owner/admin only; self-hides once every
+          required item is done or when the user dismisses it. Sits above
+          KPIs so a fresh tenant sees actionable next steps before empty
+          revenue widgets. */}
+      {isOwner && <SetupChecklist />}
 
       {/* KPI Cards — owner-only. These expose revenue, A/R, payouts and
           overall pipeline value; non-owner staff (admin/sales/tech) don't

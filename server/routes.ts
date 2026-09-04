@@ -3089,6 +3089,108 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const estGrandTotal = +items.reduce((s, i) => s + (i.estCost || 0), 0).toFixed(2);
     res.json({ count: items.length, items, groups, estGrandTotal });
   });
+  // ── First-run setup checklist ─────────────────────────────────────────────
+  // Powers the onboarding card on the Dashboard. Each item is either
+  // "done", "todo", or "optional". Deliberately owner/admin only so techs
+  // don't see setup prompts they can't act on.
+  app.get("/api/setup/checklist", requireRole("owner", "admin", "general_manager"), (_req, res) => {
+    const jobCount = (sqlite.prepare("SELECT COUNT(*) c FROM jobs").get() as any)?.c || 0;
+    const contactCount = (sqlite.prepare("SELECT COUNT(*) c FROM contacts").get() as any)?.c || 0;
+    const userCount = (sqlite.prepare("SELECT COUNT(*) c FROM employees WHERE is_active = 1").get() as any)?.c || 0;
+    const gmailConnected = (sqlite.prepare("SELECT COUNT(*) c FROM employees WHERE gmail_connected = 1").get() as any)?.c || 0;
+    let priceListCount = 0;
+    try { priceListCount = (sqlite.prepare("SELECT COUNT(*) c FROM line_item_library").get() as any)?.c || 0; } catch { /* table may not exist yet */ }
+    let estimateCount = 0;
+    try { estimateCount = (sqlite.prepare("SELECT COUNT(*) c FROM estimates").get() as any)?.c || 0; } catch { /* ignore */ }
+    const providers = providerStatus();
+
+    const items = [
+      {
+        key: "invite_team",
+        title: "Invite your team",
+        description: "Add each employee, tech, and office user under User Management.",
+        cta: { label: "Open User Management", href: "/#/user-management" },
+        status: userCount >= 2 ? "done" : "todo",
+        detail: userCount >= 2 ? `${userCount} active users` : "Only 1 active user — add your team.",
+      },
+      {
+        key: "connect_gmail",
+        title: "Connect a company Gmail",
+        description: "Emails to customers and adjusters send from your real Gmail instead of a no-reply address.",
+        cta: { label: "Open Integrations", href: "/#/integrations" },
+        status: gmailConnected >= 1 ? "done" : "todo",
+        detail: gmailConnected >= 1 ? `${gmailConnected} account(s) connected ` : "No Gmail account connected.",
+      },
+      {
+        key: "maps_api",
+        title: "Add a Google Maps API key",
+        description: "Enables address lookup, geocoding, and the service-area map.",
+        cta: { label: "See setup notes", href: "/#/integrations" },
+        status: process.env.GOOGLE_MAPS_API_KEY ? "done" : "todo",
+        detail: process.env.GOOGLE_MAPS_API_KEY ? "Key present in environment" : "GOOGLE_MAPS_API_KEY missing on server.",
+      },
+      {
+        key: "import_price_list",
+        title: "Import your price list",
+        description: "Your Xactimate-style lines power estimates and invoices.",
+        cta: { label: "Open Line Item Library", href: "/#/line-items" },
+        status: priceListCount >= 25 ? "done" : "todo",
+        detail: priceListCount >= 25 ? `${priceListCount} items in the library` : `Only ${priceListCount} items — import a CSV.`,
+      },
+      {
+        key: "create_first_job",
+        title: "Create your first job",
+        description: "Every workflow (estimates, shifts, drying, invoices) starts from a job.",
+        cta: { label: "Open Jobs", href: "/#/jobs" },
+        status: jobCount >= 1 ? "done" : "todo",
+        detail: jobCount >= 1 ? `${jobCount} job(s) in the system` : "No jobs yet.",
+      },
+      {
+        key: "add_contact",
+        title: "Add a customer contact",
+        description: "Contacts show up in jobs, portals, and marketing touchpoints.",
+        cta: { label: "Open Contacts", href: "/#/contacts" },
+        status: contactCount >= 1 ? "done" : "todo",
+        detail: contactCount >= 1 ? `${contactCount} contact(s)` : "No contacts yet.",
+      },
+      {
+        key: "email_provider",
+        title: "Verify email delivery",
+        description: "Configure SMTP or SendGrid on Railway if no employee has connected Gmail. Otherwise the Gmail integration is enough.",
+        cta: { label: "Open Notify Settings", href: "/#/settings" },
+        status: providers.email.live || gmailConnected >= 1 ? "done" : "todo",
+        detail: providers.email.live ? `Live via ${providers.email.provider}` : (gmailConnected >= 1 ? "Sends via employee Gmail" : "No email transport configured."),
+      },
+      {
+        key: "sms_provider",
+        title: "Enable SMS (optional)",
+        description: "Twilio env vars unlock text-message notifications to techs and customers.",
+        cta: { label: "Open Notify Settings", href: "/#/settings" },
+        status: providers.sms.live ? "done" : "optional",
+        detail: providers.sms.live ? "Twilio configured" : "Not configured (optional).",
+      },
+      {
+        key: "create_first_estimate",
+        title: "Send your first estimate",
+        description: "Try the estimate builder end-to-end so you know the customer‑facing flow works for your business.",
+        cta: { label: "Open Estimates", href: "/#/estimates" },
+        status: estimateCount >= 1 ? "done" : "optional",
+        detail: estimateCount >= 1 ? `${estimateCount} estimate(s) created` : "No estimates yet.",
+      },
+    ];
+
+    const doneCount = items.filter(i => i.status === "done").length;
+    const total = items.filter(i => i.status !== "optional" || i.status === "done").length;
+    // Show the checklist until every non-optional item is done.
+    const remainingRequired = items.filter(i => i.status === "todo").length;
+    res.json({
+      items,
+      doneCount,
+      total,
+      complete: remainingRequired === 0,
+    });
+  });
+
   // ── Notification settings + provider status + test send ────────────────────
   app.get("/api/notify/settings", requireStaffAuth, (_req, res) => {
     res.json({ settings: getNotifySettings(sqlite), providers: providerStatus() });

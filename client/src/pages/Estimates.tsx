@@ -176,7 +176,25 @@ export default function Estimates() {
               </Card>
             );
           })}
-          {estimates.length === 0 && <p className="text-sm text-muted-foreground text-center py-8">No estimates yet.</p>}
+          {estimates.length === 0 && (
+            <div className="col-span-full rounded-lg border border-dashed border-border/60 bg-card/40 px-6 py-16 text-center">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
+                <FileText className="h-6 w-6 text-primary" />
+              </div>
+              <h3 className="mt-4 text-sm font-semibold text-foreground">No estimates yet</h3>
+              <p className="mt-1 text-xs text-muted-foreground max-w-sm mx-auto">
+                Estimates pull from your Line Item Library and can be sent to customers for approval and turned into invoices.
+              </p>
+              <div className="mt-4 flex items-center justify-center gap-2">
+                <Button size="sm" onClick={() => setOpen(true)} className="bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red-dark))] text-white">
+                  <Plus className="w-4 h-4 mr-1" /> Create your first estimate
+                </Button>
+                <Link href="/line-items">
+                  <Button size="sm" variant="outline">Review price list</Button>
+                </Link>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
