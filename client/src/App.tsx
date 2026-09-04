@@ -185,6 +185,7 @@ const JobAgeAlerts = lazy(() => import("@/pages/JobAgeAlerts"));
 const Integrations = lazy(() => import("@/pages/Integrations"));
 const UserManagement = lazy(() => import("@/pages/UserManagement"));
 const Security = lazy(() => import("@/pages/Security"));
+const NotificationSettings = lazy(() => import("@/pages/NotificationSettings"));
 const Terms = lazy(() => import("@/pages/Terms"));
 const Privacy = lazy(() => import("@/pages/Privacy"));
 
@@ -438,6 +439,7 @@ function AuthenticatedRoutes() {
         {/* User Management */}
         <Route path="/user-management" component={() => <Page component={UserManagement} name="UserManagement" />} />
         <Route path="/security" component={() => <Page component={Security} name="Security" />} />
+        <Route path="/notification-settings" component={() => <Page component={NotificationSettings} name="NotificationSettings" />} />
         <Route path="/audit-log" component={() => <Page component={AuditLog} name="AuditLog" />} />
         <Route path="/integrations" component={() => <Page component={Integrations} name="Integrations" />} />
         {/* /settings landed on a raw dev-facing 404. Redirect to Integrations,

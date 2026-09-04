@@ -72,6 +72,9 @@ export async function sendShiftAssignmentEmail(sqlite: Database, input: ShiftAss
     if (!emailLive) return; // No SMTP/Gmail configured — bail cleanly.
     const [rec] = resolveEmails(sqlite, [input.techName]);
     if (!rec) return;
+    // Respect per-user notification preferences.
+    const { isNotifEnabledForName } = await import("./notify_prefs");
+    if (!isNotifEnabledForName(sqlite, input.techName, "email", "shift_assigned")) return;
 
     const origin = appOrigin();
     const jobLabel = input.job?.jobNumber ? `Job ${input.job.jobNumber}` : "a job";
@@ -135,7 +138,14 @@ export async function sendEventTagEmails(sqlite: Database, input: EventAttendeeI
   try {
     if (!emailLive) return;
     if (input.attendeeNames.length === 0) return;
-    const recs = resolveEmails(sqlite, input.attendeeNames);
+    // Respect per-user preferences — filter attendee list first, then
+    // resolve emails. This keeps the audit-neutral behavior: users who
+    // opted out simply don't get a copy; other attendees still do.
+    const { isNotifEnabledForName } = await import("./notify_prefs");
+    const optedInNames = input.attendeeNames.filter((n) =>
+      isNotifEnabledForName(sqlite, n, "email", "event_tagged"));
+    if (optedInNames.length === 0) return;
+    const recs = resolveEmails(sqlite, optedInNames);
     if (recs.length === 0) return;
 
     const origin = appOrigin();

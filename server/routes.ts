@@ -25,6 +25,7 @@ import { registerHRRoutes } from "./routes_hr";
 import { registerGmailRoutes } from "./routes_gmail";
 import { registerPresenceRoutes } from "./routes_presence";
 import { sendEmail, sendSms, getNotifySettings, saveNotifySettings, providerStatus } from "./notify";
+import { ensureNotifPrefsTable, getPrefsMatrix, setPref, NOTIF_CHANNELS, NOTIF_EVENTS } from "./notify_prefs";
 import { geocodeJobInBackground, geocoderStatus } from "./geocoder";
 import { lookupProperty } from "./property_lookup";
 import { startScheduler, runSchedulerNow } from "./scheduler";
@@ -3296,6 +3297,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       doneCount,
       total,
       complete: remainingRequired === 0,
+    });
+  });
+
+  // ── Per-user notification preferences ─────────────────────────────────
+  // Each employee can decide which notifications they want, per channel
+  // (bell / email / sms) and per event type. Backend integrations already
+  // check these prefs before sending, so opting out is truly silent.
+  ensureNotifPrefsTable(sqlite);
+
+  app.get("/api/notify/preferences", requireStaffAuth, (req: any, res) => {
+    const emp = req.employee;
+    if (!emp?.id) return res.status(401).json({ error: "Unauthenticated" });
+    res.json({
+      employeeId: emp.id,
+      channels: NOTIF_CHANNELS,
+      events: NOTIF_EVENTS,
+      matrix: getPrefsMatrix(sqlite, emp.id),
+    });
+  });
+
+  app.patch("/api/notify/preferences", requireStaffAuth, (req: any, res) => {
+    const emp = req.employee;
+    if (!emp?.id) return res.status(401).json({ error: "Unauthenticated" });
+    // Body: { updates: [{ channel, event, enabled }, ...] }
+    const updates = Array.isArray(req.body?.updates) ? req.body.updates : [];
+    let applied = 0;
+    for (const u of updates) {
+      if (!NOTIF_CHANNELS.includes(u.channel)) continue;
+      if (!NOTIF_EVENTS.includes(u.event)) continue;
+      setPref(sqlite, emp.id, u.channel, u.event, !!u.enabled);
+      applied++;
+    }
+    res.json({
+      applied,
+      matrix: getPrefsMatrix(sqlite, emp.id),
     });
   });
 

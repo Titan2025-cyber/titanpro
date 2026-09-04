@@ -75,8 +75,13 @@ export async function sendMentionEmails(
       )
       .all(...input.recipientEmployeeIds);
 
+    // Respect per-user notification preferences before we even look at
+    // email addresses — an opted-out user should never appear as a
+    // recipient regardless of whether they have a linked Gmail address.
+    const { isNotifEnabled } = await import("./notify_prefs");
     const recipients = rows
       .filter(r => r.gmail_email && String(r.gmail_email).includes("@"))
+      .filter(r => isNotifEnabled(sqlite, r.id, "email", "mentioned"))
       .map(r => ({ id: r.id, name: r.name as string, email: r.gmail_email as string }));
 
     result.skipped = input.recipientEmployeeIds.length - recipients.length;
