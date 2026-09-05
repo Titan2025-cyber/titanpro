@@ -272,9 +272,16 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
   });
 
   // ── Lien Waivers ─────────────────────────────────────────────────────────────
+  // Supports an optional ?jobId=N filter so JobDetail’s Lien Waivers tab
+  // can render only the waivers for the job it’s displaying, instead of
+  // pulling every waiver in the system and filtering client-side.
   app.get("/api/lien-waivers", (req, res) => {
     try {
-      const rows = sqlite.prepare("SELECT * FROM lien_waivers ORDER BY id DESC").all();
+      const jobIdParam = req.query.jobId;
+      const jobId = jobIdParam ? parseInt(String(jobIdParam), 10) : NaN;
+      const rows = Number.isFinite(jobId)
+        ? sqlite.prepare("SELECT * FROM lien_waivers WHERE job_id=? ORDER BY id DESC").all(jobId)
+        : sqlite.prepare("SELECT * FROM lien_waivers ORDER BY id DESC").all();
       res.json(rows);
     } catch { res.json([]); }
   });

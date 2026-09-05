@@ -8,6 +8,7 @@ import { JobAnalytics } from "@/components/JobAnalytics";
 import { JobCostingPanel } from "@/pages/JobCosting";
 import { SupplementPanel } from "@/pages/Supplements";
 import { SafetyPanel } from "@/pages/Safety";
+import { LienWaiversPanel } from "@/pages/LienWaivers";
 // PDF-heavy components (they pull jsPDF, ~600KB) are lazy-loaded so the
 // pdf bundle downloads only when the user opens the relevant tab — not on
 // every JobDetail page view.
@@ -1436,6 +1437,7 @@ export default function JobDetail() {
           <TabsTrigger value="warranty"><Wrench className="w-3 h-3 mr-1 inline-block" />Warranty Calls</TabsTrigger>
           {hasReferralPartner && <TabsTrigger value="referral-payout"><HandCoins className="w-3 h-3 mr-1 inline-block" />Referral Payout</TabsTrigger>}
           <TabsTrigger value="sms-thread"><MessageSquare className="w-3 h-3 mr-1 inline-block" />SMS Thread</TabsTrigger>
+          <TabsTrigger value="lien-waivers"><ShieldCheck className="w-3 h-3 mr-1 inline-block" />Lien Waivers</TabsTrigger>
         </TabsList>
 
         {/* ── Activity Tab ── */}
@@ -2048,6 +2050,10 @@ export default function JobDetail() {
         <TabsContent value="costing" className="mt-4"><JobCostingPanel jobId={Number(id)} phase={phaseFilter} /></TabsContent>
         <TabsContent value="supplements" className="mt-4"><SupplementPanel jobId={Number(id)} job={job} /></TabsContent>
         <TabsContent value="safety" className="mt-4"><SafetyPanel jobId={Number(id)} /></TabsContent>
+        {/* Lien Waivers used to live at /lien-waivers as a global list.
+            The route still resolves; day-to-day authoring now happens in
+            job context, so the tab is where waivers actually get written. */}
+        <TabsContent value="lien-waivers" className="mt-4"><LienWaiversPanel jobId={Number(id)} /></TabsContent>
         <TabsContent value="dry-report" className="mt-4"><Suspense fallback={<TabLoading />}><DryStandardReportGenerator job={job} jobId={Number(id)} /></Suspense></TabsContent>
         <TabsContent value="warranty" className="mt-4">
           <WarrantyCallPanel

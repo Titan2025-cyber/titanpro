@@ -30,6 +30,198 @@ const STATUS_COLORS: Record<string, string> = {
 const GA_STATUTE = "O.C.G.A. § 44-14-366 — Georgia Materialman's and Mechanic's Lien Law";
 const SC_STATUTE = "S.C. Code § 29-5-10 — South Carolina Mechanics' and Materialmen's Lien Act";
 
+/**
+ * Job-scoped Lien Waivers panel for use inside JobDetail's tab strip.
+ *
+ * Same authoring surface as the global page below, but pre-filters the
+ * server query (`?jobId=N`) and hides the Job picker in the create
+ * dialog since the job is already known.
+ */
+export function LienWaiversPanel({ jobId }: { jobId: number }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({
+    waiverType: "conditional_progress",
+    state: "GA",
+    throughDate: "",
+    amount: "",
+    signerName: "",
+    signerTitle: "",
+    notes: "",
+  });
+
+  const { data: waivers = [], isLoading } = useQuery<any[]>({
+    queryKey: ["/api/lien-waivers", { jobId }],
+    queryFn: () => apiRequest(`/api/lien-waivers?jobId=${jobId}`).then(r => r.json()),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (data: any) => apiRequest("/api/lien-waivers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/lien-waivers", { jobId }] });
+      queryClient.invalidateQueries({ queryKey: ["/api/lien-waivers"] });
+      setOpen(false);
+      setForm({ waiverType: "conditional_progress", state: "GA", throughDate: "", amount: "", signerName: "", signerTitle: "", notes: "" });
+      toast({ title: "Lien waiver created" });
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: any) => apiRequest(`/api/lien-waivers/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/lien-waivers", { jobId }] });
+      toast({ title: "Waiver updated" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => apiRequest(`/api/lien-waivers/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/lien-waivers", { jobId }] });
+      toast({ title: "Waiver deleted" });
+    },
+  });
+
+  function generateWaiver(w: any) {
+    const statute = w.state === "SC" ? SC_STATUTE : GA_STATUTE;
+    const wType = WAIVER_TYPES[w.waiver_type];
+    const lines = [
+      `LIEN WAIVER — ${wType?.label?.toUpperCase()}`,
+      `State of ${w.state === "SC" ? "South Carolina" : "Georgia"}`,
+      "Titan Restoration LLC",
+      "Augusta, GA | 706-922-0154 | titanrestorationllc.com",
+      "=".repeat(60),
+      "",
+      `Job: TP-${String(w.job_id).padStart(4, "0")}`,
+      `Waiver Type: ${wType?.label}`,
+      `Through Date: ${w.through_date || "N/A"}`,
+      `Amount: $${(w.amount || 0).toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
+      "",
+      "WAIVER LANGUAGE",
+      "─".repeat(60),
+      `The undersigned, upon receipt of the sum stated above, hereby waives and releases any and all lien or claim of lien on the above-referenced property for labor, services, or materials furnished through the Through Date stated above.`,
+      "",
+      wType?.description,
+      "",
+      "APPLICABLE STATUTE",
+      statute,
+      "",
+      "SIGNATURE",
+      `Signer: ${w.signer_name || "_______________________"}`,
+      `Title: ${w.signer_title || "_______________________"}`,
+      `Date Signed: ${w.signed_at ? fmtDateShort(w.signed_at) : "_______________________"}`,
+      "",
+      w.notes ? `Notes: ${w.notes}` : "",
+      "",
+      `Generated: ${new Date().toLocaleString()}`,
+    ];
+    const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `lien-waiver-TP${String(w.job_id).padStart(4, "0")}-${w.waiver_type}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({ title: "Waiver document downloaded" });
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h3 className="text-base font-semibold flex items-center gap-2">
+            <FileCheck className="w-4 h-4 text-primary" /> Lien Waivers for this job
+          </h3>
+          <p className="text-xs text-muted-foreground">GA & SC statutory waivers — draft, track, and download</p>
+        </div>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogTrigger asChild>
+            <Button size="sm" data-testid="button-new-waiver-tab"><Plus className="w-3.5 h-3.5 mr-1" />New Waiver</Button>
+          </DialogTrigger>
+          <DialogContent className="max-w-lg">
+            <DialogHeader><DialogTitle>New Lien Waiver</DialogTitle></DialogHeader>
+            <div className="space-y-4 mt-2">
+              <div>
+                <Label>State</Label>
+                <Select value={form.state} onValueChange={v => setForm({ ...form, state: v })}>
+                  <SelectTrigger data-testid="select-state-tab"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="GA">Georgia</SelectItem><SelectItem value="SC">South Carolina</SelectItem></SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Waiver Type</Label>
+                <Select value={form.waiverType} onValueChange={v => setForm({ ...form, waiverType: v })}>
+                  <SelectTrigger data-testid="select-type-tab"><SelectValue /></SelectTrigger>
+                  <SelectContent>{Object.entries(WAIVER_TYPES).map(([k, v]) => <SelectItem key={k} value={k}>{v.label}</SelectItem>)}</SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">{WAIVER_TYPES[form.waiverType]?.description}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Through Date</Label><Input type="date" value={form.throughDate} onChange={e => setForm({ ...form, throughDate: e.target.value })} /></div>
+                <div><Label>Amount ($)</Label><Input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} /></div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Signer Name</Label><Input value={form.signerName} onChange={e => setForm({ ...form, signerName: e.target.value })} /></div>
+                <div><Label>Signer Title</Label><Input value={form.signerTitle} onChange={e => setForm({ ...form, signerTitle: e.target.value })} /></div>
+              </div>
+              <div><Label>Notes</Label><Textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} /></div>
+              <Button className="w-full" onClick={() => createMutation.mutate({ jobId, waiverType: form.waiverType, state: form.state, throughDate: form.throughDate || null, amount: form.amount ? parseFloat(form.amount) : null, signerName: form.signerName, signerTitle: form.signerTitle, notes: form.notes })} disabled={createMutation.isPending}>Create Waiver</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      <Card className="bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800">
+        <CardContent className="p-3 text-xs text-amber-800 dark:text-amber-400 space-y-1">
+          <p><b>GA:</b> {GA_STATUTE} — Unconditional waivers must be recorded within 60 days.</p>
+          <p><b>SC:</b> {SC_STATUTE} — Lien must be filed within 90 days of last furnishing.</p>
+        </CardContent>
+      </Card>
+
+      {isLoading ? (
+        <p className="text-center py-6 text-muted-foreground text-sm">Loading…</p>
+      ) : waivers.length === 0 ? (
+        <Card><CardContent className="py-10 text-center">
+          <FileCheck className="w-10 h-10 mx-auto mb-2 text-muted-foreground opacity-30" />
+          <p className="text-sm text-muted-foreground">No lien waivers yet for this job.</p>
+        </CardContent></Card>
+      ) : (
+        <div className="space-y-2">
+          {waivers.map((w: any) => (
+            <Card key={w.id} data-testid={`waiver-tab-${w.id}`}>
+              <CardContent className="p-3">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono text-sm font-bold">LW-{String(w.id).padStart(4, "0")}</span>
+                      <Badge className={STATUS_COLORS[w.status] || ""}>{w.status}</Badge>
+                      <Badge variant="outline">{w.state}</Badge>
+                    </div>
+                    <p className="text-sm font-medium mt-1">{WAIVER_TYPES[w.waiver_type]?.label}</p>
+                    <div className="flex gap-3 text-xs text-muted-foreground mt-0.5 flex-wrap">
+                      {w.amount && <span>${(w.amount).toLocaleString()}</span>}
+                      {w.through_date && <span>Through: {fmtDateShort(w.through_date)}</span>}
+                      {w.signer_name && <span>Signer: {w.signer_name}</span>}
+                    </div>
+                  </div>
+                  <div className="flex gap-2 items-center shrink-0">
+                    <Select defaultValue={w.status} onValueChange={v => updateMutation.mutate({ id: w.id, data: { status: v } })}>
+                      <SelectTrigger className="h-8 text-xs w-28"><SelectValue /></SelectTrigger>
+                      <SelectContent>{["draft", "sent", "signed", "filed"].map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+                    </Select>
+                    <Button size="sm" variant="outline" onClick={() => generateWaiver(w)}><Download className="w-3 h-3 mr-1" />Generate</Button>
+                    <Button size="sm" variant="ghost" className="text-red-500" onClick={() => deleteMutation.mutate(w.id)}>×</Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function LienWaivers() {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
