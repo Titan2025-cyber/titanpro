@@ -96,9 +96,6 @@ const navGroups: NavGroup[] = [
       // Photos Hub (capture + search + AI classify) replaces three separate items.
       { href: "/photos-hub", label: "Photos", icon: Camera, permission: "photos" },
       { href: "/inspections", label: "Pre-Job Inspections", icon: ClipboardList, permission: "technician" },
-      // Route Planner — crew tool for who's visiting which job today. Moved
-      // here from Business Dev where nobody actually opened it.
-      { href: "/route-planner", label: "Route Planner", icon: RouteIcon, permission: "route-planner" },
       // Subcontractors + COI vault — compliance is a Field Ops concern.
       { href: "/subcontractors-hub", label: "Subcontractors", icon: HardHat, permission: "business-dev" },
       // Removed from sidebar (routes preserved so bookmarks still work):
@@ -182,13 +179,15 @@ const navGroups: NavGroup[] = [
       { href: "/contacts", label: "Contacts", icon: Users, permission: "contacts" },
       { href: "/partner-hub", label: "Partners", icon: Handshake, permission: "partner-portal" },
       { href: "/marketing-hub", label: "Marketing", icon: Megaphone, permission: "marketing" },
+      // Route Planner — canvassing / partner-visit routing lives with BD
+      // (Cody: "it's a marketing tool, not a crew tool").
+      { href: "/route-planner", label: "Route Planner", icon: RouteIcon, permission: "route-planner" },
       { href: "/follow-ups", label: "Follow-Ups", icon: Bell, permission: "follow-ups" },
       { href: "/reviews", label: "Review Requests", icon: Star, permission: "follow-ups" },
       // Calendar (was BD Calendar) — now has per-person and per-type filters.
       { href: "/bd-calendar", label: "Calendar", icon: CalendarDays, permission: "business-dev" },
       // Removed from sidebar (routes preserved):
       //   /partner-portal-setup — moved to Settings (setup wizard, not daily surface)
-      //   /route-planner        — moved to Field Ops (crew tool)
       //   /subcontractors-hub   — moved to Field Ops (compliance is Ops)
       //   /document-builder     — under Settings
       //   /trash                — under Settings
