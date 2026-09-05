@@ -85,6 +85,16 @@ export const jobs = sqliteTable("jobs", {
   squareFeet: integer("square_feet"),
   closedAt: text("closed_at"),
   closedBy: text("closed_by"),
+  // Job kind — 'standard' is a normal revenue-generating job. 'incidental'
+  // is a courtesy job we cover for a referral partner (small clean-ups,
+  // no-charge check-outs, warranty items on someone else's work). Tracked
+  // and documented exactly like a normal job so the office can pull photos,
+  // dry logs, and estimates — but excluded from revenue, AR, and pipeline
+  // financials. The estimated dollar value still rolls up under the
+  // referring partner's scorecard as "courtesy value delivered" so we can
+  // show partners the real cost of what we cover for them.
+  jobKind: text("job_kind").default("standard"),         // 'standard' | 'incidental'
+  incidentalReason: text("incidental_reason"),           // freeform: why we ate this one
   closedReason: text("closed_reason"),
   reopenedAt: text("reopened_at"),           // Last reopen timestamp (full history in job_events)
   reopenedBy: text("reopened_by"),

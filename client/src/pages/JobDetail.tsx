@@ -40,6 +40,7 @@ import DryingRecords from "@/components/DryingRecords";
 import MitigationSketch from "@/components/MitigationSketch";
 import DocuSketchPanel from "@/components/DocuSketchPanel";
 import JobPhotos from "@/components/JobPhotos";
+import { MobileJobActionBar } from "@/components/MobileJobActionBar";
 const JobDocuments = lazy(() => import("@/components/JobDocuments"));
 
 function TabLoading() {
@@ -1465,8 +1466,23 @@ export default function JobDetail() {
   // add a useEffect here — hooks after an early return break rules-of-hooks
   // and cause React error #310 on the loading → loaded transition.
 
+  const isIncidental = (job as any).jobKind === "incidental";
+
   return (
     <div className="space-y-4">
+      {isIncidental && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 px-4 py-3 flex items-start gap-3">
+          <div className="text-2xl leading-none" aria-hidden>🤝</div>
+          <div className="flex-1 text-sm">
+            <div className="font-semibold text-amber-900 dark:text-amber-100">Courtesy work</div>
+            <div className="text-amber-800 dark:text-amber-200/80 text-xs mt-0.5">
+              This job is documented in full but excluded from revenue, AR, and pipeline reports.{" "}
+              Estimate value is rolled up under the referring partner as courtesy delivered.
+              {(job as any).incidentalReason ? <> · <span className="italic">{(job as any).incidentalReason}</span></> : null}
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex items-center gap-3">
         <Link href="/jobs">
           <Button variant="ghost" size="sm"><ArrowLeft className="w-4 h-4 mr-1" />Jobs</Button>
@@ -2428,6 +2444,14 @@ export default function JobDetail() {
         collected={(phaseFin as any)?.collected ?? 0}
         settledAmount={(phaseFin as any)?.settledAmount ?? 0}
         currentCreditMemos={(phaseFin as any)?.creditMemos ?? 0}
+      />
+      {/* Sticky mobile action bar — hidden on md+ screens. Field techs get
+          Check-In, Photo, Note, and Call one tap away no matter where they
+          scroll on the job page. */}
+      <MobileJobActionBar
+        jobId={job.id}
+        contactPhone={(contact as any)?.phone || null}
+        onSwitchTab={setActiveTab}
       />
     </div>
   );

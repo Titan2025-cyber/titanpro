@@ -1571,6 +1571,47 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(updated);
   });
 
+  // ── On-site Check-In (mobile field UX) ────────────────────────────────────
+  // Field tech taps "I'm on site" — we stamp the job_events audit log with a
+  // GPS point (best-effort; fine if the browser refuses geolocation). Powers
+  // the mobile action bar on JobDetail and gives the office a real record of
+  // who was where, when.
+  app.post("/api/jobs/:id/checkin", (req, res) => {
+    const jobId = Number(req.params.id);
+    if (!Number.isFinite(jobId)) return res.status(400).json({ error: "Invalid job id" });
+    const emp = (req as any).employee;
+    const actor = emp?.name || "unknown";
+    const { latitude, longitude, accuracy, kind } = req.body || {};
+    const details = JSON.stringify({
+      latitude: Number.isFinite(Number(latitude)) ? Number(latitude) : null,
+      longitude: Number.isFinite(Number(longitude)) ? Number(longitude) : null,
+      accuracy: Number.isFinite(Number(accuracy)) ? Number(accuracy) : null,
+      kind: kind === "checkout" ? "checkout" : "checkin",
+    });
+    try {
+      sqlite.prepare(
+        "INSERT INTO job_events (job_id, action, actor_name, details, created_at) VALUES (?, ?, ?, ?, ?)"
+      ).run(jobId, kind === "checkout" ? "checkout" : "checkin", actor, details, new Date().toISOString());
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "insert failed" });
+    }
+    res.json({ ok: true });
+  });
+
+  app.get("/api/jobs/:id/checkins", (req, res) => {
+    const jobId = Number(req.params.id);
+    if (!Number.isFinite(jobId)) return res.status(400).json({ error: "Invalid job id" });
+    const rows = sqlite.prepare(
+      "SELECT id, action, actor_name, details, created_at FROM job_events WHERE job_id = ? AND action IN ('checkin','checkout') ORDER BY created_at DESC LIMIT 20"
+    ).all(jobId) as any[];
+    const parsed = rows.map(r => {
+      let details: any = {};
+      try { details = JSON.parse(r.details || "{}"); } catch { details = {}; }
+      return { id: r.id, action: r.action, actor: r.actor_name, at: r.created_at, ...details };
+    });
+    res.json(parsed);
+  });
+
   // NOTE: Job notes are handled by the dedicated job_notes table routes further
   // below (GET/POST/PATCH/DELETE /api/jobs/:jobId/notes). The previous route here
   // wrote notes into the jobs.notes JSON column, which the Notes tab never reads —
@@ -4570,13 +4611,25 @@ Titan Restoration LLC | Augusta, GA` },
     const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
     const payouts = sqlite.prepare("SELECT * FROM payout_requests").all() as any[];
     const warrantyCalls = sqlite.prepare("SELECT * FROM warranty_calls").all() as any[];
+    // Estimate totals per job (latest estimate wins) — used to value incidental jobs
+    // as "courtesy value delivered" to the partner.
+    const estRows = sqlite.prepare(
+      "SELECT job_id, MAX(id) AS eid, total FROM estimates GROUP BY job_id"
+    ).all() as any[];
+    const estimateByJob = new Map<number, number>(estRows.map((r: any) => [r.job_id, Number(r.total) || 0]));
 
     const result = contacts.map((c: any) => {
-      const referredJobs = jobs.filter((j: any) =>
+      const allReferred = jobs.filter((j: any) =>
         j.referral_partner_id === c.id ||
         (j.lead_source === 'referral' && j.lead_source_detail && j.lead_source_detail.toLowerCase().includes(c.name.toLowerCase())) ||
         (j.insurance_carrier && c.company && j.insurance_carrier.toLowerCase().includes(c.company.toLowerCase()))
       );
+      // Split standard (revenue-generating) vs incidental (courtesy) jobs.
+      // Incidental jobs are excluded from revenue/ROI math but surface as
+      // "courtesy value delivered" so partners can see what we cover for them.
+      const referredJobs = allReferred.filter((j: any) => (j.job_kind || 'standard') !== 'incidental');
+      const incidentalJobs = allReferred.filter((j: any) => (j.job_kind || 'standard') === 'incidental');
+      const courtesyValue = incidentalJobs.reduce((s: number, j: any) => s + (estimateByJob.get(j.id) || 0), 0);
       const totalRevenue = referredJobs.reduce((sum: number, j: any) => {
         const inv = invoices.filter((i: any) => i.job_id === j.id).reduce((s: number, i: any) => s + (i.total||0), 0);
         return sum + inv;
@@ -4622,6 +4675,20 @@ Titan Restoration LLC | Augusta, GA` },
           const job = jobs.find((j: any) => j.id === w.job_id);
           return { ...w, jobNumber: job?.job_number, jobAddress: job?.address };
         }),
+        // Courtesy / incidental jobs delivered to this partner. Not revenue,
+        // not in ROI, purely goodwill accounting so partners can see the
+        // dollar value of the work we absorb on their behalf.
+        courtesyJobsCount: incidentalJobs.length,
+        courtesyValue,
+        courtesyJobs: incidentalJobs.map((j: any) => ({
+          jobId: j.id,
+          jobNumber: j.job_number,
+          address: j.address,
+          lossType: j.loss_type,
+          reason: j.incidental_reason,
+          value: estimateByJob.get(j.id) || 0,
+          createdAt: j.created_at,
+        })),
       };
     });
     res.json(result.sort((a: any, b: any) => b.totalRevenue - a.totalRevenue));
@@ -5072,7 +5139,9 @@ Titan Restoration LLC | Augusta, GA` },
 
   // ── Profitability Report ──────────────────────────────────────────────────
   app.get("/api/reports/profitability", (_req, res) => {
-    const jobs = storage.getJobs() as any[];
+    // Incidental / courtesy jobs are excluded — they have no revenue by design
+    // and would drag margin math to −∞. See partner-roi for their courtesy value.
+    const jobs = (storage.getJobs() as any[]).filter((j: any) => (j.jobKind || j.job_kind || 'standard') !== 'incidental');
     const invoices = storage.getInvoices() as any[];
     const payments = storage.getPayments() as any[];
     const allCosts = sqlite.prepare("SELECT * FROM job_costs").all() as any[];
@@ -6627,6 +6696,12 @@ Approve in Partner Portal → Admin View.
 
   // #5: geofence radius per job (meters). Default 200 ft ≈ 61m.
   try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN geofence_radius_m REAL DEFAULT 61`); } catch(_) {}
+  // Incidental / courtesy job flag — see shared/schema.ts. When 'incidental'
+  // the job is fully documented but excluded from revenue, AR, pipeline
+  // financials, and margin dashboards. Its estimate total rolls up under
+  // the referring partner as "courtesy value delivered".
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN job_kind TEXT DEFAULT 'standard'`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN incidental_reason TEXT`); } catch(_) {}
 
   // #16: extend coi_records to support W9 as a document type. w9 rows have
   // expiration_date = end of tax year; nag scheduler treats it uniformly.

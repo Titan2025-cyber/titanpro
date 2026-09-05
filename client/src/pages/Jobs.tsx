@@ -259,6 +259,11 @@ function JobCard({ job, contact, fin }: { job: Job; contact?: Contact; fin?: Job
                 {contact?.portalPin && (
                   <PortalActiveBadge jobId={job.id} />
                 )}
+                {(job as any).jobKind === "incidental" && (
+                  <Badge className="text-xs bg-amber-100 text-amber-800 border border-amber-200" title={(job as any).incidentalReason || "Courtesy work — excluded from revenue"}>
+                    Courtesy
+                  </Badge>
+                )}
                 <span className="text-xs text-muted-foreground capitalize">{job.lossType}</span>
               </div>
 
@@ -722,6 +727,11 @@ export default function Jobs() {
     // matches a known building, editable at any time.
     yearBuilt: "" as string | number,
     squareFeet: "" as string | number,
+    // Job kind. 'incidental' = courtesy work covered for a referral partner.
+    // Documented in full like any job, but excluded from revenue / AR /
+    // pipeline and rolled up under the referring partner as courtesy value.
+    jobKind: "standard" as "standard" | "incidental",
+    incidentalReason: "",
   });
   // Property-lookup state — refs track whether the operator has manually
   // typed a value so a later address change doesn't wipe out their entry.
@@ -784,6 +794,8 @@ export default function Jobs() {
       referralPartnerId: "",
       yearBuilt: "",
       squareFeet: "",
+      jobKind: "standard",
+      incidentalReason: "",
     });
     setNewCustomer({ name: "", email: "", phone: "", address: "" });
     setPropLookup({ status: "idle", note: "" });
@@ -829,6 +841,8 @@ export default function Jobs() {
         squareFeet: toIntOrNull(data.squareFeet),
         leadSource: data.leadSource || null,
         leadSourceDetail: data.leadSourceDetail || null,
+        jobKind: data.jobKind || "standard",
+        incidentalReason: data.jobKind === "incidental" ? (data.incidentalReason || null) : null,
       };
       let contactId: number | null = normalized.contactId ?? null;
       if (customerMode === "new") {
@@ -1192,6 +1206,39 @@ export default function Jobs() {
                     emptyLabel="No referral partners match. Add one from Contacts → Referral."
                     testId="select-referral-partner"
                   />
+                </div>
+
+                {/* Incidental / courtesy work toggle. Enables full documentation
+                    of a job we cover for a partner — photos, drying, estimates —
+                    while excluding it from revenue, AR, and pipeline reports.
+                    Rolls up under the referring partner as courtesy value. */}
+                <div className="rounded-md border border-dashed border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 p-3">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-5 w-5"
+                      checked={form.jobKind === "incidental"}
+                      onChange={(e) => setForm(f => ({ ...f, jobKind: e.target.checked ? "incidental" : "standard" }))}
+                      data-testid="toggle-incidental-job"
+                    />
+                    <div className="flex-1">
+                      <div className="font-medium text-sm">Mark as courtesy / incidental work</div>
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        Documented and photographed like any job — but excluded from revenue, AR, and pipeline. Value rolls up under the referring partner as courtesy delivered.
+                      </div>
+                    </div>
+                  </label>
+                  {form.jobKind === "incidental" && (
+                    <div className="mt-3">
+                      <Label className="text-xs">Reason we're covering this</Label>
+                      <Input
+                        value={form.incidentalReason}
+                        onChange={(e) => setForm(f => ({ ...f, incidentalReason: e.target.value }))}
+                        placeholder="e.g. Warranty follow-up, partner favor, no-charge inspection"
+                        data-testid="input-incidental-reason"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <div>

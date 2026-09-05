@@ -39,6 +39,17 @@ interface PartnerROIData {
   netValue: number;
   referredJobs: ReferredJob[];
   warrantyCalls: any[];
+  courtesyJobsCount: number;
+  courtesyValue: number;
+  courtesyJobs: {
+    jobId: number;
+    jobNumber: string;
+    address: string;
+    lossType?: string;
+    reason?: string;
+    value: number;
+    createdAt?: string;
+  }[];
 }
 
 type SortKey = "revenue" | "roi" | "jobs";
@@ -165,6 +176,40 @@ function PartnerCard({ partner }: { partner: PartnerROIData }) {
           </div>
         </div>
 
+        {/* Courtesy / incidental work delivered to this partner. Not counted
+            in Net Value (that's real Titan P&L) — shown as goodwill dollars
+            the partner should know we absorb on their behalf. */}
+        {partner.courtesyJobsCount > 0 && (
+          <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold text-amber-900 dark:text-amber-100">🤝 Courtesy work delivered</p>
+                <p className="text-xs text-amber-800 dark:text-amber-200/80">
+                  {partner.courtesyJobsCount} incidental job{partner.courtesyJobsCount === 1 ? "" : "s"} covered at no charge
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-amber-800 dark:text-amber-200/80">Fair-market value</p>
+                <p className="font-bold text-amber-900 dark:text-amber-100">{formatCurrency(partner.courtesyValue)}</p>
+              </div>
+            </div>
+            {partner.courtesyJobs.length > 0 && (
+              <ul className="mt-2 space-y-1 text-xs">
+                {partner.courtesyJobs.map((cj) => (
+                  <li key={cj.jobId} className="flex items-center justify-between gap-2">
+                    <a href={`/jobs/${cj.jobId}`} className="truncate text-amber-900 dark:text-amber-100 hover:underline">
+                      <span className="font-mono">{cj.jobNumber}</span>
+                      {cj.address ? <> · <span className="text-amber-800 dark:text-amber-200/80">{cj.address}</span></> : null}
+                      {cj.reason ? <> · <span className="italic text-amber-700 dark:text-amber-300">{cj.reason}</span></> : null}
+                    </a>
+                    <span className="font-medium text-amber-900 dark:text-amber-100 shrink-0">{formatCurrency(cj.value)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
         {/* Referred jobs collapsible */}
         {partner.referredJobs.length > 0 && (
           <>
@@ -255,6 +300,9 @@ export default function PartnerROI() {
       warrantyCost: j.warrantyCost ?? 0,
     })),
     warrantyCalls: p.warrantyCalls ?? [],
+    courtesyJobsCount: p.courtesyJobsCount ?? 0,
+    courtesyValue: p.courtesyValue ?? 0,
+    courtesyJobs: p.courtesyJobs ?? [],
   }));
 
   // Derived summary
