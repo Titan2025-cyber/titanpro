@@ -45,6 +45,22 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").catch(() => {
       /* SW unsupported / blocked (e.g. some preview iframes) — app still works */
     });
+
+    // Self-heal from a stale bundle. If the SW notices the server handed us
+    // HTML for a .js/.css URL (old chunk hash from a cached index.html), it
+    // posts "titan-stale-bundle" and we reload ONCE so the browser pulls the
+    // fresh index.html + new chunk hashes. The sessionStorage flag prevents
+    // a reload loop if something else is truly broken.
+    navigator.serviceWorker.addEventListener("message", (evt) => {
+      const data = (evt && (evt as MessageEvent).data) as { type?: string } | undefined;
+      if (data && data.type === "titan-stale-bundle") {
+        try {
+          if (sessionStorage.getItem("titan-reloaded-for-stale") === "1") return;
+          sessionStorage.setItem("titan-reloaded-for-stale", "1");
+        } catch { /* ignore */ }
+        location.reload();
+      }
+    });
   });
 }
 

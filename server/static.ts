@@ -26,8 +26,28 @@ export function serveStatic(app: Express) {
   // updates are picked up immediately.
   app.use(express.static(distPath));
 
-  // fall through to index.html if the file doesn't exist
-  app.use("/{*path}", (_req, res) => {
+  // Fall through to index.html for SPA routes.
+  //
+  // BUT: never fall through for /assets/* or other file-typed URLs. If a
+  // hashed chunk from an old build is requested (stale service-worker cache
+  // on a tech's phone), we MUST return 404 with the right content-type
+  // instead of sending index.html as text/html. Otherwise the browser tries
+  // to parse HTML as JavaScript and blows up with the notorious
+  // "'text/html' is not a valid JavaScript MIME type" error, which nukes
+  // whichever page it was trying to render.
+  app.use("/{*path}", (req, res, next) => {
+    const p = req.path || "";
+    // Anything under /assets/ that missed static is a stale chunk — hard 404.
+    if (p.startsWith("/assets/")) {
+      res.status(404).type("text/plain").send("Not found");
+      return;
+    }
+    // File-typed URLs anywhere in the tree (chunks, source maps, images,
+    // fonts, JSON, css). Never respond with an HTML shell for these.
+    if (/\.(?:js|mjs|css|map|json|png|jpg|jpeg|gif|svg|webp|ico|woff2?|ttf|otf|pdf|wasm)$/i.test(p)) {
+      res.status(404).type("text/plain").send("Not found");
+      return;
+    }
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }
