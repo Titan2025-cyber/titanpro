@@ -4,6 +4,7 @@ import {
   KeyRound, Bell, UserCog, Activity, ShieldCheck, CreditCard,
   Trash2, FileSpreadsheet, QrCode, Users as UsersIcon,
   ExternalLink, Settings as SettingsIcon,
+  RefreshCw, ListChecks, ClipboardList,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -24,6 +25,9 @@ import AuditLog from "@/pages/AuditLog";
 import TrashPage from "@/pages/Trash";
 import DocumentBuilder from "@/pages/DocumentBuilder";
 import PartnerPortalSetup from "@/pages/PartnerPortalSetup";
+import QBSync from "@/pages/QBSync";
+import LineItemLibrary from "@/pages/LineItemLibrary";
+import JobTemplates from "@/pages/JobTemplates";
 
 /**
  * Settings hub — left-rail sub-navigation.
@@ -46,10 +50,13 @@ type SectionKey =
   | "users"
   | "team-activity"
   | "integrations"
+  | "qb-sync"
   | "activity"
   | "audit"
   | "trash"
   | "document-builder"
+  | "line-items"
+  | "job-templates"
   | "partner-portal";
 
 type Item = {
@@ -125,6 +132,14 @@ const GROUPS: Group[] = [
         component: Integrations,
       },
       {
+        key: "qb-sync",
+        label: "QuickBooks Sync",
+        desc: "Sync invoices, payments, and customers with QuickBooks Online.",
+        icon: RefreshCw,
+        component: QBSync,
+        adminOnly: true,
+      },
+      {
         key: "activity",
         label: "Activity Log",
         desc: "Chronological log of user actions across the app.",
@@ -157,6 +172,20 @@ const GROUPS: Group[] = [
         desc: "Author the templates used for invoices, WAs, and reports.",
         icon: FileSpreadsheet,
         component: DocumentBuilder,
+      },
+      {
+        key: "line-items",
+        label: "Line Item Library",
+        desc: "Master price list of labor, materials, and Xactimate-style line items.",
+        icon: ListChecks,
+        component: LineItemLibrary,
+      },
+      {
+        key: "job-templates",
+        label: "Job Templates",
+        desc: "Reusable job blueprints \u2014 phases, tasks, and defaults for common loss types.",
+        icon: ClipboardList,
+        component: JobTemplates,
       },
       {
         key: "partner-portal",
