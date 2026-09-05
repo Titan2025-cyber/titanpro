@@ -620,12 +620,16 @@ function NotesTab({ jobId }: { jobId: number }) {
 // Expanded view: the full vertical stage list + the InlineMilestoneDates
 // editor, exactly as they existed on the old Pipeline tab.
 function ProgressAndMilestonesCard({ job }: { job: any }) {
-  // Collapsed by default so the more-frequently-scanned Financial Summary
-  // stays above the fold. Persist per-job in localStorage so a user who
-  // routinely wants it open on a specific job gets that back.
+  // Expanded by default — this section replaces the read-only Milestones
+  // bucket that used to live at the bottom of Activity, so the dates it
+  // held stay visible without an extra click. Users who prefer it
+  // collapsed have their choice persisted per-job.
   const storageKey = `titan.progressMilestones.open.${job.id}`;
   const [open, setOpen] = useState<boolean>(() => {
-    try { return localStorage.getItem(storageKey) === "1"; } catch { return false; }
+    try {
+      const v = localStorage.getItem(storageKey);
+      return v === null ? true : v === "1";
+    } catch { return true; }
   });
   useEffect(() => {
     try { localStorage.setItem(storageKey, open ? "1" : "0"); } catch { /* ignore */ }
@@ -689,7 +693,7 @@ function ProgressAndMilestonesCard({ job }: { job: any }) {
             <p className="mt-1.5 text-[11px] text-muted-foreground">
               Current: <span className="font-medium">{currentStage?.label ?? "Pending"}</span>
               {" · "}
-              {open ? "Click the arrow to collapse." : "Click the arrow to edit milestone dates and see the full pipeline."}
+              {open ? "Edit any date below and hit save." : "Expand to edit any pipeline or phase date."}
             </p>
           </div>
         </div>
@@ -781,12 +785,23 @@ function ProgressAndMilestonesCard({ job }: { job: any }) {
 // ── Inline Milestone Dates Component ─────────────────────────────────────────
 function InlineMilestoneDates({ job }: { job: any }) {
   const { toast } = useToast();
+  // Two groups of dates share this one editor:
+  //   1) Pipeline-stage dates (drive PROGRESS_STAGES forward when saved).
+  //   2) Phase-boundary dates (Mitigation Start / Dry-Out Complete /
+  //      Reconstruction Start / Job Complete) — previously read-only on
+  //      the Activity page. Cody: "I want to be able to manually edit
+  //      dates all in that one section", so they're plain editable
+  //      inputs saved through the same PATCH.
   const [dates, setDates] = useState({
     salesDate: job.salesDate || "",
     preProductionDate: job.preProductionDate || "",
     wipDate: job.wipDate || "",
     invoiceSentDate: job.invoiceSentDate || "",
     invoicePaidDate: job.invoicePaidDate || "",
+    mitigationStart: job.mitigationStart || "",
+    dryOutComplete: job.dryOutComplete || "",
+    reconstructionStart: job.reconstructionStart || "",
+    jobComplete: job.jobComplete || "",
   });
   const [dirty, setDirty] = useState(false);
 
@@ -858,6 +873,15 @@ function InlineMilestoneDates({ job }: { job: any }) {
     { key: "invoicePaidDate", label: "Payment Received", stage: PROGRESS_STAGES[5] },
   ];
 
+  // Phase-boundary dates — don't drive pipeline stages, but track the
+  // work-on-the-ground timeline the office reports on.
+  const PHASE_ROWS = [
+    { key: "mitigationStart", label: "Mitigation Start" },
+    { key: "dryOutComplete", label: "Dry-Out Complete" },
+    { key: "reconstructionStart", label: "Reconstruction Start" },
+    { key: "jobComplete", label: "Job Complete" },
+  ];
+
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -865,15 +889,42 @@ function InlineMilestoneDates({ job }: { job: any }) {
           <span>📅</span> Milestone Dates
         </CardTitle>
       </CardHeader>
-      <CardContent className="pt-0 space-y-3">
-        {DATE_ROWS.map((row) => {
-          const S = row.stage;
-          return (
+      <CardContent className="pt-0 space-y-4">
+        {/* Pipeline-stage dates — drive PROGRESS_STAGES forward. */}
+        <div className="space-y-3">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold">Pipeline Dates</p>
+          {DATE_ROWS.map((row) => {
+            const S = row.stage;
+            return (
+              <div key={row.key} className="flex items-center gap-3">
+                <div
+                  className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${S.color} ${S.textColor}`}
+                >
+                  <S.icon className="w-3.5 h-3.5" />
+                </div>
+                <Label className="text-sm w-44 shrink-0">{row.label}</Label>
+                <Input
+                  type="date"
+                  className="h-8 text-sm flex-1"
+                  value={(dates as any)[row.key]}
+                  onChange={(e) => {
+                    setDates((d) => ({ ...d, [row.key]: e.target.value }));
+                    setDirty(true);
+                  }}
+                  data-testid={`milestone-date-${row.key}`}
+                />
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Phase-boundary dates — track work-on-the-ground timing. */}
+        <div className="space-y-3 pt-3 border-t">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold">Phase Dates</p>
+          {PHASE_ROWS.map((row) => (
             <div key={row.key} className="flex items-center gap-3">
-              <div
-                className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${S.color} ${S.textColor}`}
-              >
-                <S.icon className="w-3.5 h-3.5" />
+              <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-muted text-muted-foreground">
+                <Droplets className="w-3.5 h-3.5" />
               </div>
               <Label className="text-sm w-44 shrink-0">{row.label}</Label>
               <Input
@@ -887,8 +938,9 @@ function InlineMilestoneDates({ job }: { job: any }) {
                 data-testid={`milestone-date-${row.key}`}
               />
             </div>
-          );
-        })}
+          ))}
+        </div>
+
         <Button
           className="w-full mt-1 h-9 text-sm bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
           onClick={() => saveMutation.mutate()}
@@ -1626,13 +1678,6 @@ export default function JobDetail() {
 
         {/* ── Activity Tab ── */}
         <TabsContent value="activity" className="mt-4 space-y-4">
-          {/* ── Progress & Milestones (formerly the Pipeline tab) ── */}
-          {/* Collapsed by default: the header alone shows the current stage
-              chip + a compact horizontal stepper so the whole pipeline
-              picture is visible without expanding. Click the row to reveal
-              the full vertical stage list + editable milestone dates. */}
-          <ProgressAndMilestonesCard job={job} />
-
           {/* ── Financial Summary ── */}
           <Card data-testid="card-job-financials">
             <CardHeader className="pb-2">
@@ -1863,22 +1908,11 @@ export default function JobDetail() {
             </Card>
           )}
 
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm">Milestones</CardTitle></CardHeader>
-            <CardContent className="pt-0 grid grid-cols-2 gap-2">
-              {[
-                { label: "Mitigation Start", value: job.mitigationStart },
-                { label: "Dry-Out Complete", value: job.dryOutComplete },
-                { label: "Reconstruction Start", value: job.reconstructionStart },
-                { label: "Job Complete", value: job.jobComplete },
-              ].map(m => (
-                <div key={m.label}>
-                  <p className="text-xs text-muted-foreground">{m.label}</p>
-                  <p className="text-sm font-medium">{m.value ? fmtDateShort(m.value) : "—"}</p>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
+          {/* Merged Progress + Milestones section (Cody: merge them,
+              collapse, and let me edit every date here). Header shows
+              current stage + mini stepper; expand to see full stage
+              list and editable date grid (pipeline + phase dates). */}
+          <ProgressAndMilestonesCard job={job} />
 
           {/* Recent public notes preview on activity tab */}
           {notes.length > 0 && (
