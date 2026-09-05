@@ -680,7 +680,9 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
         ? 1
         : (soldRaw === false || soldRaw === 0 || soldRaw === "false" || soldRaw === "0" ? 0 : null);
       if (sold === null) return res.status(400).json({ error: "sold must be boolean" });
-      const reason = (req.body?.reason ?? "").toString().slice(0, 500) || null;
+      const reasonRaw = (req.body?.reason ?? "").toString().trim().slice(0, 500);
+      if (reasonRaw.length < 3) return res.status(400).json({ error: "reason is required (min 3 chars)" });
+      const reason = reasonRaw;
       const u = (req as any).user;
       const setBy = u?.name || u?.email || "unknown";
       const setAt = new Date().toISOString();

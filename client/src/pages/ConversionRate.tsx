@@ -7,6 +7,11 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -14,7 +19,7 @@ import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
 import {
-  TrendingUp, Target, ClipboardList, CheckCircle2, FileSignature, RotateCcw, Check, X, Pencil,
+  TrendingUp, Target, ClipboardList, CheckCircle2, FileSignature, RotateCcw, Check, X, Pencil, Info,
 } from "lucide-react";
 import { Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -135,6 +140,11 @@ export default function ConversionRate() {
   }, [jobs]);
 
   const [selectedMonth, setSelectedMonth] = useState<string>(currentYearMonth());
+
+  // Reason-capture dialog. Manual overrides always ask why so the audit
+  // trail on conversion_overrides.reason is actually useful three months later.
+  const [reasonDlg, setReasonDlg] = useState<null | { jobId: number; jobNumber: string; sold: boolean }>(null);
+  const [reasonText, setReasonText] = useState("");
   const monthJobs = useMemo(
     () => jobs.filter(j => takenMonth(j) === selectedMonth),
     [jobs, selectedMonth],
@@ -176,6 +186,8 @@ export default function ConversionRate() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/conversion-overrides"] });
       toast({ title: "Conversion updated" });
+      setReasonDlg(null);
+      setReasonText("");
     },
     onError: (e: any) => toast({
       title: "Update failed",
@@ -183,6 +195,15 @@ export default function ConversionRate() {
       variant: "destructive",
     }),
   });
+
+  // Open the reason dialog. We pass jobNumber into the dialog title so the
+  // operator can double-check they're overriding the right job before saving.
+  function openReason(job: Job, sold: boolean) {
+    setReasonDlg({ jobId: job.id, jobNumber: job.jobNumber, sold });
+    // Pre-fill with the existing override reason if there is one — makes
+    // "edit" behaviour feel obvious.
+    setReasonText(overrideByJob.get(job.id)?.reason || "");
+  }
 
   const clearOverride = useMutation({
     mutationFn: (jobId: number) =>
@@ -344,6 +365,14 @@ export default function ConversionRate() {
                           <Badge variant="outline" className="text-[10px]">Signed W/A</Badge>
                         )}
                       </div>
+                      {src === "override" && overrideByJob.get(j.id)?.reason && (
+                        <div className="text-[11px] text-muted-foreground mt-1 flex items-start gap-1 max-w-[280px]">
+                          <Info className="w-3 h-3 mt-0.5 shrink-0" />
+                          <span className="line-clamp-2" title={overrideByJob.get(j.id)?.reason || ""}>
+                            {overrideByJob.get(j.id)?.reason}
+                          </span>
+                        </div>
+                      )}
                     </TableCell>
                     {canManage && (
                       <TableCell className="text-right">
@@ -353,7 +382,7 @@ export default function ConversionRate() {
                             variant={sold ? "default" : "outline"}
                             className={sold ? "h-8 bg-green-600 hover:bg-green-700" : "h-8"}
                             title="Force sold"
-                            onClick={() => setOverride.mutate({ jobId: j.id, sold: true })}
+                            onClick={() => openReason(j, true)}
                             disabled={busy}
                             data-testid={`button-mark-sold-${j.id}`}
                           >
@@ -364,7 +393,7 @@ export default function ConversionRate() {
                             variant={!sold ? "default" : "outline"}
                             className={!sold ? "h-8" : "h-8"}
                             title="Force not sold"
-                            onClick={() => setOverride.mutate({ jobId: j.id, sold: false })}
+                            onClick={() => openReason(j, false)}
                             disabled={busy}
                             data-testid={`button-mark-notsold-${j.id}`}
                           >
@@ -393,6 +422,55 @@ export default function ConversionRate() {
           </Table>
         </CardContent>
       </Card>
+
+      {/* Reason dialog for manual overrides. Required, not optional — the
+          whole point of the override log is knowing why a number moved. */}
+      <Dialog open={!!reasonDlg} onOpenChange={(o) => { if (!o) { setReasonDlg(null); setReasonText(""); } }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              Mark {reasonDlg?.jobNumber} as {reasonDlg?.sold ? "Sold" : "Not sold"}
+            </DialogTitle>
+            <DialogDescription>
+              A short note goes in the audit log with your name and the time.
+              Example: “Customer verbal approval, signing Monday” or
+              “Customer backed out after adjuster visit.”
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="conv-reason" className="text-xs">Reason</Label>
+            <Textarea
+              id="conv-reason"
+              value={reasonText}
+              onChange={(e) => setReasonText(e.target.value)}
+              rows={3}
+              placeholder="Why is this being overridden?"
+              maxLength={500}
+              data-testid="input-override-reason"
+            />
+            <p className="text-[10px] text-muted-foreground text-right">{reasonText.length} / 500</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setReasonDlg(null); setReasonText(""); }}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (!reasonDlg) return;
+                setOverride.mutate({
+                  jobId: reasonDlg.jobId,
+                  sold: reasonDlg.sold,
+                  reason: reasonText.trim(),
+                });
+              }}
+              disabled={setOverride.isPending || reasonText.trim().length < 3}
+              data-testid="button-save-override"
+            >
+              {setOverride.isPending ? "Saving…" : `Save as ${reasonDlg?.sold ? "Sold" : "Not sold"}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
