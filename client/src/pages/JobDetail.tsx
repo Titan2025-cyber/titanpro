@@ -41,7 +41,7 @@ import DryingPlanCard from "@/components/DryingPlanCard";
 import MitigationSketch from "@/components/MitigationSketch";
 import DocuSketchPanel from "@/components/DocuSketchPanel";
 import JobPhotos from "@/components/JobPhotos";
-import { MobileJobActionBar } from "@/components/MobileJobActionBar";
+import { MobileJobActionBar, JobFieldActionBar } from "@/components/MobileJobActionBar";
 const JobDocuments = lazy(() => import("@/components/JobDocuments"));
 
 function TabLoading() {
@@ -1900,6 +1900,16 @@ export default function JobDetail() {
               onSave={(patch) => updateContactMut.mutate({ contactId: contact.id, patch })}
             />
           )}
+
+          {/* Inline field-action bar. Sits under the customer card so techs
+              hit Check In / Photo / Note / Call at the top of the Activity
+              tab without scrolling. The sticky bottom bar (mobile only) is
+              still rendered at page level as a fallback. */}
+          <JobFieldActionBar
+            jobId={job.id}
+            contactPhone={(contact as any)?.phone || null}
+            onSwitchTab={setActiveTab}
+          />
 
           {/* Property record card — editable Year Built & Square Feet plus a
               button to re-run the OSM lookup. Year Built drives EPA RRP lead

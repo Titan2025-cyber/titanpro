@@ -1,12 +1,13 @@
-// ─── MobileJobActionBar ──────────────────────────────────────────────────────
-// Sticky bottom action bar that appears only on small screens (< md). Puts
-// the four things a field tech actually does on-site one tap away:
-//   • Check In (with GPS)
-//   • Take Photo (jumps to the Photos tab and pops the camera)
-//   • Add Note (jumps to Notes tab)
-//   • Call customer (tel: link when contact phone exists)
-// Fat 56px tap targets, high contrast, safe-area padding for iOS notch.
-// ─────────────────────────────────────────────────────────────────────────────
+// Job Action Bars
+//
+// Two surfaces for the same four field actions - Check In, Photo, Note, Call:
+//   * MobileJobActionBar - sticky bottom bar, mobile only, always on screen
+//     no matter where the tech scrolls.
+//   * JobFieldActionBar  - inline block, sits under the customer card on the
+//     Activity tab at every breakpoint so the actions are usable without
+//     scrolling to the bottom.
+// Both share the same check-in mutation and GPS handling below.
+
 import { useEffect, useState } from "react";
 import { Camera, MapPin, StickyNote, Phone, LogOut, Loader2, Check } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -29,7 +30,10 @@ interface CheckinRow {
   accuracy?: number | null;
 }
 
-export function MobileJobActionBar({ jobId, contactPhone, onSwitchTab }: Props) {
+// Shared check-in/out logic + query used by both bars. Extracted as a hook so
+// the inline JobFieldActionBar and the sticky MobileJobActionBar stay in sync
+// on state (checked-in badge, in-flight spinner) without duplicating fetches.
+function useJobCheckin(jobId: number) {
   const { toast } = useToast();
   const [busy, setBusy] = useState<"none" | "checkin" | "checkout">("none");
   const [confirmed, setConfirmed] = useState(false);
@@ -43,7 +47,7 @@ export function MobileJobActionBar({ jobId, contactPhone, onSwitchTab }: Props) 
 
   async function stamp(kind: "checkin" | "checkout") {
     setBusy(kind);
-    // Try geolocation but don't block the check-in if it's slow / denied.
+    // Try geolocation but do not block the check-in if it's slow / denied.
     const coords = await new Promise<{ lat: number|null; lng: number|null; acc: number|null }>((resolve) => {
       if (!navigator.geolocation) return resolve({ lat: null, lng: null, acc: null });
       const timer = setTimeout(() => resolve({ lat: null, lng: null, acc: null }), 8000);
@@ -67,6 +71,113 @@ export function MobileJobActionBar({ jobId, contactPhone, onSwitchTab }: Props) 
       setBusy("none");
     }
   }
+
+  return { busy, confirmed, isCheckedIn, stamp };
+}
+
+// Shared handler for the Photo action. Flips to the Photos tab and pops the
+// camera on the next tick, once the tab has mounted its Take Photo button.
+function triggerPhoto(onSwitchTab: (tab: string) => void) {
+  onSwitchTab("photos");
+  setTimeout(() => {
+    const btn = document.querySelector<HTMLButtonElement>('[data-testid="button-take-photo"]');
+    btn?.click();
+  }, 250);
+}
+
+// JobFieldActionBar (inline)
+//
+// Full-width card that sits under the customer info on the Activity tab so
+// the four field actions are usable at the top of the page without scrolling.
+// Same behavior as the sticky mobile bar, styled to fit inline with the rest
+// of the Activity cards.
+export function JobFieldActionBar({ jobId, contactPhone, onSwitchTab }: Props) {
+  const { busy, confirmed, isCheckedIn, stamp } = useJobCheckin(jobId);
+  const dialHref = contactPhone ? `tel:${String(contactPhone).replace(/[^\d+]/g, "")}` : null;
+
+  const baseBtn =
+    "min-h-[68px] flex flex-col items-center justify-center gap-1 rounded-lg border transition active:scale-[0.98] focus:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--titan-blue))]";
+  const neutralBtn = `${baseBtn} border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-100 hover:bg-neutral-50 dark:hover:bg-neutral-800`;
+
+  return (
+    <div
+      className="rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white/50 dark:bg-neutral-900/40 p-2"
+      role="toolbar"
+      aria-label="Job field actions"
+      data-testid="card-job-field-actions"
+    >
+      <div className="grid grid-cols-4 gap-2">
+        {/* Check-in / Check-out */}
+        <button
+          type="button"
+          className={
+            isCheckedIn
+              ? `${baseBtn} border-transparent bg-[hsl(var(--titan-red))] text-white hover:brightness-110`
+              : neutralBtn
+          }
+          onClick={() => stamp(isCheckedIn ? "checkout" : "checkin")}
+          disabled={busy !== "none"}
+          data-testid="btn-field-checkin"
+        >
+          {busy !== "none" ? (
+            <Loader2 className="w-5 h-5 animate-spin" />
+          ) : confirmed ? (
+            <Check className="w-5 h-5" />
+          ) : isCheckedIn ? (
+            <LogOut className="w-5 h-5" />
+          ) : (
+            <MapPin className="w-5 h-5" />
+          )}
+          <span className="text-[11px] font-medium leading-tight">{isCheckedIn ? "Check out" : "Check in"}</span>
+        </button>
+
+        <button
+          type="button"
+          className={neutralBtn}
+          onClick={() => triggerPhoto(onSwitchTab)}
+          data-testid="btn-field-photo"
+        >
+          <Camera className="w-5 h-5" />
+          <span className="text-[11px] font-medium leading-tight">Photo</span>
+        </button>
+
+        <button
+          type="button"
+          className={neutralBtn}
+          onClick={() => onSwitchTab("notes")}
+          data-testid="btn-field-note"
+        >
+          <StickyNote className="w-5 h-5" />
+          <span className="text-[11px] font-medium leading-tight">Note</span>
+        </button>
+
+        {dialHref ? (
+          <a
+            href={dialHref}
+            className={`${baseBtn} border-emerald-200/60 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-950/60`}
+            data-testid="btn-field-call"
+          >
+            <Phone className="w-5 h-5" />
+            <span className="text-[11px] font-medium leading-tight">Call</span>
+          </a>
+        ) : (
+          <button
+            type="button"
+            disabled
+            className={`${baseBtn} border-neutral-200 dark:border-neutral-800 text-neutral-400 dark:text-neutral-600`}
+            title="No phone on file for this contact"
+          >
+            <Phone className="w-5 h-5" />
+            <span className="text-[11px] font-medium leading-tight">Call</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function MobileJobActionBar({ jobId, contactPhone, onSwitchTab }: Props) {
+  const { busy, confirmed, isCheckedIn, stamp } = useJobCheckin(jobId);
 
   useEffect(() => {
     // Reserve bottom padding on <body> so page content isn't hidden behind the bar
@@ -117,14 +228,7 @@ export function MobileJobActionBar({ jobId, contactPhone, onSwitchTab }: Props) 
           <button
             type="button"
             className="min-h-[64px] flex flex-col items-center justify-center gap-0.5 text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 active:scale-95 transition"
-            onClick={() => {
-              onSwitchTab("photos");
-              // Give React a tick, then click the Take Photo button if present
-              setTimeout(() => {
-                const btn = document.querySelector<HTMLButtonElement>('[data-testid="button-take-photo"]');
-                btn?.click();
-              }, 250);
-            }}
+            onClick={() => triggerPhoto(onSwitchTab)}
             data-testid="btn-mobile-photo"
           >
             <Camera className="w-6 h-6" />
