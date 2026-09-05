@@ -33,7 +33,6 @@ const HREF_TO_FILE: Record<string, string> = {
   "/invoices": "invoices",
   "/payments": "payments",
   "/scheduling": "scheduling",
-  "/technician": "technician",
   "/photos": "photos",
   "/safety": "safety",
   "/equipment": "equipment",

@@ -16,7 +16,7 @@ import {
   AlertTriangle, Brain, BarChart2,
   ScanLine, Scale, Library, GraduationCap as GradCap, Truck, Route as RouteIcon, CalendarDays,
   Timer, User, Grid3X3, Building2, Banknote, HardDriveUpload,
-  Droplets, Mic, FileSearch, UserRound, Trophy, UserCog, KeyRound,
+  Mic, FileSearch, UserRound, Trophy, UserCog, KeyRound,
   FileSpreadsheet, QrCode, Handshake, ArrowLeft, LayoutDashboard as DashIcon,
   Package, Lock, Inbox,
   Trash2, Settings as SettingsIcon, Wallet,
@@ -88,11 +88,11 @@ const navGroups: NavGroup[] = [
       // Dispatch (was "Scheduling & Dispatch" — Schedule tab moved to Core).
       // Hub still bundles Dispatch, Appt Reminders, and Departure Checklist.
       { href: "/scheduling-hub", label: "Dispatch", icon: Grid3X3, permission: "scheduling" },
-      // Technicians hub retired from the sidebar. Scorecard, Training (LMS),
-      // and Certifications now live under HR Management > Workforce.
-      // Route /technician-hub remains for legacy links.
+      // Technicians hub retired entirely. Scorecard, Training (LMS), and
+      // Certifications now live under HR Management > Workforce. Old
+      // deep links (/tech-scorecard, /tech-lms, /certifications) redirect
+      // there; /technician-hub and /technician were deleted.
       { href: "/safety-hub", label: "Safety", icon: ShieldAlert, permission: "safety" },
-      { href: "/drying-hub", label: "Drying & Compliance", icon: Droplets, permission: "technician" },
       // — Standalone field tools —
       { href: "/time-clock", label: "GPS Time Clock", icon: ClipboardCheck, permission: "time-clock" },
       // Photos Hub (capture + search + AI classify) replaces three separate items.

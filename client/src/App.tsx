@@ -48,7 +48,6 @@ const PhotoSearch = lazy(() => import("@/pages/PhotoSearch"));
 const Analytics = lazy(() => import("@/pages/Analytics"));
 const TrashPage = lazy(() => import("@/pages/Trash"));
 const Scheduling = lazy(() => import("@/pages/Scheduling"));
-const Technician = lazy(() => import("@/pages/Technician"));
 const Messaging = lazy(() => import("@/pages/Messaging"));
 const EmailPage = lazy(() => import("@/pages/Email"));
 const Marketing = lazy(() => import("@/pages/Marketing"));
@@ -67,8 +66,6 @@ const CarrierHub = lazy(() => import("@/pages/CarrierHub"));
 const SupplementHub = lazy(() => import("@/pages/SupplementHub"));
 const XactimateHub = lazy(() => import("@/pages/XactimateHub"));
 const AdjusterHub = lazy(() => import("@/pages/AdjusterHub"));
-const TechnicianHub = lazy(() => import("@/pages/TechnicianHub"));
-const DryingComplianceHub = lazy(() => import("@/pages/DryingComplianceHub"));
 const SafetyHub = lazy(() => import("@/pages/SafetyHub"));
 const SchedulingHub = lazy(() => import("@/pages/SchedulingHub"));
 const ARHub = lazy(() => import("@/pages/ARHub"));
@@ -117,8 +114,6 @@ const WeeklyPayouts = lazy(() => import("@/pages/WeeklyPayouts"));
 const CarrierARIntelligence = lazy(() => import("@/pages/CarrierARIntelligence"));
 const AISupplementEngine = lazy(() => import("@/pages/AISupplementEngine"));
 const CommTimeline = lazy(() => import("@/pages/CommTimeline"));
-const IoTDryingDashboard = lazy(() => import("@/pages/IoTDryingDashboard"));
-const IICRCCompliance = lazy(() => import("@/pages/IICRCCompliance"));
 const EmergencyIntake = lazy(() => import("@/pages/EmergencyIntake"));
 const ReferralProfitability = lazy(() => import("@/pages/ReferralProfitability"));
 const EquipmentLifecycle = lazy(() => import("@/pages/EquipmentLifecycle"));
@@ -155,17 +150,14 @@ const FNOLChatbot = lazy(() => import("@/pages/FNOLChatbot"));
 const ClaimFileChecker = lazy(() => import("@/pages/ClaimFileChecker"));
 const CarrierEscalationAI = lazy(() => import("@/pages/CarrierEscalationAI"));
 const PredictiveModel = lazy(() => import("@/pages/PredictiveModel"));
-const IICRCDeviationLog = lazy(() => import("@/pages/IICRCDeviationLog"));
 const COITracker = lazy(() => import("@/pages/COITracker"));
 const Subcontractors = lazy(() => import("@/pages/Subcontractors"));
 const TechLMS = lazy(() => import("@/pages/TechLMS"));
 const DispatchMatrix = lazy(() => import("@/pages/DispatchMatrix"));
 const GlobalSearch = lazy(() => import("@/pages/GlobalSearch"));
 const CarrierClaimIntelligence = lazy(() => import("@/pages/CarrierClaimIntelligence"));
-const TechCoach = lazy(() => import("@/pages/TechCoach"));
 const SupplementAuditAI = lazy(() => import("@/pages/SupplementAuditAI"));
 const CarrierCounterIntel = lazy(() => import("@/pages/CarrierCounterIntel"));
-const PredictiveDrying = lazy(() => import("@/pages/PredictiveDrying"));
 const EscalationOutbox = lazy(() => import("@/pages/EscalationOutbox"));
 const StormCAT = lazy(() => import("@/pages/StormCAT"));
 const MidJobMarginAlert = lazy(() => import("@/pages/MidJobMarginAlert"));
@@ -183,7 +175,6 @@ const AuditLog = lazy(() => import("@/pages/AuditLog"));
 const CarrierResponseTime = lazy(() => import("@/pages/CarrierResponseTime"));
 const EquipmentAlerts = lazy(() => import("@/pages/EquipmentAlerts"));
 const ProfitabilityByType = lazy(() => import("@/pages/ProfitabilityByType"));
-const TechDailySummary = lazy(() => import("@/pages/TechDailySummary"));
 const JobAgeAlerts = lazy(() => import("@/pages/JobAgeAlerts"));
 const Integrations = lazy(() => import("@/pages/Integrations"));
 const UserManagement = lazy(() => import("@/pages/UserManagement"));
@@ -332,14 +323,13 @@ function AuthenticatedRoutes() {
             tab inside the Scheduling & Dispatch hub). Renders the Scheduling
             page directly so the sidebar entry loads without a redirect hop. */}
         <Route path="/scheduling" component={() => <Page component={Scheduling} name="Scheduling" />} />
-        <Route path="/technician"><Redirect to="/technician-hub?tab=technician" /></Route>
         <Route path="/equipment"><Redirect to="/equipment-hub?tab=inventory" /></Route>
         <Route path="/inventory"><Redirect to="/equipment-hub?tab=consumables" /></Route>
         <Route path="/consumables"><Redirect to="/equipment-hub?tab=consumables" /></Route>
         <Route path="/equipment-roi"><Redirect to="/equipment-hub?tab=roi" /></Route>
         <Route path="/inspections" component={() => <Page component={InspectionChecklist} name="InspectionChecklist" />} />
         <Route path="/safety"><Redirect to="/safety-hub?tab=log" /></Route>
-        <Route path="/certifications"><Redirect to="/technician-hub?tab=certs" /></Route>
+        <Route path="/certifications"><Redirect to="/hr-hub?tab=workforce" /></Route>
 
         {/* Insurance — consolidated hubs */}
         <Route path="/carrier-hub" component={() => <Page component={CarrierHub} name="CarrierHub" />} />
@@ -348,8 +338,6 @@ function AuthenticatedRoutes() {
         <Route path="/adjuster-hub" component={() => <Page component={AdjusterHub} name="AdjusterHub" />} />
 
         {/* Field Ops / Finance / Business Dev / Equipment / Comms — consolidated hubs */}
-        <Route path="/technician-hub" component={() => <Page component={TechnicianHub} name="TechnicianHub" />} />
-        <Route path="/drying-hub" component={() => <Page component={DryingComplianceHub} name="DryingComplianceHub" />} />
         <Route path="/safety-hub" component={() => <Page component={SafetyHub} name="SafetyHub" />} />
         <Route path="/scheduling-hub" component={() => <Page component={SchedulingHub} name="SchedulingHub" />} />
         <Route path="/ar-hub" component={() => <Page component={ARHub} name="ARHub" />} />
@@ -420,8 +408,6 @@ function AuthenticatedRoutes() {
         <Route path="/subrogation"><Redirect to="/supplement-hub?tab=subrogation" /></Route>
 
         {/* Suite 4 — Field Tech */}
-        <Route path="/iot-drying"><Redirect to="/drying-hub?tab=iot" /></Route>
-        <Route path="/iicrc-compliance"><Redirect to="/drying-hub?tab=iicrc" /></Route>
         {/* Intake Hub — tabs: emergency | fnol | voice. */}
         <Route path="/intake-hub" component={() => <Page component={IntakeHub} name="IntakeHub" />} />
         <Route path="/emergency-intake"><Redirect to="/intake-hub?tab=emergency" /></Route>
@@ -458,7 +444,6 @@ function AuthenticatedRoutes() {
         <Route path="/carrier-response-time"><Redirect to="/carrier-hub?tab=response-time" /></Route>
         <Route path="/equipment-alerts"><Redirect to="/equipment-hub?tab=alerts" /></Route>
         <Route path="/profitability-by-type"><Redirect to="/profitability-hub?tab=by-type" /></Route>
-        <Route path="/tech-daily"><Redirect to="/technician-hub?tab=daily" /></Route>
         <Route path="/job-age-alerts" component={() => <Page component={JobAgeAlerts} name="JobAgeAlerts" />} />
 
         {/* User Management */}
@@ -486,7 +471,7 @@ function AuthenticatedRoutes() {
         <Route path="/payment-plans" component={() => <Page component={PaymentPlans} name="PaymentPlans" />} />
         <Route path="/safety-checklist"><Redirect to="/safety-hub?tab=checklist" /></Route>
         <Route path="/nps-surveys"><Redirect to="/reports-hub?tab=nps" /></Route>
-        <Route path="/tech-scorecard"><Redirect to="/technician-hub?tab=scorecard" /></Route>
+        <Route path="/tech-scorecard"><Redirect to="/hr-hub?tab=workforce" /></Route>
         <Route path="/xactimate-alert"><Redirect to="/xactimate-hub?tab=alerts" /></Route>
         <Route path="/invoice-escalation" component={() => <Page component={InvoiceEscalation} name="InvoiceEscalation" />} />
         <Route path="/supplement-autodraft"><Redirect to="/supplement-hub?tab=draft" /></Route>
@@ -494,19 +479,16 @@ function AuthenticatedRoutes() {
         <Route path="/claim-file-checker"><Redirect to="/supplement-hub?tab=file-checker" /></Route>
         <Route path="/carrier-escalation-ai"><Redirect to="/carrier-hub?tab=escalation" /></Route>
         <Route path="/predictive-model"><Redirect to="/reports-hub?tab=predictive" /></Route>
-        <Route path="/iicrc-deviations"><Redirect to="/drying-hub?tab=deviations" /></Route>
         {/* Subcontractors Hub — tabs: roster | coi. */}
         <Route path="/subcontractors-hub" component={() => <Page component={SubcontractorsHub} name="SubcontractorsHub" />} />
         <Route path="/coi-tracker"><Redirect to="/subcontractors-hub?tab=coi" /></Route>
         <Route path="/subcontractors"><Redirect to="/subcontractors-hub?tab=roster" /></Route>
-        <Route path="/tech-lms"><Redirect to="/technician-hub?tab=lms" /></Route>
+        <Route path="/tech-lms"><Redirect to="/hr-hub?tab=workforce" /></Route>
         <Route path="/dispatch-matrix"><Redirect to="/scheduling-hub?tab=dispatch" /></Route>
         <Route path="/global-search" component={() => <Page component={GlobalSearch} name="GlobalSearch" />} />
         <Route path="/carrier-claim-intel"><Redirect to="/carrier-hub?tab=claim-intel" /></Route>
-        <Route path="/tech-coach"><Redirect to="/technician-hub?tab=coach" /></Route>
         <Route path="/supplement-audit-ai"><Redirect to="/supplement-hub?tab=audit" /></Route>
         <Route path="/carrier-counter-intel"><Redirect to="/carrier-hub?tab=counter-intel" /></Route>
-        <Route path="/predictive-drying"><Redirect to="/drying-hub?tab=predictive" /></Route>
         <Route path="/storm-cat"><Redirect to="/marketing-hub?tab=storm-cat" /></Route>
         <Route path="/margin-alert"><Redirect to="/profitability-hub?tab=margin-alert" /></Route>
         <Route path="/adjuster-profiler"><Redirect to="/adjuster-hub?tab=profiler" /></Route>
