@@ -1,9 +1,11 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -11,7 +13,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
-import { TrendingUp, Target, ClipboardList, CheckCircle2, AlertCircle, CalendarRange } from "lucide-react";
+import {
+  TrendingUp, Target, ClipboardList, CheckCircle2, FileSignature, RotateCcw, Check, X, Pencil,
+} from "lucide-react";
+import { Link } from "wouter";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface Job {
@@ -23,37 +31,35 @@ interface Job {
   salesDate?: string | null;
   leadSource?: string | null;
   createdAt?: string | null;
+  address?: string | null;
 }
 
-// A job is "sold" (converted) if it has a sales date OR it has moved past the
-// "pending_sale" progress stage.
-function isSold(j: Job): boolean {
-  const hasSalesDate = !!(j.salesDate && String(j.salesDate).trim());
-  const stage = j.progressStage || "pending_sale";
-  const advanced = stage !== "pending_sale";
-  return hasSalesDate || advanced;
+interface JobDocument {
+  id: number;
+  jobId: number;
+  docType: string;   // "work_authorization" | ...
+  status: string;    // "unsigned" | "signed" | "uploaded"
+  signedAt?: string | null;
 }
 
-const LEAD_SOURCE_LABELS: Record<string, string> = {
-  referral: "Referral",
-  google: "Google",
-  door_knock: "Door Knock",
-  insurance_direct: "Insurance Direct",
-  repeat: "Repeat",
-  other: "Other",
-};
+interface ConversionOverride {
+  job_id: number;
+  sold: number;      // 1 or 0
+  reason: string | null;
+  set_by: string | null;
+  set_at: string;
+}
 
 function pct(sold: number, taken: number): number {
   return taken > 0 ? Math.round((sold / taken) * 1000) / 10 : 0;
 }
-
 function rateColor(rate: number): string {
   if (rate >= 60) return "text-green-600";
   if (rate >= 40) return "text-amber-600";
   return "text-red-600";
 }
 
-// Parse a job's "taken in" date for monthly bucketing (createdAt preferred).
+// Bucket a job into a year-month key from its createdAt (fallback: salesDate).
 function takenMonth(j: Job): string | null {
   const raw = j.createdAt || j.salesDate;
   if (!raw) return null;
@@ -61,116 +67,96 @@ function takenMonth(j: Job): string | null {
   if (isNaN(d.getTime())) return null;
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
-
 function monthLabel(ym: string): string {
   const [y, m] = ym.split("-").map(Number);
   const d = new Date(y, m - 1, 1);
-  return d.toLocaleString("en-US", { month: "short", year: "2-digit" });
+  return d.toLocaleString("en-US", { month: "short", year: "numeric" });
+}
+function currentYearMonth(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-// A job's "taken in" date used for date-range filtering (createdAt preferred,
-// falls back to salesDate). Returns a Date or null if unparseable.
-function takenDate(j: Job): Date | null {
-  const raw = j.createdAt || j.salesDate;
-  if (!raw) return null;
-  const d = new Date(raw);
-  return isNaN(d.getTime()) ? null : d;
-}
-
-function toISODate(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-type Preset = "all" | "30d" | "90d" | "ytd" | "custom";
-
+// ─── Component ──────────────────────────────────────────────────────────────
 export default function ConversionRate() {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const canManage = ["owner", "admin", "office", "general_manager"].includes(user?.role || "");
+
   const { data: jobs = [], isLoading } = useQuery<Job[]>({ queryKey: ["/api/jobs"] });
+  const { data: jobDocs = [], isLoading: docsLoading } = useQuery<JobDocument[]>({
+    queryKey: ["/api/job-documents"],
+  });
+  const { data: overrides = [], isLoading: ovrLoading } = useQuery<ConversionOverride[]>({
+    queryKey: ["/api/conversion-overrides"],
+  });
 
-  const [preset, setPreset] = useState<Preset>("all");
-  const [start, setStart] = useState<string>("");
-  const [end, setEnd] = useState<string>("");
-
-  function applyPreset(p: Preset) {
-    setPreset(p);
-    const today = new Date();
-    if (p === "all") { setStart(""); setEnd(""); }
-    else if (p === "30d") {
-      const s = new Date(today); s.setDate(s.getDate() - 30);
-      setStart(toISODate(s)); setEnd(toISODate(today));
-    } else if (p === "90d") {
-      const s = new Date(today); s.setDate(s.getDate() - 90);
-      setStart(toISODate(s)); setEnd(toISODate(today));
-    } else if (p === "ytd") {
-      setStart(`${today.getFullYear()}-01-01`); setEnd(toISODate(today));
+  // Set of job ids that have a signed Work Authorization on file.
+  const signedWorkAuthJobIds = useMemo(() => {
+    const s = new Set<number>();
+    for (const d of jobDocs) {
+      if (d.docType === "work_authorization" && (d.status === "signed" || !!d.signedAt)) {
+        s.add(d.jobId);
+      }
     }
-    // custom: leave whatever is in the inputs
+    return s;
+  }, [jobDocs]);
+
+  // Map from job id → override row (undefined means "no override, use derived").
+  const overrideByJob = useMemo(() => {
+    const m = new Map<number, ConversionOverride>();
+    for (const o of overrides) m.set(o.job_id, o);
+    return m;
+  }, [overrides]);
+
+  // Effective sold state: override wins over the derived signed-Work-Auth signal.
+  function isSold(jobId: number): boolean {
+    const o = overrideByJob.get(jobId);
+    if (o) return o.sold === 1;
+    return signedWorkAuthJobIds.has(jobId);
+  }
+  function soldSource(jobId: number): "override" | "signed" | "unsigned" {
+    if (overrideByJob.has(jobId)) return "override";
+    return signedWorkAuthJobIds.has(jobId) ? "signed" : "unsigned";
   }
 
-  // Filter jobs to the selected date range before any calculation.
-  const filteredJobs = useMemo(() => {
-    if (!start && !end) return jobs;
-    const startMs = start ? new Date(start + "T00:00:00").getTime() : -Infinity;
-    const endMs = end ? new Date(end + "T23:59:59").getTime() : Infinity;
-    return jobs.filter(j => {
-      const d = takenDate(j);
-      if (!d) return false;
-      const t = d.getTime();
-      return t >= startMs && t <= endMs;
-    });
-  }, [jobs, start, end]);
-
-  const rangeLabel = (!start && !end)
-    ? "All time"
-    : `${start || "earliest"} → ${end || "today"}`;
-
-  const stats = useMemo(() => {
-    const jobs = filteredJobs;
-    const takenIn = jobs.length;
-    const sold = jobs.filter(isSold).length;
-    const overallRate = pct(sold, takenIn);
-
-    // By lead source
-    const bySourceMap = new Map<string, { taken: number; sold: number }>();
+  // ─── Month picker ─────────────────────────────────────────────────────────
+  // Show every month that has at least one taken-in job, newest first, and
+  // default to the current month. Simpler than a preset+custom range picker
+  // and matches how Cody actually reviews sales.
+  const monthOptions = useMemo(() => {
+    const set = new Set<string>();
     for (const j of jobs) {
-      const src = j.leadSource || "other";
-      const row = bySourceMap.get(src) || { taken: 0, sold: 0 };
-      row.taken += 1;
-      if (isSold(j)) row.sold += 1;
-      bySourceMap.set(src, row);
+      const ym = takenMonth(j);
+      if (ym) set.add(ym);
     }
-    const bySource = Array.from(bySourceMap.entries())
-      .map(([source, v]) => ({
-        source,
-        label: LEAD_SOURCE_LABELS[source] || source,
-        ...v,
-        rate: pct(v.sold, v.taken),
-      }))
-      .sort((a, b) => b.taken - a.taken);
+    set.add(currentYearMonth());
+    return Array.from(set).sort().reverse();
+  }, [jobs]);
 
-    // By loss type
-    const byTypeMap = new Map<string, { taken: number; sold: number }>();
-    for (const j of jobs) {
-      const t = (j.lossType || "other").toLowerCase();
-      const row = byTypeMap.get(t) || { taken: 0, sold: 0 };
-      row.taken += 1;
-      if (isSold(j)) row.sold += 1;
-      byTypeMap.set(t, row);
-    }
-    const byType = Array.from(byTypeMap.entries())
-      .map(([type, v]) => ({ type, ...v, rate: pct(v.sold, v.taken) }))
-      .sort((a, b) => b.taken - a.taken);
+  const [selectedMonth, setSelectedMonth] = useState<string>(currentYearMonth());
+  const monthJobs = useMemo(
+    () => jobs.filter(j => takenMonth(j) === selectedMonth),
+    [jobs, selectedMonth],
+  );
 
-    // Monthly trend
-    const byMonthMap = new Map<string, { taken: number; sold: number }>();
+  // ─── Stats + monthly trend ────────────────────────────────────────────────
+  const takenInSelected = monthJobs.length;
+  const soldSelected = monthJobs.filter(j => isSold(j.id)).length;
+  const rateSelected = pct(soldSelected, takenInSelected);
+
+  // Last 12 months for the chart, oldest-first for a natural time axis.
+  const trend = useMemo(() => {
+    const map = new Map<string, { taken: number; sold: number }>();
     for (const j of jobs) {
       const ym = takenMonth(j);
       if (!ym) continue;
-      const row = byMonthMap.get(ym) || { taken: 0, sold: 0 };
+      const row = map.get(ym) || { taken: 0, sold: 0 };
       row.taken += 1;
-      if (isSold(j)) row.sold += 1;
-      byMonthMap.set(ym, row);
+      if (isSold(j.id)) row.sold += 1;
+      map.set(ym, row);
     }
-    const trend = Array.from(byMonthMap.entries())
+    return Array.from(map.entries())
       .sort((a, b) => a[0].localeCompare(b[0]))
       .slice(-12)
       .map(([ym, v]) => ({
@@ -179,11 +165,41 @@ export default function ConversionRate() {
         Sold: v.sold,
         Rate: pct(v.sold, v.taken),
       }));
+    // isSold reads two Maps; both are memoised, and the closure over them is
+    // stable within a render, so the trend recomputes exactly when it should.
+  }, [jobs, overrideByJob, signedWorkAuthJobIds]);
 
-    return { takenIn, sold, overallRate, bySource, byType, trend };
-  }, [filteredJobs]);
+  // ─── Mutations ────────────────────────────────────────────────────────────
+  const setOverride = useMutation({
+    mutationFn: ({ jobId, sold, reason }: { jobId: number; sold: boolean; reason?: string }) =>
+      apiRequest("PUT", `/api/conversion-overrides/${jobId}`, { sold, reason: reason ?? "" }).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/conversion-overrides"] });
+      toast({ title: "Conversion updated" });
+    },
+    onError: (e: any) => toast({
+      title: "Update failed",
+      description: String(e?.message || e),
+      variant: "destructive",
+    }),
+  });
 
-  if (isLoading) {
+  const clearOverride = useMutation({
+    mutationFn: (jobId: number) =>
+      apiRequest("DELETE", `/api/conversion-overrides/${jobId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/conversion-overrides"] });
+      toast({ title: "Reset to signed-Work-Auth default" });
+    },
+    onError: (e: any) => toast({
+      title: "Reset failed",
+      description: String(e?.message || e),
+      variant: "destructive",
+    }),
+  });
+
+  // ─── Loading ──────────────────────────────────────────────────────────────
+  if (isLoading || docsLoading || ovrLoading) {
     return (
       <div className="space-y-4">
         <Skeleton className="h-24 w-full" />
@@ -192,66 +208,35 @@ export default function ConversionRate() {
     );
   }
 
-  const PRESETS: { value: Preset; label: string }[] = [
-    { value: "all", label: "All time" },
-    { value: "30d", label: "Last 30 days" },
-    { value: "90d", label: "Last 90 days" },
-    { value: "ytd", label: "Year to date" },
-    { value: "custom", label: "Custom" },
-  ];
-
+  // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6" data-testid="conversion-rate-page">
-      {/* Date-range filter */}
-      <Card data-testid="date-range-filter">
-        <CardContent className="p-4 space-y-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            <CalendarRange className="w-4 h-4 text-[hsl(var(--titan-blue))]" />
-            <span className="text-sm font-medium mr-1">Date range</span>
-            {PRESETS.map(p => (
-              <Button
-                key={p.value}
-                type="button"
-                size="sm"
-                variant={preset === p.value ? "default" : "outline"}
-                className={preset === p.value ? "bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue))]/90" : ""}
-                data-testid={`preset-${p.value}`}
-                onClick={() => applyPreset(p.value)}
-              >
-                {p.label}
-              </Button>
-            ))}
-            <Badge variant="secondary" className="ml-auto" data-testid="badge-range">{rangeLabel}</Badge>
-          </div>
-          {preset === "custom" && (
-            <div className="flex items-end gap-3 flex-wrap">
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-muted-foreground">Start</label>
-                <Input type="date" value={start} max={end || undefined} className="w-44"
-                  data-testid="input-start" onChange={e => setStart(e.target.value)} />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-muted-foreground">End</label>
-                <Input type="date" value={end} min={start || undefined} className="w-44"
-                  data-testid="input-end" onChange={e => setEnd(e.target.value)} />
-              </div>
-              {(start || end) && (
-                <Button type="button" size="sm" variant="ghost" data-testid="button-clear-range"
-                  onClick={() => { setStart(""); setEnd(""); }}>Clear</Button>
-              )}
-            </div>
-          )}
+      {/* Month picker */}
+      <Card data-testid="month-picker">
+        <CardContent className="p-4 flex items-center gap-3 flex-wrap">
+          <span className="text-sm font-medium">Month</span>
+          <Select value={selectedMonth} onValueChange={setSelectedMonth}>
+            <SelectTrigger className="w-60" data-testid="select-month">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {monthOptions.map(ym => (
+                <SelectItem key={ym} value={ym}>{monthLabel(ym)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Badge variant="secondary" className="ml-auto" data-testid="badge-month">{monthLabel(selectedMonth)}</Badge>
         </CardContent>
       </Card>
 
-      {/* KPI cards */}
+      {/* KPI cards for the selected month */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card data-testid="kpi-taken-in">
           <CardContent className="p-4 flex items-center gap-3">
             <div className="rounded-lg bg-blue-100 p-2"><ClipboardList className="w-5 h-5 text-blue-700" /></div>
             <div>
               <p className="text-xs uppercase tracking-wide text-muted-foreground">Jobs Taken In</p>
-              <p className="text-2xl font-bold" data-testid="text-taken-in">{stats.takenIn}</p>
+              <p className="text-2xl font-bold" data-testid="text-taken-in">{takenInSelected}</p>
             </div>
           </CardContent>
         </Card>
@@ -260,7 +245,7 @@ export default function ConversionRate() {
             <div className="rounded-lg bg-green-100 p-2"><CheckCircle2 className="w-5 h-5 text-green-700" /></div>
             <div>
               <p className="text-xs uppercase tracking-wide text-muted-foreground">Jobs Sold</p>
-              <p className="text-2xl font-bold" data-testid="text-sold">{stats.sold}</p>
+              <p className="text-2xl font-bold" data-testid="text-sold">{soldSelected}</p>
             </div>
           </CardContent>
         </Card>
@@ -269,29 +254,30 @@ export default function ConversionRate() {
             <div className="rounded-lg bg-[hsl(var(--titan-blue))]/10 p-2"><Target className="w-5 h-5 text-[hsl(var(--titan-blue))]" /></div>
             <div>
               <p className="text-xs uppercase tracking-wide text-muted-foreground">Conversion Rate</p>
-              <p className={`text-2xl font-bold ${rateColor(stats.overallRate)}`} data-testid="text-rate">{stats.overallRate}%</p>
+              <p className={`text-2xl font-bold ${rateColor(rateSelected)}`} data-testid="text-rate">{rateSelected}%</p>
             </div>
           </CardContent>
         </Card>
       </div>
 
       <p className="text-xs text-muted-foreground flex items-center gap-1">
-        <AlertCircle className="w-3 h-3" /> A job counts as “sold” when it has a sales date or has advanced past the Pending Sale stage.
+        <FileSignature className="w-3 h-3" /> A job counts as “sold” only when a Work Authorization has been signed on it.
+        {canManage ? " Use the row buttons below to manually override or reset a job." : ""}
       </p>
 
-      {/* Monthly trend */}
+      {/* Monthly trend (last 12 months, independent of picker) */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-[hsl(var(--titan-blue))]" /> Monthly Trend — Taken In vs Sold
+            <TrendingUp className="w-4 h-4 text-[hsl(var(--titan-blue))]" /> Monthly Trend — Last 12 Months
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {stats.trend.length === 0 ? (
+          {trend.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">No dated jobs to chart yet.</p>
           ) : (
             <ResponsiveContainer width="100%" height={300}>
-              <ComposedChart data={stats.trend} margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
+              <ComposedChart data={trend} margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
                 <XAxis dataKey="month" fontSize={12} />
                 <YAxis yAxisId="left" fontSize={12} allowDecimals={false} />
@@ -307,70 +293,106 @@ export default function ConversionRate() {
         </CardContent>
       </Card>
 
-      {/* Breakdown tables */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">By Lead Source</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
+      {/* Editable job list for the selected month */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Pencil className="w-4 h-4 text-[hsl(var(--titan-blue))]" /> Jobs Taken In — {monthLabel(selectedMonth)}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Job #</TableHead>
+                <TableHead>Address</TableHead>
+                <TableHead>Loss Type</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead>Status</TableHead>
+                {canManage && <TableHead className="text-right">Actions</TableHead>}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {monthJobs.length === 0 && (
                 <TableRow>
-                  <TableHead>Source</TableHead>
-                  <TableHead className="text-right">Taken In</TableHead>
-                  <TableHead className="text-right">Sold</TableHead>
-                  <TableHead className="text-right">Rate</TableHead>
+                  <TableCell colSpan={canManage ? 6 : 5} className="text-center text-muted-foreground py-6">
+                    No jobs taken in during this month.
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {stats.bySource.map(r => (
-                  <TableRow key={r.source} data-testid={`row-source-${r.source}`}>
-                    <TableCell className="font-medium">{r.label}</TableCell>
-                    <TableCell className="text-right">{r.taken}</TableCell>
-                    <TableCell className="text-right">{r.sold}</TableCell>
-                    <TableCell className={`text-right font-semibold ${rateColor(r.rate)}`}>{r.rate}%</TableCell>
+              )}
+              {monthJobs.map(j => {
+                const sold = isSold(j.id);
+                const src = soldSource(j.id);
+                const busy = setOverride.isPending || clearOverride.isPending;
+                return (
+                  <TableRow key={j.id} data-testid={`row-job-${j.id}`}>
+                    <TableCell className="font-medium">
+                      <Link href={`/jobs/${j.id}`} className="text-[hsl(var(--titan-blue))] hover:underline">{j.jobNumber}</Link>
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground max-w-[240px] truncate">{j.address || "—"}</TableCell>
+                    <TableCell className="text-sm capitalize">{j.lossType || "—"}</TableCell>
+                    <TableCell className="text-sm capitalize">{(j.leadSource || "other").replace(/_/g, " ")}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <Badge className={sold ? "bg-green-600 text-white" : "bg-slate-500 text-white"}>
+                          {sold ? "Sold" : "Not sold"}
+                        </Badge>
+                        {src === "override" && (
+                          <Badge variant="outline" className="text-[10px] border-amber-500 text-amber-700">Manual</Badge>
+                        )}
+                        {src === "signed" && (
+                          <Badge variant="outline" className="text-[10px]">Signed W/A</Badge>
+                        )}
+                      </div>
+                    </TableCell>
+                    {canManage && (
+                      <TableCell className="text-right">
+                        <div className="inline-flex items-center gap-1">
+                          <Button
+                            size="sm"
+                            variant={sold ? "default" : "outline"}
+                            className={sold ? "h-8 bg-green-600 hover:bg-green-700" : "h-8"}
+                            title="Force sold"
+                            onClick={() => setOverride.mutate({ jobId: j.id, sold: true })}
+                            disabled={busy}
+                            data-testid={`button-mark-sold-${j.id}`}
+                          >
+                            <Check className="w-3.5 h-3.5 mr-1" />Sold
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={!sold ? "default" : "outline"}
+                            className={!sold ? "h-8" : "h-8"}
+                            title="Force not sold"
+                            onClick={() => setOverride.mutate({ jobId: j.id, sold: false })}
+                            disabled={busy}
+                            data-testid={`button-mark-notsold-${j.id}`}
+                          >
+                            <X className="w-3.5 h-3.5 mr-1" />Not sold
+                          </Button>
+                          {src === "override" && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-8 w-8 p-0"
+                              title="Reset to signed-Work-Auth default"
+                              onClick={() => clearOverride.mutate(j.id)}
+                              disabled={busy}
+                              data-testid={`button-reset-${j.id}`}
+                            >
+                              <RotateCcw className="w-4 h-4" />
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    )}
                   </TableRow>
-                ))}
-                {stats.bySource.length === 0 && (
-                  <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground py-4">No jobs yet.</TableCell></TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">By Loss Type</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Loss Type</TableHead>
-                  <TableHead className="text-right">Taken In</TableHead>
-                  <TableHead className="text-right">Sold</TableHead>
-                  <TableHead className="text-right">Rate</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {stats.byType.map(r => (
-                  <TableRow key={r.type} data-testid={`row-type-${r.type}`}>
-                    <TableCell className="font-medium capitalize">{r.type}</TableCell>
-                    <TableCell className="text-right">{r.taken}</TableCell>
-                    <TableCell className="text-right">{r.sold}</TableCell>
-                    <TableCell className={`text-right font-semibold ${rateColor(r.rate)}`}>{r.rate}%</TableCell>
-                  </TableRow>
-                ))}
-                {stats.byType.length === 0 && (
-                  <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground py-4">No jobs yet.</TableCell></TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      </div>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
     </div>
   );
 }

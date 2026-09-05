@@ -113,6 +113,20 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
     created_at TEXT NOT NULL DEFAULT ''
   )`);
 
+  // ── Conversion overrides ─────────────────────────────────────────────────────────────────
+  // The Conversion Rate tracker (Marketing hub) counts a job as "sold" only
+  // when it has a signed Work Authorization. This override table lets the
+  // owner/manager force a job on or off that list without touching the
+  // underlying signed PDF. sold=1 forces sold, sold=0 forces not-sold.
+  // Deleting the row returns the job to the derived signal.
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS conversion_overrides (
+    job_id INTEGER PRIMARY KEY,
+    sold INTEGER NOT NULL,
+    reason TEXT,
+    set_by TEXT,
+    set_at TEXT NOT NULL DEFAULT ''
+  )`);
+
   // Seed default AR follow-up rules if none exist
   const ruleCount = (sqlite.prepare("SELECT COUNT(*) as c FROM ar_followup_rules").get() as any).c;
   if (ruleCount === 0) {
@@ -641,6 +655,52 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
         }
       }
       res.json({ flags, scannedJobId: jobId });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Conversion overrides ─────────────────────────────────────────────────────
+  // Force a job to "sold" / "not sold" on the Conversion Rate tracker. The
+  // default state comes from job_documents (signed work_authorization); this
+  // override wins when present. Delete to restore the default. Manager gate —
+  // sales metrics shouldn't be editable by field staff.
+  app.get("/api/conversion-overrides", (_req, res) => {
+    try {
+      const rows = sqlite.prepare("SELECT * FROM conversion_overrides").all();
+      res.json(rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.put("/api/conversion-overrides/:jobId", requireManage, (req, res) => {
+    try {
+      const jobId = parseInt(req.params.jobId, 10);
+      if (!Number.isFinite(jobId)) return res.status(400).json({ error: "Invalid jobId" });
+      const soldRaw = req.body?.sold;
+      // Accept true/false, 1/0, "true"/"false" — anything else is a bad request.
+      const sold = soldRaw === true || soldRaw === 1 || soldRaw === "true" || soldRaw === "1"
+        ? 1
+        : (soldRaw === false || soldRaw === 0 || soldRaw === "false" || soldRaw === "0" ? 0 : null);
+      if (sold === null) return res.status(400).json({ error: "sold must be boolean" });
+      const reason = (req.body?.reason ?? "").toString().slice(0, 500) || null;
+      const u = (req as any).user;
+      const setBy = u?.name || u?.email || "unknown";
+      const setAt = new Date().toISOString();
+      const row = sqlite.prepare(
+        `INSERT INTO conversion_overrides (job_id, sold, reason, set_by, set_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(job_id) DO UPDATE SET
+           sold=excluded.sold, reason=excluded.reason, set_by=excluded.set_by, set_at=excluded.set_at
+         RETURNING *`
+      ).get(jobId, sold, reason, setBy, setAt);
+      res.json(row);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete("/api/conversion-overrides/:jobId", requireManage, (req, res) => {
+    try {
+      const jobId = parseInt(req.params.jobId, 10);
+      if (!Number.isFinite(jobId)) return res.status(400).json({ error: "Invalid jobId" });
+      const r = sqlite.prepare("DELETE FROM conversion_overrides WHERE job_id=?").run(jobId);
+      res.json({ deleted: r.changes });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
