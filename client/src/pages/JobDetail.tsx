@@ -27,6 +27,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { NotifyPicker } from "@/components/NotifyPicker";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import JobFileChecklist from "@/components/JobFileChecklist";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -1661,6 +1662,9 @@ export default function JobDetail() {
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="flex flex-wrap gap-1 h-auto">
           <TabsTrigger value="activity">Activity</TabsTrigger>
+          <TabsTrigger value="file-check" className="flex items-center gap-1">
+            <ShieldCheck className="w-3 h-3" />File Check
+          </TabsTrigger>
           <TabsTrigger value="notes" className="flex items-center gap-1">
             <StickyNote className="w-3 h-3" />
             Notes {notesCount > 0 && <span className="ml-1 bg-[hsl(var(--titan-blue))] text-white text-[10px] px-1.5 py-0 rounded-full leading-5">{notesCount}</span>}
@@ -2032,6 +2036,9 @@ export default function JobDetail() {
         </TabsContent>
 
         {/* ── Notes Tab ── */}
+        <TabsContent value="file-check" className="mt-4">
+          <JobFileChecklist job={job} />
+        </TabsContent>
         <TabsContent value="notes" className="mt-4">
           <NotesTab jobId={job.id} />
         </TabsContent>

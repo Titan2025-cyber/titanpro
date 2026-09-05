@@ -147,7 +147,6 @@ const XactimateAlert = lazy(() => import("@/pages/XactimateAlert"));
 const InvoiceEscalation = lazy(() => import("@/pages/InvoiceEscalation"));
 const SupplementAutoDraft = lazy(() => import("@/pages/SupplementAutoDraft"));
 const FNOLChatbot = lazy(() => import("@/pages/FNOLChatbot"));
-const ClaimFileChecker = lazy(() => import("@/pages/ClaimFileChecker"));
 const CarrierEscalationAI = lazy(() => import("@/pages/CarrierEscalationAI"));
 const PredictiveModel = lazy(() => import("@/pages/PredictiveModel"));
 const COITracker = lazy(() => import("@/pages/COITracker"));
@@ -476,7 +475,6 @@ function AuthenticatedRoutes() {
         <Route path="/invoice-escalation" component={() => <Page component={InvoiceEscalation} name="InvoiceEscalation" />} />
         <Route path="/supplement-autodraft"><Redirect to="/supplement-hub?tab=draft" /></Route>
         <Route path="/fnol-chatbot"><Redirect to="/intake-hub?tab=fnol" /></Route>
-        <Route path="/claim-file-checker"><Redirect to="/supplement-hub?tab=file-checker" /></Route>
         <Route path="/carrier-escalation-ai"><Redirect to="/carrier-hub?tab=escalation" /></Route>
         <Route path="/predictive-model"><Redirect to="/reports-hub?tab=predictive" /></Route>
         {/* Subcontractors Hub — tabs: roster | coi. */}

@@ -1,6 +1,6 @@
 import {
   FileCheck, Zap, Clock, Bot, FileSearch,
-  Scale, ClipboardCheck, Library, ShieldCheck, BookOpen, Gavel, Target,
+  Scale, ClipboardCheck, Library, BookOpen, Gavel, Target,
 } from "lucide-react";
 import HubShell from "@/components/HubShell";
 import Supplements from "@/pages/Supplements";
@@ -11,7 +11,6 @@ import SupplementAuditAI from "@/pages/SupplementAuditAI";
 import OPRebuttal from "@/pages/OPRebuttal";
 import GeneralConditions from "@/pages/GeneralConditions";
 import ApprovedClaimsLibrary from "@/pages/ApprovedClaimsLibrary";
-import ClaimFileChecker from "@/pages/ClaimFileChecker";
 import CustomerClaimExplainer from "@/pages/CustomerClaimExplainer";
 import SubrogationTracker from "@/pages/SubrogationTracker";
 import CompetitiveBidIntel from "@/pages/CompetitiveBidIntel";
@@ -31,7 +30,6 @@ export default function SupplementHub() {
         { value: "op-rebuttal", label: "O&P Rebuttal", icon: Scale, component: OPRebuttal },
         { value: "general-conditions", label: "Gen. Conditions", icon: ClipboardCheck, component: GeneralConditions },
         { value: "approved-claims", label: "Approved Library", icon: Library, component: ApprovedClaimsLibrary },
-        { value: "file-checker", label: "File Checker", icon: ShieldCheck, component: ClaimFileChecker },
         { value: "explainer", label: "Customer Explainer", icon: BookOpen, component: CustomerClaimExplainer },
         { value: "subrogation", label: "Subrogation", icon: Gavel, component: SubrogationTracker },
         { value: "bid-intel", label: "Bid Intel", icon: Target, component: CompetitiveBidIntel },
