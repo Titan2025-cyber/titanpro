@@ -1205,6 +1205,9 @@ export default function JobDetail() {
   // closed. Kept as an object so the dialog re-mounts fresh when switching
   // between invoices without stale state.
   const [payingInvoice, setPayingInvoice] = useState<{ id: number; invoiceNumber?: string | null; total?: number | null; contactId?: number | null; jobId?: number | null } | null>(null);
+  // Settled Amount tile inline editor (Financial Summary). Writes to
+  // jobs.settled_amount_manual which overrides the supplement-derived value.
+  const [showSettledDialog, setShowSettledDialog] = useState(false);
 
   // Tabs that only apply to the mitigation phase. When the user switches to
   // Reconstruction, these are hidden — auto-switch away if one is active.
@@ -1704,14 +1707,38 @@ export default function JobDetail() {
                     <ExternalLink className="w-3 h-3 opacity-60" />
                   </span>
                 </button>
-                <div data-testid="jobfin-costs">
+                {/* Costs — clickable, jumps to Job Costing where entries are
+                    added, edited, and deleted. */}
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("costing")}
+                  className="text-left group focus:outline-none"
+                  data-testid="jobfin-costs"
+                  title="Open Job Costing to add or edit costs"
+                >
                   <span className="text-xs text-muted-foreground block mb-0.5">Costs</span>
-                  <span className="text-lg font-bold text-orange-600 dark:text-orange-400">{money(phaseFin?.totalCosts ?? 0)}</span>
-                </div>
-                <div data-testid="jobfin-settled">
-                  <span className="text-xs text-muted-foreground block mb-0.5">Settled Amount <span className="text-[9px] normal-case text-muted-foreground/70">(claim-level)</span></span>
-                  <span className="text-lg font-bold text-[hsl(var(--titan-blue))]">{money(phaseFin?.settledAmount ?? 0)}</span>
-                </div>
+                  <span className="text-lg font-bold text-orange-600 dark:text-orange-400 group-hover:underline inline-flex items-center gap-1">
+                    {money(phaseFin?.totalCosts ?? 0)}
+                    <ExternalLink className="w-3 h-3 opacity-60" />
+                  </span>
+                </button>
+                {/* Settled Amount — manual override lives on jobs.settled_amount_manual.
+                    Click to open a small dollar-input dialog. */}
+                <button
+                  type="button"
+                  onClick={() => setShowSettledDialog(true)}
+                  className="text-left group focus:outline-none"
+                  data-testid="jobfin-settled"
+                  title="Click to manually set the claim settled amount"
+                >
+                  <span className="text-xs text-muted-foreground block mb-0.5">
+                    Settled Amount <span className="text-[9px] normal-case text-muted-foreground/70">(claim-level)</span>
+                  </span>
+                  <span className="text-lg font-bold text-[hsl(var(--titan-blue))] group-hover:underline inline-flex items-center gap-1">
+                    {money(phaseFin?.settledAmount ?? 0)}
+                    <Pencil className="w-3 h-3 opacity-60" />
+                  </span>
+                </button>
                 <button
                   type="button"
                   onClick={() => setActiveTab("payments")}
@@ -1725,10 +1752,21 @@ export default function JobDetail() {
                     <ExternalLink className="w-3 h-3 opacity-60" />
                   </span>
                 </button>
-                <div data-testid="jobfin-creditmemo">
+                {/* Credit Memo — clickable, jumps to Payments where credit-memo
+                    entries are recorded via "Record Payment" → credit memo. */}
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("payments")}
+                  className="text-left group focus:outline-none"
+                  data-testid="jobfin-creditmemo"
+                  title="Open Payments to enter a credit memo"
+                >
                   <span className="text-xs text-muted-foreground block mb-0.5">Credit Memo</span>
-                  <span className="text-lg font-bold text-red-600 dark:text-red-400">{money(phaseFin?.creditMemos ?? 0)}</span>
-                </div>
+                  <span className="text-lg font-bold text-red-600 dark:text-red-400 group-hover:underline inline-flex items-center gap-1">
+                    {money(phaseFin?.creditMemos ?? 0)}
+                    <ExternalLink className="w-3 h-3 opacity-60" />
+                  </span>
+                </button>
                 <button
                   type="button"
                   onClick={() => setActiveTab("payments")}
@@ -1742,14 +1780,35 @@ export default function JobDetail() {
                     <ExternalLink className="w-3 h-3 opacity-60" />
                   </span>
                 </button>
-                <div data-testid="jobfin-grossprofit">
+                {/* Gross Profit / Margin — both derived (collected − costs),
+                    so clicking jumps to Job Costing where the movable
+                    variable (costs) lives. */}
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("costing")}
+                  className="text-left group focus:outline-none"
+                  data-testid="jobfin-grossprofit"
+                  title="Derived from Received − Costs. Open Job Costing to adjust."
+                >
                   <span className="text-xs text-muted-foreground block mb-0.5">Gross Profit</span>
-                  <span className={`text-lg font-bold ${(phaseFin?.grossProfit ?? 0) >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>{money(phaseFin?.grossProfit ?? 0)}</span>
-                </div>
-                <div data-testid="jobfin-margin">
+                  <span className={`text-lg font-bold group-hover:underline inline-flex items-center gap-1 ${(phaseFin?.grossProfit ?? 0) >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+                    {money(phaseFin?.grossProfit ?? 0)}
+                    <ExternalLink className="w-3 h-3 opacity-60" />
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("costing")}
+                  className="text-left group focus:outline-none"
+                  data-testid="jobfin-margin"
+                  title="Gross profit as a share of received revenue. Open Job Costing to adjust."
+                >
                   <span className="text-xs text-muted-foreground block mb-0.5">Gross Profit Margin</span>
-                  <span className={`text-lg font-bold ${(phaseFin?.grossMarginPct ?? 0) >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>{phaseFin?.grossMarginPct ?? 0}%</span>
-                </div>
+                  <span className={`text-lg font-bold group-hover:underline inline-flex items-center gap-1 ${(phaseFin?.grossMarginPct ?? 0) >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+                    {phaseFin?.grossMarginPct ?? 0}%
+                    <ExternalLink className="w-3 h-3 opacity-60" />
+                  </span>
+                </button>
               </div>
               {/* External-document rollup: highlights the portion of the
                   phase's Estimate/Invoice totals that came from outside-
@@ -2339,6 +2398,13 @@ export default function JobDetail() {
           }}
         />
       )}
+
+      {/* Manual Settled Amount editor — opened from the Financial Summary tile. */}
+      <SettledAmountDialog
+        open={showSettledDialog}
+        onOpenChange={setShowSettledDialog}
+        job={job}
+      />
     </div>
   );
 }
@@ -2596,5 +2662,105 @@ function InsuranceEditor({ job, updateJob }: { job: any; updateJob: any }) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SettledAmountDialog — inline manual entry for the Financial Summary
+// "Settled Amount" tile. Writes jobs.settled_amount_manual, which the
+// /api/jobs/financials aggregate prefers over the supplement-derived value.
+// Empty string clears the override so the value falls back to the supplement
+// sum (or 0 if there are no approved supplements).
+// ─────────────────────────────────────────────────────────────────────────────
+function SettledAmountDialog({
+  open, onOpenChange, job,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  job: any;
+}) {
+  const { toast } = useToast();
+  const initial = job?.settledAmountManual != null ? String(job.settledAmountManual) : "";
+  const [value, setValue] = useState<string>(initial);
+  useEffect(() => { if (open) setValue(initial); }, [open, initial]);
+
+  const save = useMutation({
+    mutationFn: () => {
+      const trimmed = value.trim();
+      const payload: any = {
+        // Empty string tells updateJob() to null the column (clears the
+        // manual override so the supplement value is used again).
+        settledAmountManual: trimmed === "" ? "" : trimmed,
+      };
+      return apiRequest("PATCH", `/api/jobs/${job.id}`, payload).then(r => r.json());
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
+      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${job.id}`] });
+      toast({ title: "Settled amount saved" });
+      onOpenChange(false);
+    },
+    onError: (err: any) => {
+      toast({ title: "Save failed", description: String(err?.message || err), variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Settled Amount</DialogTitle>
+          <DialogDescription>
+            Claim-level settlement dollars. Overrides the supplement-derived
+            total shown on this job. Leave blank to fall back to the
+            supplement approved total.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <Label className="text-sm">Amount (USD)</Label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+            <Input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min="0"
+              placeholder="0.00"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              className="pl-6"
+              data-testid="input-settled-amount"
+              autoFocus
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Tip: leaving this blank clears the manual override.
+          </p>
+        </div>
+        <DialogFooter className="flex justify-between gap-2 sm:justify-between">
+          <Button
+            variant="ghost"
+            onClick={() => { setValue(""); }}
+            disabled={save.isPending}
+          >
+            Clear
+          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={save.isPending}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => save.mutate()}
+              disabled={save.isPending}
+              className="bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
+              data-testid="button-save-settled-amount"
+            >
+              {save.isPending ? "Saving…" : "Save"}
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

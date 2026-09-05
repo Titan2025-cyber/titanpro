@@ -570,7 +570,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try { sqlite.exec(`ALTER TABLE payments ADD COLUMN credit_memo INTEGER DEFAULT 0`); } catch(_) {}
     try { sqlite.exec(`ALTER TABLE payments ADD COLUMN memo_reason TEXT`); } catch(_) {}
 
-    const jobs = sqlite.prepare("SELECT id FROM jobs WHERE status IS NULL OR status != 'closed'").all() as any[];
+    const jobs = sqlite.prepare(
+      "SELECT id, settled_amount_manual FROM jobs WHERE status IS NULL OR status != 'closed'"
+    ).all() as any[];
     // Estimates and invoices soft-delete via `deleted_at`. Every aggregate
     // below must filter `deleted_at IS NULL`, otherwise the Financial Summary
     // card keeps the deleted row's dollars in the Estimate Amount / Outstanding
@@ -629,8 +631,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       cur.count += (i.cnt || 0);
     });
 
+    // Roll up approved supplement amounts per job. The historic key here was
+    // `s.settled`, which doesn't exist on the supplements table — the real
+    // column is `amount_approved`. Reading both keeps any legacy row that
+    // was populated with an ad-hoc `settled` field working.
     const suppMap: Record<number, number> = {};
-    supplements.forEach((s: any) => { suppMap[s.job_id] = s.settled || 0; });
+    supplements.forEach((s: any) => {
+      const v = Number(s.amount_approved ?? s.settled ?? 0) || 0;
+      suppMap[s.job_id] = (suppMap[s.job_id] || 0) + v;
+    });
 
     const result: Record<number, any> = {};
     for (const job of jobs) {
@@ -643,7 +652,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const totalCosts = (costPhaseMap[job.id]?.mitigation || 0) + (costPhaseMap[job.id]?.reconstruction || 0);
       const estimateTotal = (estPhaseMap[job.id]?.mitigation || 0) + (estPhaseMap[job.id]?.reconstruction || 0);
-      const settledAmount = suppMap[job.id] || 0; // supplement approved (claim-level, no phase)
+      // Settled amount: prefer the manual override typed into the Activity
+      // page (jobs.settled_amount_manual). Falls back to the sum of
+      // supplement.amount_approved for the job so pre-existing supplement
+      // rows keep flowing through when the override is unset.
+      // Row comes from raw sqlite so the column name is snake_case here.
+      const manualSettled = job.settled_amount_manual;
+      const settledAmount = (manualSettled != null && Number(manualSettled) >= 0)
+        ? Number(manualSettled)
+        : (suppMap[job.id] || 0);
       const grossProfit = collected - totalCosts;
 
       // Invoice phase lookup for attributing payments.

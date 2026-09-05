@@ -613,6 +613,11 @@ if (!jobCols.includes("invoice_paid_date")) {
 if (!jobCols.includes("lead_source")) {
   sqlite.exec(`ALTER TABLE jobs ADD COLUMN lead_source TEXT`);
 }
+// Manual override for the Financial Summary Settled Amount tile (Cody wants
+// to type in the claim settlement directly without cutting a supplement).
+if (!jobCols.includes("settled_amount_manual")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN settled_amount_manual REAL`);
+}
 if (!jobCols.includes("lead_source_detail")) {
   sqlite.exec(`ALTER TABLE jobs ADD COLUMN lead_source_detail TEXT`);
 }
@@ -1312,6 +1317,20 @@ class SqliteStorage implements IStorage {
     const d: any = { ...data };
     const intCols = ["contactId", "yearBuilt", "squareFeet", "referralPartnerId", "latitude", "longitude"];
     for (const k of intCols) {
+      if (k in d) {
+        const v = d[k];
+        if (v === "" || v === undefined) d[k] = null;
+        else if (v !== null && typeof v === "string") {
+          const n = Number(v);
+          d[k] = Number.isFinite(n) ? n : null;
+        }
+      }
+    }
+    // Float columns that come off HTML dollar-input fields — empty string
+    // means "clear the override", so map to null; anything else is coerced
+    // through Number() and stored as a real or nulled if unparseable.
+    const floatCols = ["settledAmountManual", "partnerPayoutApplied"];
+    for (const k of floatCols) {
       if (k in d) {
         const v = d[k];
         if (v === "" || v === undefined) d[k] = null;

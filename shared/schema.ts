@@ -58,6 +58,11 @@ export const jobs = sqliteTable("jobs", {
   division: text("division"), // mitigation | reconstruction | both — division profitability tag
   location: text("location"), // Augusta | Columbia — service market/branch
   referralPartnerId: integer("referral_partner_id"), // FK to contacts.id — the partner who referred this job
+  // Manual override for the Financial Summary "Settled Amount" tile. When set
+  // (>= 0), this replaces the supplement-derived value shown on the Activity
+  // tab so the office can type in what the carrier actually settled the
+  // claim at without needing to build a supplement record.
+  settledAmountManual: real("settled_amount_manual"),
   // DocuSketch integration
   docusketchUrl: text("docusketch_url"),           // Shared 360° tour URL from DocuSketch
   docusketchProjectName: text("docusketch_project_name"), // Project name as entered in DocuSketch
