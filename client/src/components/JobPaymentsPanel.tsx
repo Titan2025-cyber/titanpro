@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { DollarSign, Trash2, Receipt } from "lucide-react";
+import { DollarSign, Trash2, Receipt, Plus } from "lucide-react";
+import AddJobPaymentDialog from "@/components/AddJobPaymentDialog";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -54,9 +55,12 @@ function normPhase(v: unknown): "mitigation" | "reconstruction" {
 
 export default function JobPaymentsPanel({
   jobId,
+  contactId = null,
   defaultPhase = "all",
 }: {
   jobId: number;
+  /** Customer contact id, if any — used when logging a manual payment. */
+  contactId?: number | null;
   /** Initial phase filter. Default 'all' — the Payments tab is a full history. */
   defaultPhase?: PhaseKey;
 }) {
@@ -68,6 +72,10 @@ export default function JobPaymentsPanel({
   // phaseFilter so the operator can widen to 'All' without changing what
   // the Invoices / Estimates / Overview tabs show.
   const [phase, setPhase] = useState<PhaseKey>(defaultPhase);
+
+  // Manual-payment (no invoice) dialog. Used for deposits, retainers, and
+  // direct-pay checks that arrive before an invoice exists.
+  const [addOpen, setAddOpen] = useState(false);
 
   const { data: allPayments = [], isLoading: payLoading } = useQuery<Payment[]>({
     queryKey: ["/api/payments"],
@@ -181,9 +189,12 @@ export default function JobPaymentsPanel({
 
   return (
     <div className="space-y-4">
-      {/* Phase filter. Mirrors the segmented look used elsewhere on the job
-          page. 'All' is the safe default because a check can come in against
-          either phase's invoice and the operator shouldn't have to guess. */}
+      {/* Header row: phase filter on the left, Record Payment on the right.
+          The button here logs a payment against the job that isn't tied to
+          any invoice — deposits, retainers, checks that arrive before an
+          invoice is cut. For payment-against-invoice, use the button on the
+          invoice row in the Invoices tab. */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
       <div className="flex items-center gap-1 flex-wrap" data-testid="job-payments-phase-filter">
         {([
           { value: "all" as const, label: "All" },
@@ -209,6 +220,16 @@ export default function JobPaymentsPanel({
             </button>
           );
         })}
+      </div>
+        <Button
+          size="sm"
+          onClick={() => setAddOpen(true)}
+          className="shrink-0"
+          data-testid="button-add-manual-payment"
+          title="Log a payment that isn't tied to a specific invoice — e.g. a deposit or retainer"
+        >
+          <Plus className="w-3.5 h-3.5 mr-1" />Record Payment
+        </Button>
       </div>
 
       {/* Rollup cards */}
@@ -256,9 +277,9 @@ export default function JobPaymentsPanel({
             <p className="text-xs text-muted-foreground mt-1">
               {phase === "all" ? (
                 <>
-                  Payments appear here as they're recorded on this job's invoices.
                   Use the <span className="font-medium">Record Payment</span> button
-                  on any invoice in the Invoices tab.
+                  above for a deposit or retainer, or record against a specific
+                  invoice from the Invoices tab.
                 </>
               ) : (
                 <>
@@ -273,6 +294,7 @@ export default function JobPaymentsPanel({
       ) : (
         <Card>
           <CardContent className="p-0">
+
             <div className="divide-y divide-border/60">
               {jobPayments.map((p: any) => {
                 const inv = jobInvoices.find(i => i.id === Number(p.invoiceId));
@@ -350,6 +372,15 @@ export default function JobPaymentsPanel({
           </CardContent>
         </Card>
       )}
+
+      {/* Manual-payment dialog, shared for the empty-state and populated states. */}
+      <AddJobPaymentDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        jobId={jobId}
+        contactId={contactId}
+        defaultPhase={phase}
+      />
     </div>
   );
 }

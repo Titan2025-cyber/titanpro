@@ -2026,7 +2026,7 @@ export default function JobDetail() {
             plus invoiced/received/outstanding rollup. Answers 'has this
             check hit yet?' without leaving the job. */}
         <TabsContent value="payments" className="mt-4">
-          <JobPaymentsPanel jobId={Number(id)} />
+          <JobPaymentsPanel jobId={Number(id)} contactId={job?.contactId ?? null} />
         </TabsContent>
 
         {/* ── Insurance Tab ── */}
