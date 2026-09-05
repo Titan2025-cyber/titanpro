@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { DollarSign, Trash2, Receipt } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -43,10 +43,31 @@ function fmtMoney(n: number) {
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-export default function JobPaymentsPanel({ jobId }: { jobId: number }) {
+type PhaseKey = "all" | "mitigation" | "reconstruction";
+
+// Match the server's attribution rule (server/routes.ts /api/jobs/financials):
+// payment phase comes from the linked invoice; unattached payments default to
+// mitigation.
+function normPhase(v: unknown): "mitigation" | "reconstruction" {
+  return v === "reconstruction" ? "reconstruction" : "mitigation";
+}
+
+export default function JobPaymentsPanel({
+  jobId,
+  defaultPhase = "all",
+}: {
+  jobId: number;
+  /** Initial phase filter. Default 'all' — the Payments tab is a full history. */
+  defaultPhase?: PhaseKey;
+}) {
   const { user } = useAuth();
   const { toast } = useToast();
   const canDelete = user?.role === "owner" || user?.role === "admin";
+
+  // Local phase filter for this panel. Kept separate from the job-wide
+  // phaseFilter so the operator can widen to 'All' without changing what
+  // the Invoices / Estimates / Overview tabs show.
+  const [phase, setPhase] = useState<PhaseKey>(defaultPhase);
 
   const { data: allPayments = [], isLoading: payLoading } = useQuery<Payment[]>({
     queryKey: ["/api/payments"],
@@ -67,11 +88,21 @@ export default function JobPaymentsPanel({ jobId }: { jobId: number }) {
 
   const jobInvoiceIds = useMemo(() => new Set(jobInvoices.map(i => i.id)), [jobInvoices]);
 
+  // Invoice → phase lookup, used to attribute each payment to a phase.
+  const invPhaseById = useMemo(() => {
+    const m = new Map<number, "mitigation" | "reconstruction">();
+    for (const inv of jobInvoices) {
+      m.set(inv.id, normPhase((inv as any).phase));
+    }
+    return m;
+  }, [jobInvoices]);
+
   // Payments belonging to this job: either linked to a job invoice, or
-  // directly stamped with this jobId.
-  const jobPayments = useMemo(() => {
+  // directly stamped with this jobId. Enriched with a resolved phase so we
+  // can filter without recomputing per row.
+  const allJobPayments = useMemo(() => {
     const seen = new Set<number>();
-    const out: Payment[] = [];
+    const out: (Payment & { _phase: "mitigation" | "reconstruction" })[] = [];
     for (const p of allPayments) {
       const pid = (p as any).id as number;
       const matches =
@@ -79,7 +110,8 @@ export default function JobPaymentsPanel({ jobId }: { jobId: number }) {
         Number((p as any).jobId) === jobId;
       if (matches && !seen.has(pid)) {
         seen.add(pid);
-        out.push(p);
+        const linkedPhase = p.invoiceId != null ? invPhaseById.get(Number(p.invoiceId)) : undefined;
+        out.push({ ...(p as any), _phase: linkedPhase || "mitigation" });
       }
     }
     // Newest first — this is a history view, most recent is most useful.
@@ -88,11 +120,24 @@ export default function JobPaymentsPanel({ jobId }: { jobId: number }) {
       const db = new Date(b.paidAt || 0).getTime();
       return db - da;
     });
-  }, [allPayments, jobInvoiceIds, jobId]);
+  }, [allPayments, jobInvoiceIds, invPhaseById, jobId]);
 
-  // Rollups
+  // Phase-filtered view used by both the list and the rollup.
+  const jobPayments = useMemo(() => {
+    if (phase === "all") return allJobPayments;
+    return allJobPayments.filter(p => p._phase === phase);
+  }, [allJobPayments, phase]);
+
+  // Phase-filtered invoices for the Invoiced rollup number.
+  const scopedInvoices = useMemo(() => {
+    if (phase === "all") return jobInvoices;
+    return jobInvoices.filter(inv => normPhase((inv as any).phase) === phase);
+  }, [jobInvoices, phase]);
+
+  // Rollups — all phase-aware. Invoiced comes from scopedInvoices so
+  // Outstanding = Invoiced − Received stays coherent inside the current phase.
   const totals = useMemo(() => {
-    const invoiced = jobInvoices.reduce((s, i) => s + Number(i.total || 0), 0);
+    const invoiced = scopedInvoices.reduce((s, i) => s + Number(i.total || 0), 0);
     const received = jobPayments
       .filter(p => p.type === "received")
       .reduce((s, p) => s + Number(p.amount || 0), 0);
@@ -105,7 +150,15 @@ export default function JobPaymentsPanel({ jobId }: { jobId: number }) {
       other,
       outstanding: Math.max(0, invoiced - received),
     };
-  }, [jobInvoices, jobPayments]);
+  }, [scopedInvoices, jobPayments]);
+
+  // Counts per phase for the pill toggles — lets operators see at a glance
+  // whether the recon phase actually has any payments before switching.
+  const phaseCounts = useMemo(() => {
+    const m = { all: allJobPayments.length, mitigation: 0, reconstruction: 0 };
+    for (const p of allJobPayments) m[p._phase]++;
+    return m;
+  }, [allJobPayments]);
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/payments/${id}`),
@@ -128,6 +181,36 @@ export default function JobPaymentsPanel({ jobId }: { jobId: number }) {
 
   return (
     <div className="space-y-4">
+      {/* Phase filter. Mirrors the segmented look used elsewhere on the job
+          page. 'All' is the safe default because a check can come in against
+          either phase's invoice and the operator shouldn't have to guess. */}
+      <div className="flex items-center gap-1 flex-wrap" data-testid="job-payments-phase-filter">
+        {([
+          { value: "all" as const, label: "All" },
+          { value: "mitigation" as const, label: "Mitigation" },
+          { value: "reconstruction" as const, label: "Reconstruction" },
+        ]).map(opt => {
+          const active = phase === opt.value;
+          const count = phaseCounts[opt.value];
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setPhase(opt.value)}
+              className={`px-3 py-1 text-xs rounded-md border transition-colors ${
+                active
+                  ? "bg-[hsl(var(--titan-blue))]/10 border-[hsl(var(--titan-blue))] text-[hsl(var(--titan-blue))] font-medium"
+                  : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+              }`}
+              data-testid={`phase-filter-${opt.value}`}
+            >
+              {opt.label}
+              <span className={`ml-1.5 text-[10px] ${active ? "opacity-80" : "opacity-60"}`}>({count})</span>
+            </button>
+          );
+        })}
+      </div>
+
       {/* Rollup cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card>
@@ -165,11 +248,25 @@ export default function JobPaymentsPanel({ jobId }: { jobId: number }) {
         <Card>
           <CardContent className="p-8 text-center">
             <DollarSign className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
-            <p className="font-medium text-sm">No payments recorded yet.</p>
+            <p className="font-medium text-sm">
+              {phase === "all"
+                ? "No payments recorded yet."
+                : `No ${phase} payments yet.`}
+            </p>
             <p className="text-xs text-muted-foreground mt-1">
-              Payments appear here as they're recorded on this job's invoices.
-              Use the <span className="font-medium">Record Payment</span> button
-              on any invoice in the Invoices tab.
+              {phase === "all" ? (
+                <>
+                  Payments appear here as they're recorded on this job's invoices.
+                  Use the <span className="font-medium">Record Payment</span> button
+                  on any invoice in the Invoices tab.
+                </>
+              ) : (
+                <>
+                  This phase hasn't received any payments yet. Switch to{" "}
+                  <button className="underline" onClick={() => setPhase("all")}>All</button>{" "}
+                  to see everything on this job.
+                </>
+              )}
             </p>
           </CardContent>
         </Card>
