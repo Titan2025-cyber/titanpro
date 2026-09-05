@@ -1,7 +1,7 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useParams, Link, useLocation } from "wouter";
 import { useState, lazy, Suspense, useEffect, useRef } from "react";
-import { ArrowLeft, MapPin, Phone, Mail, Shield, FileText, Receipt, Droplets, Camera, FolderOpen, TrendingUp, StickyNote, Lock, Globe, Pencil, Trash2, Plus, Check, X, Wrench, MessageSquare, Star, Send, KeyRound, Copy, RefreshCw, ExternalLink, ShieldCheck, HandCoins, Upload, Paperclip, Mic, MicOff } from "lucide-react";
+import { ArrowLeft, MapPin, Phone, Mail, Shield, FileText, Receipt, Droplets, Camera, FolderOpen, TrendingUp, StickyNote, Lock, Globe, Pencil, Trash2, Plus, Check, X, Wrench, MessageSquare, Star, Send, KeyRound, Copy, RefreshCw, ExternalLink, ShieldCheck, HandCoins, Upload, Paperclip, Mic, MicOff, DollarSign } from "lucide-react";
 import UploadExternalDocDialog from "@/components/UploadExternalDocDialog";
 import { StageSelector, DateManager, PROGRESS_STAGES } from "@/components/JobPipeline";
 import { JobAnalytics } from "@/components/JobAnalytics";
@@ -9,6 +9,7 @@ import { JobCostingPanel } from "@/pages/JobCosting";
 import { SupplementPanel } from "@/pages/Supplements";
 import { SafetyPanel } from "@/pages/Safety";
 import { LienWaiversPanel } from "@/pages/LienWaivers";
+import RecordPaymentDialog from "@/components/RecordPaymentDialog";
 // PDF-heavy components (they pull jsPDF, ~600KB) are lazy-loaded so the
 // pdf bundle downloads only when the user opens the relevant tab — not on
 // every JobDetail page view.
@@ -969,6 +970,10 @@ export default function JobDetail() {
   // tabs. See UploadExternalDocDialog.tsx.
   const [uploadEstOpen, setUploadEstOpen] = useState(false);
   const [uploadInvOpen, setUploadInvOpen] = useState(false);
+  // Which invoice, if any, has the Record Payment dialog open. Null when
+  // closed. Kept as an object so the dialog re-mounts fresh when switching
+  // between invoices without stale state.
+  const [payingInvoice, setPayingInvoice] = useState<{ id: number; invoiceNumber?: string | null; total?: number | null; contactId?: number | null; jobId?: number | null } | null>(null);
 
   // Tabs that only apply to the mitigation phase. When the user switches to
   // Reconstruction, these are hidden — auto-switch away if one is active.
@@ -1913,6 +1918,31 @@ export default function JobDetail() {
                       <p className="font-bold text-green-600">${(inv.total || 0).toLocaleString()}</p>
                       {!isExternal && (
                         <>
+                          {/* Record Payment — the primary money-in action.
+                              Hidden for invoices already fully paid so the
+                              row stays quiet once it's cleared. */}
+                          {inv.status !== "paid" && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8"
+                              title="Record a payment against this invoice"
+                              onClick={(ev) => {
+                                ev.preventDefault();
+                                ev.stopPropagation();
+                                setPayingInvoice({
+                                  id: inv.id,
+                                  invoiceNumber: inv.invoiceNumber,
+                                  total: inv.total,
+                                  contactId: (inv as any).contactId ?? null,
+                                  jobId: (inv as any).jobId ?? Number(id),
+                                });
+                              }}
+                              data-testid={`button-record-payment-${inv.id}`}
+                            >
+                              <DollarSign className="w-3 h-3 mr-1" />Record Payment
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="ghost"
@@ -2094,6 +2124,23 @@ export default function JobDetail() {
         onOpenChange={setUploadInvOpen}
         onUploaded={() => queryClient.invalidateQueries({ queryKey: ["/api/jobs", id, "invoices"] })}
       />
+
+      {/* Record Payment dialog — driven by the Invoices tab's per-row button.
+          Mounted once at the page level so it survives tab switches and
+          re-mounts fresh per invoice via the key. */}
+      {payingInvoice && (
+        <RecordPaymentDialog
+          key={payingInvoice.id}
+          open={!!payingInvoice}
+          onOpenChange={(o) => { if (!o) setPayingInvoice(null); }}
+          invoice={payingInvoice}
+          onRecorded={() => {
+            // Refresh job-scoped invoice list so the row's status/badge updates.
+            queryClient.invalidateQueries({ queryKey: ["/api/jobs", id, "invoices"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+          }}
+        />
+      )}
     </div>
   );
 }

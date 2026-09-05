@@ -14,6 +14,7 @@ import { useAuth } from "@/lib/auth";
 import { generateInvoicePDF, downloadPDF } from "@/lib/pdfEngine";
 import { SendAndSavePanel } from "@/components/SendAndSavePanel";
 import PriceListPicker, { type PickedItem } from "@/components/PriceListPicker";
+import RecordPaymentDialog from "@/components/RecordPaymentDialog";
 import JobCombobox from "@/components/JobCombobox";
 import type { Invoice, Job, Contact } from "@shared/schema";
 import { fmtDate, fmtDateShort } from "@/lib/dates";
@@ -898,29 +899,27 @@ export default function Invoices() {
         </DialogContent>
       </Dialog>
 
-      {/* Payment dialog */}
-      <Dialog open={payOpen !== null} onOpenChange={() => setPayOpen(null)}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Record Payment</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div><Label>Amount ($)</Label><Input type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)} /></div>
-            <div>
-              <Label>Method</Label>
-              <Select value={payMethod} onValueChange={setPayMethod}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {["check","ach","credit_card","cash","insurance_check"].map(m => <SelectItem key={m} value={m}>{m.replace("_", " ")}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <Button
-              className="w-full bg-green-600 hover:bg-green-700 text-white"
-              disabled={recordPayment.isPending}
-              onClick={() => payOpen && recordPayment.mutate({ invId: payOpen, amount: Number(payAmount), method: payMethod })}
-            >{recordPayment.isPending ? "Recording…" : "Record Payment"}</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* Payment dialog — shared RecordPaymentDialog handles partial
+          payments, balance display, and dates. The row buttons still
+          just call setPayOpen(inv.id). */}
+      {payOpen !== null && (() => {
+        const inv = invoices.find(i => i.id === payOpen);
+        if (!inv) return null;
+        return (
+          <RecordPaymentDialog
+            key={inv.id}
+            open={payOpen !== null}
+            onOpenChange={(o) => { if (!o) setPayOpen(null); }}
+            invoice={{
+              id: inv.id,
+              invoiceNumber: inv.invoiceNumber,
+              total: inv.total,
+              contactId: (inv as any).contactId ?? null,
+              jobId: (inv as any).jobId ?? null,
+            }}
+          />
+        );
+      })()}
 
       <PriceListPicker
         open={priceListOpen !== null}
