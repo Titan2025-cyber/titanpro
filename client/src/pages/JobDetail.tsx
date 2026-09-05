@@ -1470,7 +1470,11 @@ export default function JobDetail() {
   const isIncidental = (job as any).jobKind === "incidental";
 
   return (
-    <div className="space-y-4">
+    // pb-28 md:pb-4 leaves ~112px of clearance at the bottom on mobile so the
+    // sticky MobileJobActionBar (fixed bottom-0, ~64px tall) doesn't cover
+    // form Save buttons — the Drying Records "Save Drying Record" button in
+    // particular was hidden behind it after the sticky bar shipped.
+    <div className="space-y-4 pb-28 md:pb-4">
       {isIncidental && (
         <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 px-4 py-3 flex items-start gap-3">
           <div className="text-2xl leading-none" aria-hidden>🤝</div>
