@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useState } from "react";
-import { Shield, Plus, AlertTriangle, CheckCircle, Clock, X, Pencil } from "lucide-react";
+import { Shield, Plus, AlertTriangle, CheckCircle, Clock, X, Pencil, BellRing } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { fmtDate } from "@/lib/dates";
@@ -46,6 +46,25 @@ export default function COITracker() {
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiRequest(`/api/coi-records/${id}`, { method: "DELETE" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/coi-records"] }),
+  });
+
+  // Scan-expirations button — tells the server to look for any doc expiring
+  // in ≤30 days that hasn't been alerted, mark it, and drop a reminder onto
+  // the shared Calendar (bd_events) three days before expiry. Idempotent.
+  const scanMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/coi-records/scan-expirations").then(r => r.json()),
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/coi-records"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/bd-events"] });
+      const n = (data?.created || []).length;
+      toast({
+        title: n > 0 ? `Created ${n} calendar reminder${n === 1 ? "" : "s"}` : "Everything already tracked",
+        description: n > 0
+          ? "Reminders show on the BD Calendar 3 days before each expiry."
+          : "No new expiring documents in the next 30 days.",
+      });
+    },
+    onError: (e: any) => toast({ title: "Scan failed", description: String(e?.message || e), variant: "destructive" }),
   });
 
   const updateMutation = useMutation({
@@ -94,9 +113,21 @@ export default function COITracker() {
             Track COIs, GA/SC contractor licenses, bonds. 30 &amp; 7-day expiry alerts.
           </p>
         </div>
-        <Button onClick={() => setShowForm(true)} className="bg-red-600 hover:bg-red-700 text-white" data-testid="button-add-doc">
-          <Plus className="h-4 w-4 mr-2" /> Add Document
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => scanMutation.mutate()}
+            disabled={scanMutation.isPending}
+            data-testid="button-scan-expirations"
+            title="Create Calendar reminders for anything expiring in the next 30 days"
+          >
+            <BellRing className="h-4 w-4 mr-2" />
+            {scanMutation.isPending ? "Scanning…" : "Scan Expirations"}
+          </Button>
+          <Button onClick={() => setShowForm(true)} className="bg-red-600 hover:bg-red-700 text-white" data-testid="button-add-doc">
+            <Plus className="h-4 w-4 mr-2" /> Add Document
+          </Button>
+        </div>
       </div>
 
       {/* Alerts Banner */}

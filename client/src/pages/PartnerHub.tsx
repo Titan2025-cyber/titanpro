@@ -1,23 +1,24 @@
-import { Handshake, LayoutDashboard, TrendingUp, Target, Award, Gem } from "lucide-react";
+import { Handshake, LayoutDashboard, Award } from "lucide-react";
 import HubShell from "@/components/HubShell";
 import ReferralDashboard from "@/pages/ReferralDashboard";
-import ReferralProfitability from "@/pages/ReferralProfitability";
-import PartnerROI from "@/pages/PartnerROI";
 import PartnerScorecard from "@/pages/PartnerScorecard";
-import PartnerValueDashboard from "@/pages/PartnerValueDashboard";
 
+// Partner Hub simplified from 5 tabs down to 2 the operator actually uses:
+//   Overview  — the referral dashboard (jobs / revenue / who sent what)
+//   Scorecard — per-partner deep dive (value, ROI, profitability)
+//
+// Deprecated tabs (PartnerValueDashboard, ReferralProfitability, PartnerROI)
+// remain as files so their routes/imports still resolve if referenced from
+// dashboards or emails; they just aren't in the sidebar/nav anymore.
 export default function PartnerHub() {
   return (
     <HubShell
       title="Referrals & Partners"
-      description="Referral dashboard, referral profitability, partner ROI, scorecards, and partner value in one workspace."
+      description="One overview of referral activity, one deep-dive per partner."
       icon={Handshake}
       tabs={[
-        { value: "value", label: "Partner Value", icon: Gem, component: PartnerValueDashboard },
-        { value: "referrals", label: "Referral Dashboard", icon: LayoutDashboard, component: ReferralDashboard },
-        { value: "referral-profit", label: "Referral Profitability", icon: TrendingUp, component: ReferralProfitability },
-        { value: "roi", label: "Partner ROI", icon: Target, component: PartnerROI },
-        { value: "scorecard", label: "Scorecard", icon: Award, component: PartnerScorecard },
+        { value: "overview", label: "Overview", icon: LayoutDashboard, component: ReferralDashboard },
+        { value: "scorecard", label: "Partner Scorecard", icon: Award, component: PartnerScorecard },
       ]}
     />
   );

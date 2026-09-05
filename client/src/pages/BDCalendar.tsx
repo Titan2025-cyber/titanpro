@@ -574,8 +574,20 @@ export default function BDCalendar() {
   const [detailEvent, setDetailEvent] = useState<BdEvent | undefined>();
   const [defaultDate, setDefaultDate] = useState<string>("");
   const [filterType, setFilterType] = useState("all");
+  // Person filter — who scheduled the event (createdBy). "mine" is a
+  // convenience alias for the logged-in user so reps can see only their
+  // own calendar at a glance. "all" shows everyone.
+  const [filterPerson, setFilterPerson] = useState("all");
   const [celebrationDetail, setCelebrationDetail] = useState<Celebration | undefined>();
   const [prefill, setPrefill] = useState<Partial<BdEvent> | undefined>();
+
+  // Live employee list — same source as Route Planner. Powers the person
+  // filter dropdown so it stays in sync with User Management.
+  const { data: employees = [] } = useQuery<Array<{ id: number; name: string }>>({
+    queryKey: ["/api/staff/assignable"],
+    queryFn: () => apiRequest("GET", "/api/staff/assignable").then(r => r.ok ? r.json() : []),
+    staleTime: 5 * 60 * 1000,
+  });
 
   const { data: events = [], isLoading } = useQuery<BdEvent[]>({
     queryKey: ["/api/bd-events"],
@@ -616,10 +628,23 @@ export default function BDCalendar() {
     else setMonth(m => m + 1);
   }
 
-  const filteredEvents = useMemo(() =>
-    filterType === "all" ? events : events.filter(e => e.eventType === filterType),
-    [events, filterType]
-  );
+  const filteredEvents = useMemo(() => {
+    return events.filter(e => {
+      if (filterType !== "all" && e.eventType !== filterType) return false;
+      if (filterPerson !== "all" && (e.createdBy || "") !== filterPerson) return false;
+      return true;
+    });
+  }, [events, filterType, filterPerson]);
+
+  // Every unique createdBy we've ever seen — union with the current active
+  // staff list, so historical events by former staff don't disappear from
+  // the filter dropdown.
+  const personOptions = useMemo(() => {
+    const set = new Set<string>();
+    employees.forEach(e => set.add(e.name));
+    events.forEach(e => { if (e.createdBy) set.add(e.createdBy); });
+    return Array.from(set).sort();
+  }, [employees, events]);
 
   const monthEvents = useMemo(() =>
     filteredEvents.filter(e => {
@@ -719,11 +744,25 @@ export default function BDCalendar() {
 
         {/* Filter by type */}
         <Select value={filterType} onValueChange={setFilterType}>
-          <SelectTrigger className="h-8 w-36 text-xs"><SelectValue placeholder="All types" /></SelectTrigger>
+          <SelectTrigger className="h-8 w-36 text-xs" data-testid="filter-type"><SelectValue placeholder="All types" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Types</SelectItem>
             {EVENT_TYPES.map(t => (
               <SelectItem key={t.value} value={t.value}>{t.icon} {t.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {/* Filter by person (createdBy) — keeps reps focused on their own
+            schedule when they need it, and lets managers spot-check a rep. */}
+        <Select value={filterPerson} onValueChange={setFilterPerson}>
+          <SelectTrigger className="h-8 w-40 text-xs" data-testid="filter-person">
+            <SelectValue placeholder="Everyone" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Everyone</SelectItem>
+            {personOptions.map(p => (
+              <SelectItem key={p} value={p}>{p}</SelectItem>
             ))}
           </SelectContent>
         </Select>

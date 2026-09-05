@@ -103,7 +103,8 @@ const PRIORITIES = [
   { value: 3, label: "Low", color: "text-green-500" },
 ];
 
-const EMPLOYEES = ["Cody Brantley", "John", "Mason", "Clint", "Blake", "Blake Foster"];
+// Employees now come from /api/staff/assignable at runtime (see useQuery in
+// the main component). No more hard-coded names.
 
 const ROUTE_COLORS = ["#3b82f6","#ef4444","#10b981","#f59e0b","#8b5cf6","#06b6d4","#f97316","#ec4899"];
 
@@ -177,6 +178,14 @@ export default function RoutePlanner() {
   const { data: routes = [], isLoading } = useQuery<SavedRoute[]>({
     queryKey: ["/api/routes"],
     queryFn: () => apiRequest("/api/routes").then(r => r.json()),
+  });
+
+  // Live employee list — driven by User Management (active users only),
+  // no hardcoded names. Falls back to an empty list if the fetch fails so
+  // the dropdown just shows nothing instead of ghost users.
+  const { data: employees = [] } = useQuery<Array<{ id: number; name: string; role: string }>>({
+    queryKey: ["/api/staff/assignable"],
+    queryFn: () => apiRequest("/api/staff/assignable").then(r => r.ok ? r.json() : []),
   });
 
   const { data: routeDetail } = useQuery<RouteDetail>({
@@ -678,7 +687,7 @@ export default function RoutePlanner() {
                     <Select value={field.value} onValueChange={field.onChange}>
                       <SelectTrigger data-testid="select-assigned-to"><SelectValue placeholder="Select team member" /></SelectTrigger>
                       <SelectContent>
-                        {EMPLOYEES.map(e => <SelectItem key={e} value={e}>{e}</SelectItem>)}
+                        {employees.map(e => <SelectItem key={e.id} value={e.name}>{e.name}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </FormItem>

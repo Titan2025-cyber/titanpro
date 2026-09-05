@@ -7764,6 +7764,68 @@ Approve in Partner Portal → Admin View.
     res.json({ success: true });
   });
 
+  // POST /api/coi-records/scan-expirations
+  // Finds every COI/W-9/license record expiring within 30 days that hasn't
+  // already had an alert generated (alert_sent_30 = 0), sets the flag, and
+  // drops a BD calendar event 3 days before expiry so the sub coordinator
+  // sees it on the shared calendar. Safe to call repeatedly — the flag
+  // prevents duplicates. Called manually from the COI Tracker "Scan" button
+  // and, once wired, on a daily cron.
+  app.post("/api/coi-records/scan-expirations", (_req, res) => {
+    try { sqlite.exec(`CREATE TABLE IF NOT EXISTS coi_records (id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER, document_type TEXT NOT NULL, document_number TEXT, issuer TEXT, expires_at TEXT NOT NULL, document_url TEXT, status TEXT NOT NULL DEFAULT 'active', alert_sent_30 INTEGER DEFAULT 0, alert_sent_7 INTEGER DEFAULT 0, notes TEXT, created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}
+    const today = new Date();
+    const in30 = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const todayIso = today.toISOString().slice(0, 10);
+    const in30Iso = in30.toISOString().slice(0, 10);
+
+    // Pull rows expiring in the next 30 days that we haven't alerted on.
+    // Also try to attach a name via contacts (best effort — some COIs are
+    // for Titan itself and won't have a contact).
+    const rows: any[] = sqlite.prepare(`
+      SELECT c.*, k.name AS contact_name
+      FROM coi_records c
+      LEFT JOIN contacts k ON k.id = c.contact_id
+      WHERE COALESCE(c.alert_sent_30, 0) = 0
+        AND c.expires_at >= ?
+        AND c.expires_at <= ?
+    `).all(todayIso, in30Iso);
+
+    const created: any[] = [];
+    for (const r of rows) {
+      // Reminder date = 3 days before expiry, but never in the past.
+      const exp = new Date(r.expires_at + "T00:00:00");
+      const remind = new Date(exp.getTime() - 3 * 24 * 60 * 60 * 1000);
+      const remindIso = remind < today
+        ? todayIso
+        : remind.toISOString().slice(0, 10);
+      const who = r.contact_name || r.entity_name || "subcontractor";
+      const kind = (r.document_type || "document").toUpperCase();
+      const title = `Renew ${kind} — ${who} (expires ${r.expires_at})`;
+
+      try {
+        const ev: any = sqlite.prepare(`
+          INSERT INTO bd_events
+            (title, event_type, date, start_time, notes, contact_id, notify_partner, notified, created_by, created_at)
+          VALUES (?, 'other', ?, '09:00', ?, ?, 0, 0, 'system', ?)
+          RETURNING id
+        `).get(
+          title,
+          remindIso,
+          `Auto-created by COI scan. Document ${kind} for ${who} expires ${r.expires_at}. Renew and upload the new copy.`,
+          r.contact_id || null,
+          new Date().toISOString(),
+        );
+        sqlite.prepare(`UPDATE coi_records SET alert_sent_30 = 1, status = 'expiring_soon' WHERE id = ?`).run(r.id);
+        created.push({ coiId: r.id, eventId: ev?.id, title, remindIso });
+      } catch (_) { /* ignore per-row insert failures so one bad row doesn't kill the batch */ }
+    }
+
+    // Also mark anything that's now past-due.
+    sqlite.prepare(`UPDATE coi_records SET status = 'expired' WHERE expires_at < ?`).run(todayIso);
+
+    res.json({ scanned: rows.length, created });
+  });
+
   // ── LMS Courses (#31) ─────────────────────────────────────────────────────
   app.get("/api/lms-courses", (_req, res) => {
     try { sqlite.exec(`CREATE TABLE IF NOT EXISTS lms_courses (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT, category TEXT NOT NULL DEFAULT 'iicrc', content_url TEXT, content_type TEXT NOT NULL DEFAULT 'video', quiz_json TEXT DEFAULT '[]', duration_mins INTEGER DEFAULT 0, required_role TEXT DEFAULT 'all', created_at TEXT NOT NULL DEFAULT '')`); } catch(_) {}

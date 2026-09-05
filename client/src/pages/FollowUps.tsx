@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { format, isPast, parseISO } from "date-fns";
@@ -20,6 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -586,7 +587,7 @@ function SummaryStrip({ followUps }: SummaryStripProps) {
 
 export default function FollowUps() {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState("pending");
+  const [activeTab, setActiveTab] = useState("dueNow");
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
   const [addCustomOpen, setAddCustomOpen] = useState(false);
 
@@ -663,16 +664,67 @@ export default function FollowUps() {
 
   // ── Filtered lists ────────────────────────────────────────────────────────────
 
+  // Collapsed from four tabs (pending / overdue / sent / all) to three
+  // (dueNow / sent / all). The old "pending" vs "overdue" split forced people
+  // to click twice to see everything they had to work today — the whole point
+  // of the page. We keep the counts as chips inside the Due Now tab so you
+  // still see the overdue number at a glance, but they act as one worklist.
+  const pendingList = followUps.filter(
+    (f) => f.status === "pending" && !isOverdue(f.scheduledAt, f.status)
+  );
+  const overdueList = followUps.filter((f) => isOverdue(f.scheduledAt, f.status));
   const filtered = {
-    pending: followUps.filter(
-      (f) => f.status === "pending" && !isOverdue(f.scheduledAt, f.status)
-    ),
-    overdue: followUps.filter((f) => isOverdue(f.scheduledAt, f.status)),
+    dueNow: [...overdueList, ...pendingList],
     sent: followUps.filter((f) => f.status === "sent"),
     all: followUps,
   } as const;
 
   const tabList = filtered[activeTab as keyof typeof filtered] ?? [];
+
+  // ── Bulk-select state ─────────────────────────────────────────────────────
+  // Selection is scoped to the currently visible tab — switching tabs clears
+  // it so you can't accidentally bulk-send items you can't see.
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  useEffect(() => { setSelectedIds(new Set()); }, [activeTab]);
+  const visibleIds = tabList.map((f) => f.id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+  const toggleAllVisible = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) visibleIds.forEach((id) => next.delete(id));
+      else visibleIds.forEach((id) => next.add(id));
+      return next;
+    });
+  };
+  const toggleOne = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const bulkMarkSent = () => {
+    const now = new Date().toISOString();
+    selectedIds.forEach((id) => {
+      const fu = followUps.find((f) => f.id === id);
+      if (!fu || fu.status === "sent") return;
+      patchMutation.mutate({
+        id,
+        payload: {
+          status: "sent",
+          sentAt: now,
+          emailSubject: fu.emailSubject || null,
+          emailBody: fu.emailBody || null,
+          notes: fu.notes || null,
+        },
+      });
+    });
+    setSelectedIds(new Set());
+  };
+  const bulkSkip = () => {
+    selectedIds.forEach((id) => patchMutation.mutate({ id, payload: { status: "skipped" } }));
+    setSelectedIds(new Set());
+  };
 
   return (
     <div className="min-h-screen bg-background p-6 space-y-6">
@@ -740,19 +792,16 @@ export default function FollowUps() {
       {!isLoading && !isError && (
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList data-testid="followup-tabs">
-            <TabsTrigger value="pending" data-testid="tab-pending">
-              Pending
-              {filtered.pending.length > 0 && (
+            <TabsTrigger value="dueNow" data-testid="tab-due-now">
+              Due Now
+              {filtered.dueNow.length > 0 && (
                 <span className="ml-1.5 rounded-full bg-blue-100 text-blue-700 text-xs px-1.5 py-0.5">
-                  {filtered.pending.length}
+                  {filtered.dueNow.length}
                 </span>
               )}
-            </TabsTrigger>
-            <TabsTrigger value="overdue" data-testid="tab-overdue">
-              Overdue
-              {filtered.overdue.length > 0 && (
-                <span className="ml-1.5 rounded-full bg-red-100 text-red-700 text-xs px-1.5 py-0.5">
-                  {filtered.overdue.length}
+              {overdueList.length > 0 && (
+                <span className="ml-1 rounded-full bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5" title={`${overdueList.length} overdue`}>
+                  {overdueList.length} late
                 </span>
               )}
             </TabsTrigger>
@@ -764,7 +813,23 @@ export default function FollowUps() {
             </TabsTrigger>
           </TabsList>
 
-          {(["pending", "overdue", "sent", "all"] as const).map((tab) => (
+          {/* Bulk action bar — only appears when at least one row is selected.
+              Sticky so long lists don't lose it above the fold. */}
+          {selectedIds.size > 0 && (
+            <div
+              className="mt-3 sticky top-2 z-10 flex flex-wrap items-center gap-2 rounded-md border border-blue-200 bg-blue-50/95 backdrop-blur px-3 py-2"
+              data-testid="bulk-action-bar"
+            >
+              <span className="text-sm font-medium text-blue-900">{selectedIds.size} selected</span>
+              <div className="ml-auto flex items-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => setSelectedIds(new Set())}>Clear</Button>
+                <Button size="sm" variant="outline" onClick={bulkSkip} disabled={patchMutation.isPending} data-testid="bulk-skip">Skip</Button>
+                <Button size="sm" onClick={bulkMarkSent} disabled={patchMutation.isPending} data-testid="bulk-mark-sent">Mark sent</Button>
+              </div>
+            </div>
+          )}
+
+          {(["dueNow", "sent", "all"] as const).map((tab) => (
             <TabsContent key={tab} value={tab} className="space-y-3 mt-4">
               {tabList.length === 0 ? (
                 <Card>
@@ -776,15 +841,41 @@ export default function FollowUps() {
                   </CardContent>
                 </Card>
               ) : (
-                tabList.map((fu) => (
-                  <FollowUpCard
-                    key={fu.id}
-                    followUp={fu}
-                    onMarkSent={handleMarkSent}
-                    onSkip={handleSkip}
-                    isMutating={patchMutation.isPending}
-                  />
-                ))
+                <>
+                  {/* Select-all header for this tab. Hidden on Sent since bulk
+                      actions there are meaningless. */}
+                  {tab !== "sent" && (
+                    <div className="flex items-center gap-2 px-1 pb-1 text-xs text-muted-foreground">
+                      <Checkbox
+                        checked={allVisibleSelected}
+                        onCheckedChange={toggleAllVisible}
+                        data-testid="bulk-select-all"
+                      />
+                      <span>Select all in this view</span>
+                    </div>
+                  )}
+                  {tabList.map((fu) => (
+                    <div key={fu.id} className="flex items-start gap-2">
+                      {tab !== "sent" && (
+                        <div className="pt-4 pl-1">
+                          <Checkbox
+                            checked={selectedIds.has(fu.id)}
+                            onCheckedChange={() => toggleOne(fu.id)}
+                            data-testid={`select-followup-${fu.id}`}
+                          />
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <FollowUpCard
+                          followUp={fu}
+                          onMarkSent={handleMarkSent}
+                          onSkip={handleSkip}
+                          isMutating={patchMutation.isPending}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </>
               )}
             </TabsContent>
           ))}

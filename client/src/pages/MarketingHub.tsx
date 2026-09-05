@@ -1,12 +1,25 @@
-import { Megaphone, Sparkles, CloudLightning, Radar, Target, Handshake } from "lucide-react";
+import { Megaphone, CloudLightning, Target } from "lucide-react";
 import HubShell from "@/components/HubShell";
 import MarketingRollup from "@/components/MarketingRollup";
 import Marketing from "@/pages/Marketing";
-import MarketingSuite from "@/pages/MarketingSuite";
 import StormMarketing from "@/pages/StormMarketing";
 import StormCAT from "@/pages/StormCAT";
 import ConversionRate from "@/pages/ConversionRate";
-import ReferralNurture from "@/pages/ReferralNurture";
+
+// Marketing Hub flattened from 6 tabs to 3. Retired:
+//   • Marketing Suite  — its templates now live inside Marketing > Social Posts
+//   • Referral Nurture — dormant-partner list moved to Partner Overview
+// Storm Marketing and Storm CAT merged into one "Storm" tab with sub-sections.
+// Files kept on disk so any deep links still resolve; sidebar/nav no longer
+// surfaces them.
+function StormTab() {
+  return (
+    <div className="space-y-6">
+      <StormCAT />
+      <StormMarketing />
+    </div>
+  );
+}
 
 export default function MarketingHub() {
   return (
@@ -14,15 +27,12 @@ export default function MarketingHub() {
       <MarketingRollup />
       <HubShell
         title="Marketing"
-        description="Marketing overview, the full marketing suite, storm marketing, and storm CAT tracking together."
+        description="Compose, track conversions, and run storm response — all in one place."
         icon={Megaphone}
         tabs={[
-          { value: "overview", label: "Marketing", icon: Megaphone, component: Marketing },
+          { value: "compose", label: "Compose", icon: Megaphone, component: Marketing },
           { value: "conversion", label: "Conversion", icon: Target, component: ConversionRate },
-          { value: "suite", label: "Marketing Suite", icon: Sparkles, component: MarketingSuite },
-          { value: "nurture", label: "Referral Nurture", icon: Handshake, component: ReferralNurture },
-          { value: "storm", label: "Storm Marketing", icon: CloudLightning, component: StormMarketing },
-          { value: "storm-cat", label: "Storm CAT", icon: Radar, component: StormCAT },
+          { value: "storm", label: "Storm Response", icon: CloudLightning, component: StormTab },
         ]}
       />
     </div>

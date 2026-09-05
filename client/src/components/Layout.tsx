@@ -96,6 +96,11 @@ const navGroups: NavGroup[] = [
       // Photos Hub (capture + search + AI classify) replaces three separate items.
       { href: "/photos-hub", label: "Photos", icon: Camera, permission: "photos" },
       { href: "/inspections", label: "Pre-Job Inspections", icon: ClipboardList, permission: "technician" },
+      // Route Planner — crew tool for who's visiting which job today. Moved
+      // here from Business Dev where nobody actually opened it.
+      { href: "/route-planner", label: "Route Planner", icon: RouteIcon, permission: "route-planner" },
+      // Subcontractors + COI vault — compliance is a Field Ops concern.
+      { href: "/subcontractors-hub", label: "Subcontractors", icon: HardHat, permission: "business-dev" },
       // Removed from sidebar (routes preserved so bookmarks still work):
       //   /multilingual   — Multilingual Crew (stub, no wired translation)
       //   /drone-lidar    — Drone + LiDAR (aspirational, no hardware)
@@ -164,35 +169,29 @@ const navGroups: NavGroup[] = [
   },
 
   // ─── 6. BUSINESS DEV ──────────────────────────────────────────────────────
+  // Simplified to four surfaces plus supporting workflows:
+  //   Contacts · Partners · Marketing · Follow-Ups · Reviews · Calendar
+  // Portal Setup moved to Settings; Route Planner and Subcontractors moved
+  // to Field Ops (they're crew/compliance tools, not BD). All routes remain
+  // registered so old bookmarks still resolve.
   {
     label: "Business Dev",
     icon: Building2,
-    description: "Marketing, referrals & growth",
+    description: "Contacts, partners, marketing & schedule",
     items: [
-      // Contacts lives here now — customer / lead / referrer CRM is a
-      // Business Dev surface, not a Core one. Route unchanged; only sidebar
-      // placement moved.
       { href: "/contacts", label: "Contacts", icon: Users, permission: "contacts" },
-      // — Consolidated hubs (each combines several tools as tabs) —
-      { href: "/partner-hub", label: "Referrals & Partners", icon: Handshake, permission: "partner-portal" },
+      { href: "/partner-hub", label: "Partners", icon: Handshake, permission: "partner-portal" },
       { href: "/marketing-hub", label: "Marketing", icon: Megaphone, permission: "marketing" },
-      // — Standalone growth tools —
-      { href: "/partner-portal-setup", label: "Partner Portal Setup", icon: KeyRound, permission: "partner-portal" },
       { href: "/follow-ups", label: "Follow-Ups", icon: Bell, permission: "follow-ups" },
       { href: "/reviews", label: "Review Requests", icon: Star, permission: "follow-ups" },
-      // Intake Hub (Emergency, FNOL Bot, Voice-to-Note) removed from the
-      // sidebar. Voice-to-Note lives inline in the Job Notes tab now, so
-      // the Intake surface no longer needs a top-level entry. Files and
-      // /intake-hub routes are kept so existing links still open the hub.
-      { href: "/route-planner", label: "Route Planner", icon: RouteIcon, permission: "route-planner" },
-      { href: "/bd-calendar", label: "BD Calendar", icon: CalendarDays, permission: "business-dev" },
-      // Subcontractors Hub bundles the roster + COI/License tracker.
-      { href: "/subcontractors-hub", label: "Subcontractors", icon: HardHat, permission: "business-dev" },
+      // Calendar (was BD Calendar) — now has per-person and per-type filters.
+      { href: "/bd-calendar", label: "Calendar", icon: CalendarDays, permission: "business-dev" },
       // Removed from sidebar (routes preserved):
-      //   /partner-portal-setup — setup wizard, now lives under Settings
-      //   /document-builder     — template authoring, now under Settings
-      //   /trash                — admin-only, now under Settings
-      // Migration Center was already removed in a prior pass; page file kept.
+      //   /partner-portal-setup — moved to Settings (setup wizard, not daily surface)
+      //   /route-planner        — moved to Field Ops (crew tool)
+      //   /subcontractors-hub   — moved to Field Ops (compliance is Ops)
+      //   /document-builder     — under Settings
+      //   /trash                — under Settings
     ],
   },
 

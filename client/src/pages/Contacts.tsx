@@ -385,7 +385,16 @@ export default function Contacts() {
   });
 
   // Filter by status. Backend still returns everything; we hide archived unless toggled.
-  const visible = contacts.filter(c => showArchived || (c as any).status !== "archived");
+  // The search box on the header narrows every tab in place — name, company, phone,
+  // or email substring, case-insensitive. Empty box = show everything.
+  const [search, setSearch] = useState("");
+  const q = search.trim().toLowerCase();
+  const matchesQuery = (c: Contact) => {
+    if (!q) return true;
+    const hay = `${c.name || ""} ${c.company || ""} ${c.phone || ""} ${c.email || ""}`.toLowerCase();
+    return hay.includes(q);
+  };
+  const visible = contacts.filter(c => (showArchived || (c as any).status !== "archived") && matchesQuery(c));
   const customers = visible.filter(c => c.type === "customer");
   const subs = visible.filter(c => c.type === "sub");
   const referrals = visible.filter(c => c.type === "referral");
@@ -430,6 +439,40 @@ export default function Contacts() {
               {c.email && <a href={`mailto:${c.email}`} className="text-xs text-[hsl(var(--titan-blue))] flex items-center gap-1 hover:underline"><Mail className="w-3 h-3" />{c.email}</a>}
               {c.referralRate && <p className="text-xs text-green-600 font-medium mt-1">Referral Rate: {c.referralRate}%</p>}
               {c.portalPin && !isArchived && <PortalPinBadge pin={c.portalPin} contactId={c.id} canReveal={canRevealPin} />}
+              {/* Inline quick actions — Call / Text / Email. Skips whichever
+                  channel we don't have a value for. sms: works on iOS/Android
+                  and no-ops on desktop, which is the right degrade. */}
+              {!isArchived && (c.phone || c.email) && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {c.phone && (
+                    <a
+                      href={phoneHref(c.phone)}
+                      className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] text-blue-700 hover:bg-blue-100"
+                      data-testid={`quickcall-${c.id}`}
+                    >
+                      <Phone className="w-2.5 h-2.5" />Call
+                    </a>
+                  )}
+                  {c.phone && (
+                    <a
+                      href={`sms:${c.phone.replace(/[^\d+]/g, "")}`}
+                      className="inline-flex items-center gap-1 rounded-full border border-purple-200 bg-purple-50 px-2 py-0.5 text-[11px] text-purple-700 hover:bg-purple-100"
+                      data-testid={`quicktext-${c.id}`}
+                    >
+                      <Mail className="w-2.5 h-2.5" />Text
+                    </a>
+                  )}
+                  {c.email && (
+                    <a
+                      href={`mailto:${c.email}`}
+                      className="inline-flex items-center gap-1 rounded-full border border-green-200 bg-green-50 px-2 py-0.5 text-[11px] text-green-700 hover:bg-green-100"
+                      data-testid={`quickemail-${c.id}`}
+                    >
+                      <Mail className="w-2.5 h-2.5" />Email
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -460,9 +503,20 @@ export default function Contacts() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-xl font-bold">Contacts</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-1 min-w-[220px] items-center gap-2 justify-end">
+          {/* Header search — narrows every tab (customers / subs / referrals)
+              at once. Keeps the tab structure so people don't lose their
+              mental model, but you can find any contact by name/phone/email
+              without switching tabs first. */}
+          <Input
+            placeholder="Search name, company, phone, email…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="h-9 max-w-[280px]"
+            data-testid="input-contact-search"
+          />
           <Button
             size="sm"
             variant={showArchived ? "default" : "outline"}
