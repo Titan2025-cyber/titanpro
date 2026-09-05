@@ -3,6 +3,7 @@ import { useParams, Link, useLocation } from "wouter";
 import { useState, lazy, Suspense, useEffect, useRef } from "react";
 import { ArrowLeft, MapPin, Phone, Mail, Shield, FileText, Receipt, Droplets, Camera, FolderOpen, TrendingUp, StickyNote, Lock, Globe, Pencil, Trash2, Plus, Check, X, Wrench, MessageSquare, Star, Send, KeyRound, Copy, RefreshCw, ExternalLink, ShieldCheck, HandCoins, Upload, Paperclip, Mic, MicOff, DollarSign, FlaskConical } from "lucide-react";
 import UploadExternalDocDialog from "@/components/UploadExternalDocDialog";
+import { CarrierSelect } from "@/components/CarrierSelect";
 import { StageSelector, DateManager, PROGRESS_STAGES } from "@/components/JobPipeline";
 import { JobAnalytics } from "@/components/JobAnalytics";
 import { JobCostingPanel } from "@/pages/JobCosting";
@@ -2357,13 +2358,15 @@ function InsuranceEditor({ job, updateJob }: { job: any; updateJob: any }) {
           <div className="grid grid-cols-2 gap-3 text-sm">
             <div className="col-span-2">
               <Label className="text-xs">Insurance Carrier</Label>
-              <Input
-                className="mt-1"
-                value={draft.insuranceCarrier}
-                onChange={e => setDraft(d => ({ ...d, insuranceCarrier: e.target.value }))}
-                placeholder="e.g. State Farm, Allstate"
-                data-testid="input-insurance-carrier"
-              />
+              {/* Select instead of free-text so scorecards group cleanly.
+                  Users can add a new carrier via the "+ Add new" row —
+                  server dedupes case-insensitively. */}
+              <div className="mt-1">
+                <CarrierSelect
+                  value={draft.insuranceCarrier}
+                  onChange={(name) => setDraft((d) => ({ ...d, insuranceCarrier: name }))}
+                />
+              </div>
             </div>
             <div>
               <Label className="text-xs">Adjuster Name</Label>

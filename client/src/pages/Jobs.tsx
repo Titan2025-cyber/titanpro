@@ -1,5 +1,7 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { UserSelect } from "@/components/UserSelect";
+import { CarrierSelect } from "@/components/CarrierSelect";
+import { ContactCombobox } from "@/components/ContactCombobox";
 import { useState, useEffect, useRef } from "react";
 import { Link, useLocation } from "wouter";
 import {
@@ -713,6 +715,9 @@ export default function Jobs() {
     salesDate: todayLocalISO(),
     leadSource: "" as LeadSource | "",
     leadSourceDetail: "",
+    // Referring partner — stringified contact id ("" = none). Set via the
+    // searchable combobox below. Wired to jobs.referral_partner_id on create.
+    referralPartnerId: "" as string,
     // Property details — auto-prefilled from OpenStreetMap when the address
     // matches a known building, editable at any time.
     yearBuilt: "" as string | number,
@@ -776,6 +781,7 @@ export default function Jobs() {
       salesDate: todayLocalISO(),
       leadSource: "",
       leadSourceDetail: "",
+      referralPartnerId: "",
       yearBuilt: "",
       squareFeet: "",
     });
@@ -1016,12 +1022,16 @@ export default function Jobs() {
                     </div>
                   </div>
                   {customerMode === "existing" ? (
-                    <Select value={form.contactId} onValueChange={v => setForm(f => ({ ...f, contactId: v }))}>
-                      <SelectTrigger data-testid="select-customer"><SelectValue placeholder="Select customer" /></SelectTrigger>
-                      <SelectContent>
-                        {customers.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
+                    /* Searchable customer picker — replaces a scroll-only Select
+                       so operators can find a customer by typing part of a
+                       name / phone / email instead of hunting. */
+                    <ContactCombobox
+                      value={form.contactId}
+                      onChange={(id) => setForm((f) => ({ ...f, contactId: id }))}
+                      type="customer"
+                      placeholder="Search customers…"
+                      testId="select-customer"
+                    />
                   ) : (
                     <div className="space-y-2 rounded-md border border-dashed p-2">
                       <Input
@@ -1141,7 +1151,12 @@ export default function Jobs() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <Label>Insurance Carrier</Label>
-                    <Input value={form.insuranceCarrier} onChange={e => setForm(f => ({ ...f, insuranceCarrier: e.target.value }))} />
+                    {/* Select instead of free-text — same directory as Job Detail
+                        insurance tab, so scorecards stay grouped. */}
+                    <CarrierSelect
+                      value={form.insuranceCarrier}
+                      onChange={(name) => setForm((f) => ({ ...f, insuranceCarrier: name }))}
+                    />
                   </div>
                   <div>
                     <Label>Claim #</Label>
@@ -1164,6 +1179,21 @@ export default function Jobs() {
                   <Input value={form.leadSourceDetail} onChange={e => setForm(f => ({ ...f, leadSourceDetail: e.target.value }))} placeholder="e.g. Partner name, campaign, or referrer" />
                 </div>
 
+                {/* Referring partner — searchable combobox scoped to referral
+                    contacts. Always visible so a partner can be attributed
+                    even if the lead source isn't explicitly "referral". */}
+                <div>
+                  <Label>Referring Partner</Label>
+                  <ContactCombobox
+                    value={form.referralPartnerId}
+                    onChange={(id) => setForm((f) => ({ ...f, referralPartnerId: id }))}
+                    type="referral"
+                    placeholder="Search referral partners…"
+                    emptyLabel="No referral partners match. Add one from Contacts → Referral."
+                    testId="select-referral-partner"
+                  />
+                </div>
+
                 <div>
                   <Label>Description</Label>
                   <Input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Brief description" />
@@ -1182,6 +1212,8 @@ export default function Jobs() {
                     // Coerce numeric strings to real numbers (or null when blank).
                     yearBuilt: form.yearBuilt === "" || form.yearBuilt == null ? null : Number(form.yearBuilt) || null,
                     squareFeet: form.squareFeet === "" || form.squareFeet == null ? null : Number(form.squareFeet) || null,
+                    // Referring partner id — nullify if empty string.
+                    referralPartnerId: form.referralPartnerId ? Number(form.referralPartnerId) : null,
                     createdAt: new Date().toISOString(),
                   })}
                   data-testid="button-create-job"

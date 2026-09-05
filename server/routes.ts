@@ -3959,6 +3959,88 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   });
 
+  // ── Insurance Carriers directory ─────────────────────────────────────────
+  // Single source of truth for carrier names so the Job Detail insurance tab
+  // uses a Select (no free-text typos). Previously the JobDetail input let
+  // any operator invent "Statefarm", "State-Farm", "State Farm Ins" — each
+  // showed up as its own row on the Carrier Scorecard, splitting the numbers.
+  //
+  // Table shape: id, name (unique), aliases (comma-list — currently unused,
+  // room for merging typos in a later pass), is_active flag, created_at.
+  // Seeded lazily from the distinct names already present on jobs so no
+  // history is lost.
+  const ensureCarriersTable = () => {
+    try {
+      sqlite.exec(`CREATE TABLE IF NOT EXISTS insurance_carriers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        aliases TEXT DEFAULT '',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT ''
+      )`);
+    } catch (_) {}
+    // Backfill from any carrier name currently in jobs so existing data
+    // remains selectable. INSERT OR IGNORE keeps duplicates out.
+    try {
+      const existing = sqlite.prepare(
+        "SELECT DISTINCT TRIM(insurance_carrier) AS name FROM jobs WHERE insurance_carrier IS NOT NULL AND TRIM(insurance_carrier) != ''"
+      ).all() as any[];
+      const seed = sqlite.prepare(
+        "INSERT OR IGNORE INTO insurance_carriers (name, created_at) VALUES (?, ?)"
+      );
+      const now = new Date().toISOString();
+      // Common carriers first, then anything already in jobs. Ordering
+      // matters only for first-time seeding; UNIQUE keeps dupes out.
+      const defaults = [
+        "State Farm", "Allstate", "USAA", "Farmers", "Liberty Mutual",
+        "Nationwide", "Travelers", "Progressive", "American Family",
+        "Erie", "Auto-Owners", "Chubb", "MetLife", "Safeco",
+        "The Hartford", "AIG", "Amica", "Foremost", "Encompass",
+        "Homesite", "ASI Progressive", "Citizens", "Universal",
+      ];
+      for (const n of defaults) seed.run(n, now);
+      for (const row of existing) if (row.name) seed.run(row.name, now);
+    } catch (_) {}
+  };
+
+  app.get("/api/insurance-carriers", (_req, res) => {
+    ensureCarriersTable();
+    const rows = sqlite
+      .prepare("SELECT id, name, aliases, is_active, created_at FROM insurance_carriers WHERE is_active = 1 ORDER BY name COLLATE NOCASE ASC")
+      .all();
+    res.json(rows);
+  });
+
+  app.post("/api/insurance-carriers", (req, res) => {
+    ensureCarriersTable();
+    const raw = String(req.body?.name || "").trim();
+    if (!raw) return res.status(400).json({ error: "name required" });
+    if (raw.length > 80) return res.status(400).json({ error: "name too long" });
+    try {
+      const now = new Date().toISOString();
+      // Case-insensitive uniqueness — if the row already exists, return it
+      // instead of erroring so "Add new" doesn't fail on a name someone else
+      // just typed.
+      const existing = sqlite
+        .prepare("SELECT id, name, aliases, is_active, created_at FROM insurance_carriers WHERE name = ? COLLATE NOCASE")
+        .get(raw);
+      if (existing) return res.json(existing);
+      const r: any = sqlite
+        .prepare("INSERT INTO insurance_carriers (name, created_at) VALUES (?, ?) RETURNING id, name, aliases, is_active, created_at")
+        .get(raw, now);
+      res.json(r);
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.delete("/api/insurance-carriers/:id", (req, res) => {
+    // Soft-delete — keeps historical jobs pointing at a real name.
+    ensureCarriersTable();
+    sqlite.prepare("UPDATE insurance_carriers SET is_active = 0 WHERE id = ?").run(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
   // Carrier scorecard (derived from jobs + supplements + invoices + payments)
   app.get("/api/carrier-scorecard", (_req, res) => {
     const jobs = sqlite.prepare("SELECT * FROM jobs WHERE (status IS NULL OR status != 'closed') AND insurance_carrier IS NOT NULL AND insurance_carrier != ''").all() as any[];
