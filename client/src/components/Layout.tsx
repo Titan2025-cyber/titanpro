@@ -19,7 +19,7 @@ import {
   Droplets, Mic, FileSearch, UserRound, Trophy, UserCog, KeyRound,
   FileSpreadsheet, QrCode, Handshake, ArrowLeft, LayoutDashboard as DashIcon,
   Package, Lock, Inbox,
-  Trash2,
+  Trash2, Settings as SettingsIcon,
 } from "lucide-react";
 import { useState, useEffect, type ReactNode } from "react";
 import GlobalSearch from "@/components/GlobalSearch";
@@ -102,9 +102,11 @@ const navGroups: NavGroup[] = [
       // Photos Hub (capture + search + AI classify) replaces three separate items.
       { href: "/photos-hub", label: "Photos", icon: Camera, permission: "photos" },
       { href: "/inspections", label: "Pre-Job Inspections", icon: ClipboardList, permission: "technician" },
-      { href: "/multilingual", label: "Multilingual Crew", icon: Languages, permission: "technician" },
-      { href: "/drone-lidar", label: "Drone + LiDAR", icon: Radio, permission: "technician" },
-      { href: "/job-age-alerts", label: "Job Age Alerts", icon: Clock, permission: "jobs" },
+      // Removed from sidebar (routes preserved so bookmarks still work):
+      //   /multilingual   — Multilingual Crew (stub, no wired translation)
+      //   /drone-lidar    — Drone + LiDAR (aspirational, no hardware)
+      //   /job-age-alerts — Job Age Alerts (duplicate of Attention Today's
+      //                     stalled-jobs bucket)
     ],
   },
 
@@ -137,7 +139,8 @@ const navGroups: NavGroup[] = [
       // Subrogation Tracker, and Competitive Bid Intel as tabs. Only Invoice
       // Escalation, Price Lists, and Job Costing remain top-level here.
       { href: "/line-items", label: "Price Lists", icon: BookOpen, permission: "supplements" },
-      { href: "/invoice-escalation", label: "Invoice Escalation", icon: Scale, permission: "supplements" },
+      // Invoice Escalation removed from sidebar — reachable from Core →
+      // Escalation Outbox and via /invoice-escalation for old bookmarks.
       { href: "/job-costing", label: "Job Costing", icon: PieChart, permission: "job-costing" },
     ],
   },
@@ -153,8 +156,11 @@ const navGroups: NavGroup[] = [
       { href: "/ar-hub", label: "Accounts Receivable", icon: CreditCard, permission: "finance" },
       // — Standalone finance tools —
       { href: "/weekly-billing", label: "Weekly Billing", icon: CalendarDays, permission: "weekly-billing" },
-      { href: "/lien-waivers", label: "Lien Waivers", icon: FileCheck, permission: "finance" },
-      { href: "/cash-flow", label: "Cash Flow Calendar", icon: Calendar, permission: "finance" },
+      // Lien Waivers moved off the sidebar — belongs on a per-job basis.
+      // Route /lien-waivers still works; future work is to expose it as a
+      // tab inside JobDetail so it's authored in job context.
+      // Cash Flow Calendar moved off the sidebar — folds into AR Hub next.
+      // Route /cash-flow still works.
       { href: "/payment-plans", label: "Payment Plans", icon: DollarSign, permission: "finance" },
       { href: "/qb-sync", label: "QuickBooks Sync", icon: BookMarked, permission: "finance" },
       // Command BI, NPS, Predictive Model, Analytics, Lead Attribution, and
@@ -188,12 +194,11 @@ const navGroups: NavGroup[] = [
       { href: "/bd-calendar", label: "BD Calendar", icon: CalendarDays, permission: "business-dev" },
       // Subcontractors Hub bundles the roster + COI/License tracker.
       { href: "/subcontractors-hub", label: "Subcontractors", icon: HardHat, permission: "business-dev" },
-      // — Builder —
-      // Migration Center removed from the sidebar (not part of the day-to-day
-      // workflow). Page file is intentionally preserved so it can be restored
-      // later if needed — just re-add the route + sidebar entry.
-      { href: "/document-builder", label: "Document Builder", icon: FileSpreadsheet, permission: "reports" },
-      { href: "/trash", label: "Trash", icon: Trash2, permission: "admin", adminOnly: true },
+      // Removed from sidebar (routes preserved):
+      //   /partner-portal-setup — setup wizard, now lives under Settings
+      //   /document-builder     — template authoring, now under Settings
+      //   /trash                — admin-only, now under Settings
+      // Migration Center was already removed in a prior pass; page file kept.
     ],
   },
 
@@ -227,34 +232,25 @@ const navGroups: NavGroup[] = [
     ],
   },
 
-  // ─── 9. ADMIN & TOOLS ─────────────────────────────────────────────────────
+  // ─── 9. SETTINGS ──────────────────────────────────────────────────────────
+  // Collapses what used to be Admin & Tools into a single sidebar entry.
+  // /settings renders a hub of cards for: Security, Notifications, Users,
+  // Team Activity, Activity Log, Security Audit, Integrations, Trash,
+  // Document Templates, Partner Portal Setup, and Portal QR Codes.
+  // Every removed route still resolves for old bookmarks.
   {
-    label: "Admin & Tools",
-    icon: ShieldCheck,
-    description: "Audit logs, integrations & settings",
+    label: "Settings",
+    icon: SettingsIcon,
+    description: "Users, security, integrations & admin tools",
     items: [
-      { href: "/security", label: "Security & 2FA", icon: KeyRound },
-      { href: "/notification-settings", label: "Notifications", icon: Bell },
-      { href: "/user-management", label: "User Management", icon: UserCog, permission: "user-management" },
-      { href: "/team-activity", label: "Team Activity", icon: Activity, ownerOnly: true },
-      { href: "/activity", label: "Activity Log", icon: Activity, permission: "activity-log" },
-      { href: "/audit-log", label: "Security Audit", icon: ShieldCheck, permission: "activity-log" },
-      { href: "/integrations", label: "Integrations", icon: CreditCard, permission: "settings" },
-      { href: "/tech-notifications", label: "Tech Alerts", icon: Bell, permission: "technician" },
+      { href: "/settings", label: "Settings", icon: SettingsIcon },
     ],
   },
 
-  // ─── 10. PORTALS ──────────────────────────────────────────────────────────
-  {
-    label: "Portals",
-    icon: ExternalLink,
-    description: "Partner & customer portals",
-    items: [
-      { href: "/portal-qr", label: "Portal QR Codes", icon: QrCode, permission: "customer-portal" },
-      { href: "/partner-portal", label: "Partner Portal", icon: ExternalLink, permission: "partner-portal" },
-      { href: "/customer-portal", label: "Customer Portal", icon: Home, permission: "customer-portal" },
-    ],
-  },
+  // Portals group removed from the sidebar — staff don't visit the
+  // customer/partner-facing pages themselves (partners and customers do,
+  // via public links). Routes /portal-qr, /partner-portal, /customer-portal
+  // are all still registered; Portal QR is also a card under Settings.
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {

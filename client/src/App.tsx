@@ -35,6 +35,7 @@ import { LocationTracker } from "@/lib/locationTracker";
 // Lazy-loaded pages (code-split — each page downloads only when visited)
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const MyToday = lazy(() => import("@/pages/MyToday"));
+const Settings = lazy(() => import("@/pages/Settings"));
 const Jobs = lazy(() => import("@/pages/Jobs"));
 const JobDetail = lazy(() => import("@/pages/JobDetail"));
 const ClosedJobs = lazy(() => import("@/pages/ClosedJobs"));
@@ -459,9 +460,12 @@ function AuthenticatedRoutes() {
         <Route path="/notification-settings" component={() => <Page component={NotificationSettings} name="NotificationSettings" />} />
         <Route path="/audit-log" component={() => <Page component={AuditLog} name="AuditLog" />} />
         <Route path="/integrations" component={() => <Page component={Integrations} name="Integrations" />} />
-        {/* /settings landed on a raw dev-facing 404. Redirect to Integrations,
-            the primary Admin → Tools landing page. Fixed 2026-08-14. */}
-        <Route path="/settings"><Redirect to="/integrations" /></Route>
+        {/* /settings is the consolidated Admin & Tools hub — cards to
+            Security, Notifications, Users, Team Activity, Activity Log,
+            Security Audit, Integrations, Trash, Document Templates,
+            Partner Portal Setup, and Portal QR Codes. Replaces the old
+            per-item sidebar rows. */}
+        <Route path="/settings" component={() => <Page component={Settings} name="Settings" />} />
 
         {/* Portals (staff-side admin views — public customer/partner portals live
            in AppRoutes above, reachable via QR code without staff login) */}
