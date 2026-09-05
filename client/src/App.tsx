@@ -34,6 +34,7 @@ import { LocationTracker } from "@/lib/locationTracker";
 
 // Lazy-loaded pages (code-split — each page downloads only when visited)
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
+const MyToday = lazy(() => import("@/pages/MyToday"));
 const Jobs = lazy(() => import("@/pages/Jobs"));
 const JobDetail = lazy(() => import("@/pages/JobDetail"));
 const ClosedJobs = lazy(() => import("@/pages/ClosedJobs"));
@@ -276,6 +277,15 @@ function AppRoutes() {
   );
 }
 
+// Landing router. Owners see the full Dashboard (revenue + Attention Today);
+// everyone else sees MyToday. Rendered lazily via the same Suspense boundary
+// as the routes list, so the initial paint is identical either way.
+function SmartLanding() {
+  const { user } = useAuth();
+  const isOwner = user?.role === "owner";
+  return isOwner ? <Dashboard /> : <MyToday />;
+}
+
 function AuthenticatedRoutes() {
   return (
     <AuthGate>
@@ -287,7 +297,14 @@ function AuthenticatedRoutes() {
       <Suspense fallback={<PageLoader />}>
       <Switch>
         {/* Core */}
-        <Route path="/" component={() => <Page component={Dashboard} name="Dashboard" />} />
+        {/* Landing router: owners land on the full Dashboard (KPIs +
+            cross-company Attention Today); everyone else lands on
+            My Today, which is scoped to what THEY personally need to
+            touch. The full dashboard is always reachable at /dashboard
+            and My Today at /my/today for anyone who wants either view. */}
+        <Route path="/" component={() => <Page component={SmartLanding} name="Home" />} />
+        <Route path="/dashboard" component={() => <Page component={Dashboard} name="Dashboard" />} />
+        <Route path="/my/today" component={() => <Page component={MyToday} name="MyToday" />} />
         <Route path="/jobs" component={() => <Page component={Jobs} name="Jobs" />} />
         <Route path="/jobs/closed" component={() => <Page component={ClosedJobs} name="ClosedJobs" />} />
         <Route path="/jobs/:id" component={() => <Page component={JobDetail} name="JobDetail" />} />

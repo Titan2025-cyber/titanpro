@@ -728,6 +728,57 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
   // Completes the forced-PIN-change step from a stale-PIN login. Validates the
   // short-lived token, enforces the new PIN rules, clears must_change_pin, and
   // issues a full session — no existing session required.
+  // POST /api/auth/reset-password-with-pin
+  // Password-recovery path when a user forgets their password but still knows
+  // their kiosk PIN. Owner/admin accounts cannot log in with PIN alone (blocked
+  // in /api/auth/login for kiosk-hardening), but we allow the PIN to prove
+  // identity strictly for setting a NEW password — no session is issued; the
+  // user is sent back to the login screen to complete a full password + 2FA
+  // sign-in. Rate-limited via the same 5-in-15 lockout as password login.
+  app.post("/api/auth/reset-password-with-pin", (req, res) => {
+    const ip = clientIp(req);
+    const name = (req.body?.name || "").toString().trim();
+    const pin = (req.body?.pin || "").toString();
+    const newPassword = (req.body?.newPassword || "").toString();
+    if (!name || !pin || !newPassword) {
+      return res.status(400).json({ error: "Name, PIN, and new password are required." });
+    }
+    if (isLockedOut(name)) {
+      return res.status(429).json({ error: "Too many failed attempts. Try again in 15 minutes." });
+    }
+    const strengthErr = validatePasswordStrength(newPassword);
+    if (strengthErr) return res.status(400).json({ error: strengthErr });
+
+    const emp: any = sqlite.prepare(
+      "SELECT * FROM employees WHERE LOWER(name) = LOWER(?) AND is_active = 1"
+    ).get(name);
+    if (!emp || !emp.pin) {
+      sqlite.prepare(
+        "INSERT INTO login_attempts (employee_name, ip, success, attempted_at) VALUES (?, ?, 0, ?)"
+      ).run(name, ip, new Date().toISOString());
+      return res.status(401).json({ error: "PIN does not match that name." });
+    }
+    const pinOk = verifyPassword(pin, emp.pin || "");
+    if (!pinOk) {
+      sqlite.prepare(
+        "INSERT INTO login_attempts (employee_name, ip, success, attempted_at) VALUES (?, ?, 0, ?)"
+      ).run(name, ip, new Date().toISOString());
+      writeAudit(sqlite, emp.id, emp.name, "password_reset_failed", "auth", emp.id,
+        "Password-reset attempt with wrong PIN", ip);
+      return res.status(401).json({ error: "PIN does not match that name." });
+    }
+
+    // Success — update the hash, revoke every existing session so a stolen
+    // token can't survive a password change, clear failed-attempt log.
+    const newHash = hashPassword(newPassword);
+    sqlite.prepare("UPDATE employees SET password_hash = ? WHERE id = ?").run(newHash, emp.id);
+    sqlite.prepare("DELETE FROM staff_sessions WHERE employee_id = ?").run(emp.id);
+    sqlite.prepare("DELETE FROM login_attempts WHERE employee_name = ? AND success = 0").run(emp.name);
+    writeAudit(sqlite, emp.id, emp.name, "password_reset_by_pin", "auth", emp.id,
+      "Password reset via PIN self-service", ip);
+    res.json({ ok: true, message: "Password updated. Sign in with your new password." });
+  });
+
   app.post("/api/auth/pin/change-forced", (req, res) => {
     const ip = clientIp(req);
     const pending = resolvePending((req.body.pinChangeToken || "").toString(), "pin_change");

@@ -3242,6 +3242,111 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
+  // "My Today" — role-scoped landing view for every signed-in user.
+  // Owners see cross-company Attention Today on the Dashboard; this powers
+  // the everyone-else version: what YOU personally need to touch today.
+  // Buckets are intentionally small so a tech on a phone opens the app,
+  // sees their day at a glance, and starts working.
+  app.get("/api/my/today", requireStaffAuth, (req, res) => {
+    const me = (req as any).employee as { id: number; name: string; role: string };
+    if (!me) return res.status(401).json({ error: "Not authenticated" });
+
+    const todayYmd = new Date().toISOString().slice(0, 10);
+    const safe = <T>(fn: () => T, fallback: T): T => {
+      try { return fn(); } catch { return fallback; }
+    };
+
+    const myActiveJobs = safe(() => sqlite.prepare(`
+      SELECT id, job_number AS jobNumber, address, status,
+             loss_type AS lossType, insurance_carrier AS insuranceCarrier,
+             description, progress_stage AS progressStage
+        FROM jobs
+       WHERE LOWER(COALESCE(assigned_tech,'')) = LOWER(?)
+         AND status NOT IN ('complete','closed')
+       ORDER BY id DESC
+       LIMIT 10
+    `).all(me.name) as any[], []);
+
+    // Drying reads due today: for my drying-phase jobs, check whether a
+    // drying_records row exists for today's date. If not, it's due.
+    const dryingReadsDue = safe(() => {
+      const dryingJobs = sqlite.prepare(`
+        SELECT id, job_number AS jobNumber, address, mitigation_start AS start
+          FROM jobs
+         WHERE LOWER(COALESCE(assigned_tech,'')) = LOWER(?)
+           AND status = 'drying'
+         ORDER BY id DESC
+      `).all(me.name) as any[];
+      const out: any[] = [];
+      for (const j of dryingJobs) {
+        const todayCount = (sqlite.prepare(
+          "SELECT COUNT(*) c FROM drying_records WHERE job_id = ? AND reading_date = ?"
+        ).get(j.id, todayYmd) as any)?.c || 0;
+        if (todayCount === 0) {
+          const dayNumber = j.start
+            ? Math.max(1, Math.floor((Date.now() - new Date(j.start).getTime()) / (24 * 3600 * 1000)) + 1)
+            : 1;
+          out.push({ jobId: j.id, jobNumber: j.jobNumber, address: j.address, day: dayNumber });
+          if (out.length >= 5) break;
+        }
+      }
+      return out;
+    }, []);
+
+    // Signatures I sent that are still unsigned.
+    const signaturesPending = safe(() => sqlite.prepare(`
+      SELECT jd.id, jd.job_id AS jobId, jd.title, jd.doc_type AS docType,
+             jd.created_at AS createdAt, j.job_number AS jobNumber
+        FROM job_documents jd
+        LEFT JOIN jobs j ON j.id = jd.job_id
+       WHERE LOWER(COALESCE(jd.created_by,'')) = LOWER(?)
+         AND jd.status = 'unsigned'
+       ORDER BY jd.created_at DESC
+       LIMIT 5
+    `).all(me.name) as any[], []);
+
+    // Photo tasks: my active jobs with thin documentation for current phase.
+    const photoTasks = safe(() => {
+      const out: any[] = [];
+      for (const j of myActiveJobs) {
+        const phase = j.status === 'reconstruction' ? 'reconstruction' : 'mitigation';
+        const c = (sqlite.prepare(
+          "SELECT COUNT(*) c FROM photos WHERE job_id = ? AND COALESCE(phase,'mitigation') = ?"
+        ).get(j.id, phase) as any)?.c || 0;
+        if (c < 3) {
+          out.push({ jobId: j.id, jobNumber: j.jobNumber, address: j.address, phase, count: c });
+          if (out.length >= 5) break;
+        }
+      }
+      return out;
+    }, []);
+
+    // Clock status: currently-open time_clock row for me, if any.
+    const openClock = safe(() => sqlite.prepare(`
+      SELECT tc.id, tc.job_id AS jobId, tc.clock_in_at AS clockInAt,
+             j.job_number AS jobNumber, j.address
+        FROM time_clock tc
+        LEFT JOIN jobs j ON j.id = tc.job_id
+       WHERE tc.employee_id = ?
+         AND (tc.clock_out_at IS NULL OR tc.clock_out_at = '')
+       ORDER BY tc.clock_in_at DESC
+       LIMIT 1
+    `).get(me.id) as any, null);
+    const clockStatus = openClock
+      ? { open: true, since: openClock.clockInAt, jobId: openClock.jobId, jobNumber: openClock.jobNumber, address: openClock.address }
+      : { open: false };
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      me: { id: me.id, name: me.name, role: me.role },
+      myActiveJobs,
+      dryingReadsDue,
+      signaturesPending,
+      photoTasks,
+      clockStatus,
+    });
+  });
+
   // ── First-run setup checklist ─────────────────────────────────────────────
   // Powers the onboarding card on the Dashboard. Each item is either
   // "done", "todo", or "optional". Deliberately owner/admin only so techs
