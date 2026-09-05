@@ -10,6 +10,7 @@ import { SupplementPanel } from "@/pages/Supplements";
 import { SafetyPanel } from "@/pages/Safety";
 import { LienWaiversPanel } from "@/pages/LienWaivers";
 import RecordPaymentDialog from "@/components/RecordPaymentDialog";
+import JobPaymentsPanel from "@/components/JobPaymentsPanel";
 // PDF-heavy components (they pull jsPDF, ~600KB) are lazy-loaded so the
 // pdf bundle downloads only when the user opens the relevant tab — not on
 // every JobDetail page view.
@@ -1433,6 +1434,7 @@ export default function JobDetail() {
           <TabsTrigger value="documents"><FolderOpen className="w-3 h-3 mr-1 inline-block" />Documents</TabsTrigger>
           <TabsTrigger value="estimates">Estimates ({visibleEstimates.length})</TabsTrigger>
           <TabsTrigger value="invoices">Invoices ({visibleInvoices.length})</TabsTrigger>
+          <TabsTrigger value="payments"><DollarSign className="w-3 h-3 mr-1 inline-block" />Payments</TabsTrigger>
           <TabsTrigger value="insurance">Insurance</TabsTrigger>
           <TabsTrigger value="pipeline"><TrendingUp className="w-3 h-3 mr-1 inline-block" />Pipeline</TabsTrigger>
           <TabsTrigger value="costing">Job Costing</TabsTrigger>
@@ -1999,6 +2001,14 @@ export default function JobDetail() {
             })}
             {visibleInvoices.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">No invoices for {phaseFilter} yet.</p>}
           </div>
+        </TabsContent>
+
+        {/* ── Payments Tab ── */}
+        {/* Full history of every payment received on this job's invoices,
+            plus invoiced/received/outstanding rollup. Answers 'has this
+            check hit yet?' without leaving the job. */}
+        <TabsContent value="payments" className="mt-4">
+          <JobPaymentsPanel jobId={Number(id)} />
         </TabsContent>
 
         {/* ── Insurance Tab ── */}

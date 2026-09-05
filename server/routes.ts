@@ -1754,6 +1754,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }, (req, res) => {
     res.json(storage.createPayment(req.body));
   });
+  // Delete a payment. Restricted to owner/admin — removing money records
+  // is a book-keeping action, not a routine correction. Field techs and
+  // sales should re-record an offsetting payment instead.
+  app.delete("/api/payments/:id", requireRole("owner", "admin"), (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: "Invalid id" });
+    storage.deletePayment(id);
+    res.json({ ok: true });
+  });
 
   // ── Object-storage diagnostic ─────────────────────────────────────────────────
   // Public JSON check: hit /api/storage/status to see whether the running

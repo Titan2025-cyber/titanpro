@@ -1075,6 +1075,7 @@ export interface IStorage {
   // Payments
   getPayments(): schema.Payment[];
   createPayment(data: schema.InsertPayment): schema.Payment;
+  deletePayment(id: number): unknown;
 
   // Photos
   getPhotos(): schema.Photo[];
@@ -1406,8 +1407,17 @@ class SqliteStorage implements IStorage {
   // Payments
   getPayments() { return db.select().from(schema.payments).orderBy(desc(schema.payments.id)).all(); }
   createPayment(data: schema.InsertPayment) {
-    const d = { ...data, paidAt: new Date().toISOString() };
+    // Honor a caller-supplied paidAt (RecordPaymentDialog sends the date the
+    // check actually cleared, which may be days before the operator gets
+    // around to entering it). Fall back to now if none provided.
+    const paidAt = (typeof (data as any).paidAt === "string" && (data as any).paidAt.trim())
+      ? (data as any).paidAt
+      : new Date().toISOString();
+    const d = { ...data, paidAt };
     return db.insert(schema.payments).values(d).returning().get();
+  }
+  deletePayment(id: number) {
+    return db.delete(schema.payments).where(eq(schema.payments.id, id)).run();
   }
 
   // Photos

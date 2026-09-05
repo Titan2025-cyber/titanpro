@@ -98,7 +98,8 @@ export default function RecordPaymentDialog({ open, onOpenChange, invoice, onRec
         amount: amountNum,
         method,
         paidAt: new Date(paidAt).toISOString(),
-        notes: [reference && `Ref: ${reference}`, notes].filter(Boolean).join(" · ") || null,
+        reference: reference || null,
+        notes: notes || null,
       };
 
       // Create the payment first, then move the invoice status only if the
