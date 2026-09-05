@@ -27,9 +27,28 @@
  *     quality — good balance for job documentation.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Camera, X, RefreshCcw, ZapOff, Zap, CloudUpload, Trash2 } from "lucide-react";
+import { Camera, X, RefreshCcw, ZapOff, Zap, CloudUpload, Trash2, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+
+// ── Aspect-ratio modes ──────────────────────────────────────────────────────
+// Native phone rear cameras usually deliver a 4:3 sensor frame. We keep that
+// as the default (best vertical field of view — good for a wall, ceiling, or
+// a close-up damage shot) and offer 16:9 (widest horizontal FOV for a whole
+// room from across it) and 1:1 (square, for before/after comparability and
+// consistent thumbnails). 16:9 and 1:1 are cropped from the sensor frame at
+// capture time — the viewfinder shows exactly what will be saved.
+type AspectMode = "4:3" | "16:9" | "1:1";
+const ASPECT_RATIOS: Record<AspectMode, number> = {
+  "4:3": 4 / 3,
+  "16:9": 16 / 9,
+  "1:1": 1,
+};
+const ASPECT_HINTS: Record<AspectMode, string> = {
+  "4:3": "Close-up · full sensor",
+  "16:9": "Wide · whole room",
+  "1:1": "Square · documentation",
+};
 
 export interface LiveCameraCaptureProps {
   open: boolean;
@@ -62,6 +81,7 @@ export function LiveCameraCapture({
 
   const [queue, setQueue] = useState<QueuedPhoto[]>([]);
   const [facing, setFacing] = useState<"environment" | "user">("environment");
+  const [aspect, setAspect] = useState<AspectMode>("4:3");
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -165,19 +185,36 @@ export function LiveCameraCapture({
   }
 
   // ── Snapshot ────────────────────────────────────────────────────────
+  // We center-crop the sensor frame to the selected aspect ratio so what the
+  // tech sees under the mask overlay is what actually gets saved.
   function snap() {
     const v = videoRef.current;
     const c = canvasRef.current;
     if (!v || !c || !ready) return;
-    const w = v.videoWidth;
-    const h = v.videoHeight;
-    if (!w || !h) return;
+    const sw = v.videoWidth;
+    const sh = v.videoHeight;
+    if (!sw || !sh) return;
 
-    c.width = w;
-    c.height = h;
+    const target = ASPECT_RATIOS[aspect];
+    const sensor = sw / sh;
+    // Compute the largest centered rectangle inside the sensor that matches
+    // `target`. If the sensor is wider than target → shrink width. If taller
+    // → shrink height.
+    let cropW = sw;
+    let cropH = sh;
+    if (sensor > target) {
+      cropW = Math.round(sh * target);
+    } else if (sensor < target) {
+      cropH = Math.round(sw / target);
+    }
+    const cropX = Math.round((sw - cropW) / 2);
+    const cropY = Math.round((sh - cropH) / 2);
+
+    c.width = cropW;
+    c.height = cropH;
     const ctx = c.getContext("2d");
     if (!ctx) return;
-    ctx.drawImage(v, 0, 0, w, h);
+    ctx.drawImage(v, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
     c.toBlob(
       blob => {
         if (!blob) return;
@@ -282,7 +319,29 @@ export function LiveCameraCapture({
         </div>
       </div>
 
-      {/* ── Viewfinder ──────────────────────────────────────────────── */}
+      {/* ── Aspect ratio selector ──────────────────────────────────── */}
+      <div className="bg-black/70 border-t border-white/5 px-3 py-1.5 flex items-center justify-center gap-1.5 text-[11px]">
+        <Maximize2 className="w-3.5 h-3.5 text-white/50" />
+        {(Object.keys(ASPECT_RATIOS) as AspectMode[]).map(mode => (
+          <button
+            key={mode}
+            onClick={() => setAspect(mode)}
+            className={`px-2.5 py-1 rounded font-semibold tabular-nums transition-colors ${
+              aspect === mode
+                ? "bg-white text-black"
+                : "text-white/70 hover:text-white hover:bg-white/10"
+            }`}
+            aria-label={`Aspect ratio ${mode}`}
+            aria-pressed={aspect === mode}
+            data-testid={`button-aspect-${mode.replace(":", "x")}`}
+          >
+            {mode}
+          </button>
+        ))}
+        <span className="text-white/40 ml-2 hidden sm:inline">{ASPECT_HINTS[aspect]}</span>
+      </div>
+
+      {/* ── Viewfinder ──────────────────────────────────────────── */}
       <div className="relative flex-1 bg-black overflow-hidden">
         <video
           ref={videoRef}
@@ -292,6 +351,11 @@ export function LiveCameraCapture({
           autoPlay
         />
         <canvas ref={canvasRef} className="hidden" />
+
+        {/* Crop mask overlay — shows the tech exactly what will be captured
+            for the selected aspect ratio. Areas outside the crop go dim so
+            it feels like a real camera app viewfinder. */}
+        <AspectMask aspect={aspect} videoEl={videoRef.current} ready={ready} />
 
         {/* Shutter flash overlay */}
         {flashPulse && <div className="absolute inset-0 bg-white/80 pointer-events-none" />}
@@ -379,6 +443,109 @@ export function LiveCameraCapture({
           <span>Save {queue.length > 0 ? `(${queue.length})` : ""}</span>
         </button>
       </div>
+    </div>
+  );
+}
+
+// ── AspectMask ──────────────────────────────────────────────────────────────
+// Draws two darkened bars over the video so the tech sees exactly which
+// portion of the sensor frame will end up in the saved photo. The video uses
+// object-contain, so we compute the rendered frame inside the container and
+// then compute the crop rectangle inside that frame.
+function AspectMask({
+  aspect,
+  videoEl,
+  ready,
+}: {
+  aspect: AspectMode;
+  videoEl: HTMLVideoElement | null;
+  ready: boolean;
+}) {
+  const [box, setBox] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
+
+  useEffect(() => {
+    if (!ready || !videoEl) { setBox(null); return; }
+    const target = ASPECT_RATIOS[aspect];
+
+    function recompute() {
+      const v = videoEl;
+      if (!v) return;
+      const cw = v.clientWidth;
+      const ch = v.clientHeight;
+      const vw = v.videoWidth;
+      const vh = v.videoHeight;
+      if (!cw || !ch || !vw || !vh) return;
+
+      // Where object-contain places the actual video frame inside the box.
+      const sensor = vw / vh;
+      const containerRatio = cw / ch;
+      let frameW: number;
+      let frameH: number;
+      if (sensor > containerRatio) {
+        frameW = cw;
+        frameH = cw / sensor;
+      } else {
+        frameH = ch;
+        frameW = ch * sensor;
+      }
+      const frameLeft = (cw - frameW) / 2;
+      const frameTop = (ch - frameH) / 2;
+
+      // Center-crop that rendered frame to the target aspect.
+      let cropW = frameW;
+      let cropH = frameH;
+      if (sensor > target) {
+        cropW = frameH * target;
+      } else if (sensor < target) {
+        cropH = frameW / target;
+      }
+      const cropLeft = frameLeft + (frameW - cropW) / 2;
+      const cropTop = frameTop + (frameH - cropH) / 2;
+
+      setBox({ top: cropTop, left: cropLeft, width: cropW, height: cropH });
+    }
+
+    recompute();
+    // Recompute on resize + when the video actually starts playing.
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(recompute) : null;
+    if (ro && videoEl) ro.observe(videoEl);
+    videoEl.addEventListener("loadedmetadata", recompute);
+    videoEl.addEventListener("playing", recompute);
+    window.addEventListener("orientationchange", recompute);
+    return () => {
+      if (ro) ro.disconnect();
+      videoEl.removeEventListener("loadedmetadata", recompute);
+      videoEl.removeEventListener("playing", recompute);
+      window.removeEventListener("orientationchange", recompute);
+    };
+  }, [aspect, ready, videoEl]);
+
+  if (!box) return null;
+
+  // Four bars around the crop rect. Each is absolutely positioned inside the
+  // viewfinder container.
+  const barStyle = { background: "rgba(0,0,0,0.55)" } as const;
+  return (
+    <div className="absolute inset-0 pointer-events-none" aria-hidden="true">
+      {/* top */}
+      <div style={{ ...barStyle, position: "absolute", top: 0, left: 0, right: 0, height: box.top }} />
+      {/* bottom */}
+      <div style={{ ...barStyle, position: "absolute", left: 0, right: 0, bottom: 0, top: box.top + box.height }} />
+      {/* left */}
+      <div style={{ ...barStyle, position: "absolute", top: box.top, left: 0, width: box.left, height: box.height }} />
+      {/* right */}
+      <div style={{ ...barStyle, position: "absolute", top: box.top, left: box.left + box.width, right: 0, height: box.height }} />
+      {/* crop outline */}
+      <div
+        style={{
+          position: "absolute",
+          top: box.top,
+          left: box.left,
+          width: box.width,
+          height: box.height,
+          border: "1px solid rgba(255,255,255,0.35)",
+        }}
+      />
     </div>
   );
 }
