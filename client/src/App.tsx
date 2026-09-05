@@ -96,7 +96,7 @@ const PhotosHub = lazy(() => import("@/pages/PhotosHub"));
 const IntakeHub = lazy(() => import("@/pages/IntakeHub"));
 const SubcontractorsHub = lazy(() => import("@/pages/SubcontractorsHub"));
 const TeamActivity = lazy(() => import("@/pages/TeamActivity"));
-const AIAgentCenter = lazy(() => import("@/pages/AIAgentCenter"));
+// AIAgentCenter retired; kept as an unrouted file (see /ai-agent redirect below).
 const AdjusterDB = lazy(() => import("@/pages/AdjusterDB"));
 const ARaging = lazy(() => import("@/pages/ARaging"));
 const EquipmentROI = lazy(() => import("@/pages/EquipmentROI"));
@@ -391,7 +391,11 @@ function AuthenticatedRoutes() {
         <Route path="/reports-hub" component={() => <Page component={ReportsHub} name="ReportsHub" />} />
         <Route path="/reports" component={() => <Page component={Reports} name="Reports" />} />
         <Route path="/team-activity" component={() => <Page component={TeamActivity} name="TeamActivity" />} />
-        <Route path="/ai-agent" component={() => <Page component={AIAgentCenter} name="AIAgentCenter" />} />
+        {/* AI Agent Center retired. The only piece the operator actually used
+            (Lead & Asbestos scan) now lives per-job in JobDetail's
+            "Lead & Asbestos" tab. Old URL redirects to /jobs so any bookmark
+            lands somewhere sensible instead of a broken page. */}
+        <Route path="/ai-agent"><Redirect to="/jobs" /></Route>
         <Route path="/ar-aging"><Redirect to="/ar-hub?tab=aging" /></Route>
 
         {/* Comms */}
@@ -436,7 +440,8 @@ function AuthenticatedRoutes() {
         <Route path="/appointment-reminders"><Redirect to="/scheduling-hub?tab=reminders" /></Route>
         <Route path="/command-bi"><Redirect to="/reports-hub?tab=command-bi" /></Route>
         <Route path="/estimator-performance"><Redirect to="/profitability-hub?tab=estimators" /></Route>
-        <Route path="/hazmat-flags"><Redirect to="/safety-hub?tab=hazmat" /></Route>
+        {/* Hazmat is per-job now (JobDetail → Lead & Asbestos tab). */}
+        <Route path="/hazmat-flags"><Redirect to="/jobs" /></Route>
 
         {/* Suite 6 */}
         <Route path="/xact-audit"><Redirect to="/xactimate-hub?tab=audit" /></Route>

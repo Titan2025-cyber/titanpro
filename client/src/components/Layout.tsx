@@ -47,16 +47,10 @@ interface NavGroup {
 }
 
 const navGroups: NavGroup[] = [
-  // ─── 0. AI AGENT CENTER (owner + general manager) ─────────────────────────
-  {
-    label: "AI Agent Center",
-    icon: Bot,
-    description: "Autonomous job-file agents",
-    defaultOpen: true,
-    items: [
-      { href: "/ai-agent", label: "AI Agent Center", icon: Bot, permission: "ai-agent" },
-    ],
-  },
+  // ─── 0. AI Agent Center removed — the only piece worth keeping was the
+  // Lead & Asbestos scanner, which now lives per-job in JobDetail's
+  // "Lead & Asbestos" tab (client/src/components/JobHazmatPanel.tsx).
+  // Route + page file left in place so PRs stay bisectable. ─────────────────
 
   // ─── 1. CORE ──────────────────────────────────────────────────────────────
   {

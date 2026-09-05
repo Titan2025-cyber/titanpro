@@ -1,7 +1,7 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useParams, Link, useLocation } from "wouter";
 import { useState, lazy, Suspense, useEffect, useRef } from "react";
-import { ArrowLeft, MapPin, Phone, Mail, Shield, FileText, Receipt, Droplets, Camera, FolderOpen, TrendingUp, StickyNote, Lock, Globe, Pencil, Trash2, Plus, Check, X, Wrench, MessageSquare, Star, Send, KeyRound, Copy, RefreshCw, ExternalLink, ShieldCheck, HandCoins, Upload, Paperclip, Mic, MicOff, DollarSign } from "lucide-react";
+import { ArrowLeft, MapPin, Phone, Mail, Shield, FileText, Receipt, Droplets, Camera, FolderOpen, TrendingUp, StickyNote, Lock, Globe, Pencil, Trash2, Plus, Check, X, Wrench, MessageSquare, Star, Send, KeyRound, Copy, RefreshCw, ExternalLink, ShieldCheck, HandCoins, Upload, Paperclip, Mic, MicOff, DollarSign, FlaskConical } from "lucide-react";
 import UploadExternalDocDialog from "@/components/UploadExternalDocDialog";
 import { StageSelector, DateManager, PROGRESS_STAGES } from "@/components/JobPipeline";
 import { JobAnalytics } from "@/components/JobAnalytics";
@@ -11,6 +11,7 @@ import { SafetyPanel } from "@/pages/Safety";
 import { LienWaiversPanel } from "@/pages/LienWaivers";
 import RecordPaymentDialog from "@/components/RecordPaymentDialog";
 import JobPaymentsPanel from "@/components/JobPaymentsPanel";
+import JobHazmatPanel from "@/components/JobHazmatPanel";
 // PDF-heavy components (they pull jsPDF, ~600KB) are lazy-loaded so the
 // pdf bundle downloads only when the user opens the relevant tab — not on
 // every JobDetail page view.
@@ -1440,6 +1441,7 @@ export default function JobDetail() {
           <TabsTrigger value="costing">Job Costing</TabsTrigger>
           <TabsTrigger value="supplements">Supplements</TabsTrigger>
           <TabsTrigger value="safety">Safety</TabsTrigger>
+          <TabsTrigger value="hazmat"><FlaskConical className="w-3 h-3 mr-1 inline-block" />Lead &amp; Asbestos</TabsTrigger>
           {!isRecon && <TabsTrigger value="dry-report">Dry Report</TabsTrigger>}
           <TabsTrigger value="warranty"><Wrench className="w-3 h-3 mr-1 inline-block" />Warranty Calls</TabsTrigger>
           {hasReferralPartner && <TabsTrigger value="referral-payout"><HandCoins className="w-3 h-3 mr-1 inline-block" />Referral Payout</TabsTrigger>}
@@ -2027,6 +2029,18 @@ export default function JobDetail() {
             check hit yet?' without leaving the job. */}
         <TabsContent value="payments" className="mt-4">
           <JobPaymentsPanel jobId={Number(id)} contactId={job?.contactId ?? null} />
+        </TabsContent>
+
+        {/* ── Lead & Asbestos Tab ── */}
+        {/* Per-job hazmat assessment. Replaces the removed AI Agent Center's
+            global hazmat scan — the decision is always per-structure, so it
+            belongs on the job. */}
+        <TabsContent value="hazmat" className="mt-4">
+          <JobHazmatPanel
+            jobId={Number(id)}
+            yearBuilt={(job as any)?.yearBuilt ?? null}
+            lossType={(job as any)?.lossType ?? null}
+          />
         </TabsContent>
 
         {/* ── Insurance Tab ── */}
