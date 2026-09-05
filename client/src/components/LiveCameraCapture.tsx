@@ -77,6 +77,12 @@ export function LiveCameraCapture({
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // Reentrancy guard: toBlob is async, and rapid taps used to enqueue several
+  // snap() calls that all wrote to the same canvas. This ref makes snap() a
+  // no-op while a capture is in flight, so the shutter always feels responsive
+  // without producing duplicates or corrupted crops.
+  const snapInFlightRef = useRef(false);
+  const lastSnapTsRef = useRef(0);
   const { toast } = useToast();
 
   const [queue, setQueue] = useState<QueuedPhoto[]>([]);
@@ -187,7 +193,18 @@ export function LiveCameraCapture({
   // ── Snapshot ────────────────────────────────────────────────────────
   // We center-crop the sensor frame to the selected aspect ratio so what the
   // tech sees under the mask overlay is what actually gets saved.
+  // Reentrancy is guarded so rapid mobile taps (pointerdown + click double-fire,
+  // or a tech drumming the shutter) can't overlap toBlob calls, corrupt the
+  // shared canvas, or lock the shutter up.
   function snap() {
+    if (snapInFlightRef.current) return;
+    // Hard rate-limit: ignore anything within 90ms of the previous tap. That's
+    // faster than a human can tap deliberately, and it kills the touchend +
+    // synthetic-click double-fire on iOS/Android WebKit.
+    const now = Date.now();
+    if (now - lastSnapTsRef.current < 90) return;
+    lastSnapTsRef.current = now;
+
     const v = videoRef.current;
     const c = canvasRef.current;
     if (!v || !c || !ready) return;
@@ -215,20 +232,28 @@ export function LiveCameraCapture({
     const ctx = c.getContext("2d");
     if (!ctx) return;
     ctx.drawImage(v, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+    snapInFlightRef.current = true;
+    // Fire the flash immediately so the tech gets instant feedback — don't
+    // wait for toBlob to resolve.
+    setFlashPulse(true);
+    window.setTimeout(() => setFlashPulse(false), 90);
+
     c.toBlob(
       blob => {
-        if (!blob) return;
-        const stamp = new Date();
-        const iso = stamp.toISOString().replace(/[:.]/g, "-");
-        const file = new File([blob], `${filenamePrefix}-${iso}.jpg`, {
-          type: "image/jpeg",
-          lastModified: stamp.getTime(),
-        });
-        const previewUrl = URL.createObjectURL(blob);
-        setQueue(prev => [...prev, { file, previewUrl, ts: stamp.getTime() }]);
-        // Brief screen flash so the tech knows the tap registered.
-        setFlashPulse(true);
-        window.setTimeout(() => setFlashPulse(false), 120);
+        try {
+          if (!blob) return;
+          const stamp = new Date();
+          const iso = stamp.toISOString().replace(/[:.]/g, "-");
+          const file = new File([blob], `${filenamePrefix}-${iso}.jpg`, {
+            type: "image/jpeg",
+            lastModified: stamp.getTime(),
+          });
+          const previewUrl = URL.createObjectURL(blob);
+          setQueue(prev => [...prev, { file, previewUrl, ts: stamp.getTime() }]);
+        } finally {
+          snapInFlightRef.current = false;
+        }
       },
       "image/jpeg",
       0.85,
@@ -421,15 +446,26 @@ export function LiveCameraCapture({
           <span>Clear</span>
         </button>
 
-        {/* Shutter — the star of the show */}
+        {/* Shutter — the star of the show.
+            We bind on pointerdown so the shutter fires the instant the finger
+            lands (no 300ms click delay on mobile), and swallow the follow-up
+            click so a single tap can't double-fire. touch-manipulation +
+            user-select disable double-tap-to-zoom on iOS so a rapid burst
+            doesn't accidentally zoom the page and steal the tap target. */}
         <button
-          onClick={snap}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            snap();
+          }}
+          onClick={(e) => e.preventDefault()}
+          onContextMenu={(e) => e.preventDefault()}
           disabled={!ready || !!error}
-          className="w-20 h-20 rounded-full border-4 border-white bg-white/10 active:bg-white/40 disabled:opacity-40 flex items-center justify-center relative transition-colors"
+          style={{ touchAction: "manipulation", WebkitUserSelect: "none", userSelect: "none", WebkitTouchCallout: "none" }}
+          className="w-20 h-20 rounded-full border-4 border-white bg-white/10 active:bg-white/40 disabled:opacity-40 flex items-center justify-center relative transition-colors select-none"
           aria-label="Take photo"
           data-testid="button-live-shutter"
         >
-          <span className="w-16 h-16 rounded-full bg-white" />
+          <span className="w-16 h-16 rounded-full bg-white pointer-events-none" />
         </button>
 
         <button
