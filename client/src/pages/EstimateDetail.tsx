@@ -187,6 +187,36 @@ export default function EstimateDetail() {
     },
   });
 
+  // Photo→Scope: runs AI vision over the job's recent photos and populates
+  // the scope text area + loss-type/sqft/rooms so the tech can review and then
+  // hit "Generate" as usual. Kept as a two-step flow (draft → review → generate)
+  // so a hallucinated scope can't silently produce billable line items.
+  const photoScopeMutation = useMutation({
+    mutationFn: () =>
+      apiRequest("POST", `/api/estimates/${id}/photos-to-scope`, {}).then(async r => {
+        const j = await r.json();
+        if (!r.ok) throw new Error(j?.detail || j?.error || "AI photo draft failed");
+        return j;
+      }),
+    onSuccess: (data: any) => {
+      setScopeText(data.scope || "");
+      if (data.lossType && data.lossType !== "auto") setScopeLossType(data.lossType);
+      if (data.squareFootage) setScopeSqft(String(data.squareFootage));
+      if (data.affectedRooms) setScopeRooms(String(data.affectedRooms));
+      toast({
+        title: `Drafted from ${data.photoCount} photo${data.photoCount === 1 ? "" : "s"}`,
+        description: `Confidence: ${data.confidence}. ${data.notes ? "Verify: " + data.notes : "Review and edit, then Generate."}`,
+      });
+    },
+    onError: (e: any) => {
+      toast({
+        title: "Couldn't draft from photos",
+        description: e?.message || "Try again in a moment.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const applySelectedScopeItems = () => {
     if (!scopeResult) return;
     const newItems: LineItem[] = scopeResult.items
@@ -973,13 +1003,28 @@ export default function EstimateDetail() {
               </p>
 
               <div>
-                <Label className="text-xs mb-1.5 block font-medium">
-                  Scope Description <span className="text-muted-foreground font-normal">(required)</span>
-                </Label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <Label className="text-xs block font-medium">
+                    Scope Description <span className="text-muted-foreground font-normal">(required)</span>
+                  </Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs gap-1.5"
+                    onClick={() => photoScopeMutation.mutate()}
+                    disabled={photoScopeMutation.isPending}
+                    data-testid="button-draft-from-photos"
+                    title="Send this job's recent photos to AI and get a scope draft"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    {photoScopeMutation.isPending ? "Drafting…" : "Draft from Photos"}
+                  </Button>
+                </div>
                 <Textarea
                   data-testid="input-scope-text"
                   className="min-h-[140px] text-sm"
-                  placeholder={`Example: "Category 2 water loss in kitchen and hallway, approx 600 sq ft. Vinyl flooring and drywall wet. 4 rooms affected. Started 3 days ago. No visible mold but humidity is high. Need full mitigation and flooring demo."`}
+                  placeholder={`Example: "Category 2 water loss in kitchen and hallway, approx 600 sq ft. Vinyl flooring and drywall wet. 4 rooms affected. Started 3 days ago. No visible mold but humidity is high. Need full mitigation and flooring demo."\n\nOr tap Draft from Photos to have AI describe the loss from your job photos.`}
                   value={scopeText}
                   onChange={e => setScopeText(e.target.value)}
                 />

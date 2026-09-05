@@ -2532,6 +2532,140 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.json({ alerted: true, consecutive: false, wetCount: latestFlagged.wetReadings.length, noteAdded: true });
   });
 
+  // ── Drying Plan: deterministic forward reading schedule ───────────────────
+  // For an active/completed drying job, computes the full expected reading
+  // calendar from mitigation_start using the job's water_category as the
+  // baseline day count (S500: Cat1=3, Cat2=4, Cat3=5) and marks each day as
+  // completed | today_due | missed | upcoming based on drying_records rows.
+  // Also returns a target completion date, a missed-day tally, and the next
+  // action a tech should take — all consumed by MyToday + the Drying tab.
+  app.get("/api/jobs/:id/drying-plan", (req, res) => {
+    const jobId = Number(req.params.id);
+    const job = sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId) as any;
+    if (!job) return res.status(404).json({ error: "job_not_found" });
+
+    // Baseline day count per IICRC S500 category. Techs can extend by simply
+    // logging additional readings past the target — the endpoint auto-grows
+    // the plan to cover the actual reading history so the UI never truncates.
+    const cat = (job.water_category || "category1").toLowerCase();
+    const baseDays = cat.includes("3") ? 5 : cat.includes("2") ? 4 : 3;
+
+    // Start date is mitigation_start; if missing, fall back to created_at so
+    // the plan still renders (day 1 anchored at whatever start we can find).
+    const startIso: string | null =
+      job.mitigation_start || job.created_at || null;
+    if (!startIso) {
+      return res.json({
+        jobId,
+        startDate: null,
+        category: cat,
+        baselineDays: baseDays,
+        days: [],
+        completedCount: 0,
+        missedCount: 0,
+        remainingDays: baseDays,
+        targetCompletionDate: null,
+        nextAction: "Set mitigation start date on the job to build a drying plan.",
+      });
+    }
+
+    const startMs = new Date(startIso).getTime();
+    const dayMs = 24 * 3600 * 1000;
+    const todayMs = new Date(new Date().toISOString().slice(0, 10) + "T00:00:00.000Z").getTime();
+    // Anchor day 1 at the LOCAL date of mitigation_start (strip time-of-day)
+    // so hourly drift doesn't push a same-day reading into day 2.
+    const startDateOnly = new Date(startIso).toISOString().slice(0, 10);
+    const startAnchor = new Date(startDateOnly + "T00:00:00.000Z").getTime();
+    const daysSinceStart = Math.floor((todayMs - startAnchor) / dayMs);
+
+    // All readings for this job, keyed by reading_date ymd.
+    const readings = (() => {
+      try {
+        return sqlite.prepare(
+          "SELECT reading_date AS d, day_number AS n FROM drying_records WHERE job_id = ? ORDER BY reading_date ASC"
+        ).all(jobId) as any[];
+      } catch {
+        return [] as any[];
+      }
+    })();
+    const readingsByDate = new Map<string, number>();
+    for (const r of readings) {
+      const d = String(r.d || "").slice(0, 10);
+      if (!d) continue;
+      readingsByDate.set(d, (readingsByDate.get(d) || 0) + 1);
+    }
+
+    // Plan spans max(baseline, actual days observed + 1) so the tech sees
+    // both the target and any bonus days they've logged past it.
+    const observedMaxDay = daysSinceStart + 1;
+    const totalDays = Math.max(baseDays, observedMaxDay);
+
+    const days: any[] = [];
+    let completedCount = 0;
+    let missedCount = 0;
+
+    for (let i = 1; i <= totalDays; i++) {
+      const dateMs = startAnchor + (i - 1) * dayMs;
+      const dateYmd = new Date(dateMs).toISOString().slice(0, 10);
+      const hasReading = readingsByDate.has(dateYmd);
+      let status: string;
+      if (hasReading) {
+        status = "completed";
+        completedCount++;
+      } else if (dateMs === todayMs) {
+        status = "today_due";
+      } else if (dateMs < todayMs) {
+        status = "missed";
+        missedCount++;
+      } else {
+        status = "upcoming";
+      }
+      days.push({
+        day: i,
+        date: dateYmd,
+        status,
+        readings: readingsByDate.get(dateYmd) || 0,
+      });
+    }
+
+    // Target completion = start + baselineDays - 1 (i.e. day <baseDays>).
+    const targetMs = startAnchor + (baseDays - 1) * dayMs;
+    const targetCompletionDate = new Date(targetMs).toISOString().slice(0, 10);
+
+    // Remaining scheduled days from today (only counting upcoming baseline days).
+    const remainingDays = days.filter(d => d.status === "upcoming" && d.day <= baseDays).length;
+
+    // Next action: today's reading if due, else missed-day catch-up, else the next upcoming reading.
+    let nextAction = "On schedule — no reading due today.";
+    const todayEntry = days.find(d => d.status === "today_due");
+    if (todayEntry) {
+      nextAction = `Log today's reading (Day ${todayEntry.day}) — required by S500.`;
+    } else if (missedCount > 0) {
+      const firstMissed = days.find(d => d.status === "missed");
+      nextAction = `Back-fill ${missedCount} missed day${missedCount > 1 ? "s" : ""} — starting Day ${firstMissed.day} (${firstMissed.date}).`;
+    } else {
+      const nextUpcoming = days.find(d => d.status === "upcoming");
+      if (nextUpcoming) {
+        nextAction = `Next reading: Day ${nextUpcoming.day} on ${nextUpcoming.date}.`;
+      } else if (job.status === "drying") {
+        nextAction = "Baseline schedule met — verify drying goals and advance job status.";
+      }
+    }
+
+    res.json({
+      jobId,
+      startDate: startDateOnly,
+      category: cat,
+      baselineDays: baseDays,
+      days,
+      completedCount,
+      missedCount,
+      remainingDays,
+      targetCompletionDate,
+      nextAction,
+    });
+  });
+
   // ── Employees (Gmail linking) ─────────────────────────────────────────────
   app.get("/api/employees", (_req, res) => { res.json(storage.getEmployees()); });
   app.get("/api/employees/:name", (req, res) => {
@@ -5409,6 +5543,154 @@ cody@titanrestorationllc.com`;
 // ── AI Estimate Review ────────────────────────────────────────────────────────
 
   // ── AI Scope-to-Estimate Generator ──────────────────────────────────────────
+  // ── Photo→Scope: Vision draft of scope text from selected job photos ───────
+  // Given an estimate + a list of photoIds (all belonging to that estimate's
+  // job), sends the images to Anthropic Vision in a single request and gets
+  // back a plain-English scope description plus best-guess lossType, sqft,
+  // and affectedRooms — exactly the shape scope-generate consumes. The
+  // client then passes that straight into POST /api/estimates/:id/scope-generate
+  // to produce actual line items. Kept as its own endpoint so the AI draft can
+  // be reviewed/edited by the tech before it becomes line items.
+  app.post("/api/estimates/:id/photos-to-scope", wrapAsync(async (req, res) => {
+    const estimateId = Number(req.params.id);
+    const estimate: any = sqlite.prepare("SELECT * FROM estimates WHERE id = ?").get(estimateId);
+    if (!estimate) return res.status(404).json({ error: "estimate_not_found" });
+    const jobId = Number(estimate.job_id);
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      return res.status(400).json({ error: "no_anthropic_key", detail: "Set ANTHROPIC_API_KEY on the server to use AI photo-to-scope drafting." });
+    }
+
+    // Which photos to analyze. Default to the most recent 8 photos on the job
+    // if the client sends none — keeps the call cheap and focused on the field
+    // captures a tech just took, while still letting them pick a curated set.
+    let photoIds: number[] = Array.isArray(req.body?.photoIds)
+      ? req.body.photoIds.map((n: any) => Number(n)).filter((n: number) => Number.isFinite(n))
+      : [];
+    if (photoIds.length === 0) {
+      const recent = sqlite.prepare(
+        "SELECT id FROM photos WHERE job_id = ? ORDER BY id DESC LIMIT 8"
+      ).all(jobId) as any[];
+      photoIds = recent.map(r => r.id);
+    }
+    if (photoIds.length === 0) {
+      return res.status(400).json({ error: "no_photos", detail: "Upload photos to this job first — the AI needs images to draft a scope." });
+    }
+    // Cap at 10 to keep the vision call bounded (Anthropic has a per-request
+    // image limit and each image adds meaningful token cost).
+    photoIds = photoIds.slice(0, 10);
+
+    const placeholders = photoIds.map(() => "?").join(",");
+    const rows = sqlite.prepare(
+      `SELECT id, job_id, filename, data_url AS dataUrl, storage_key AS storageKey, caption, room, damage_type AS damageType, severity FROM photos WHERE id IN (${placeholders}) AND job_id = ?`
+    ).all(...photoIds, jobId) as any[];
+    if (rows.length === 0) {
+      return res.status(400).json({ error: "no_matching_photos", detail: "Selected photos don't belong to this job." });
+    }
+
+    // Hydrate bucket URLs to direct-fetchable image URLs so Anthropic can
+    // pull them (or so we can pass them as data URLs unchanged).
+    try { await hydrateImageRows(rows, { urlField: "dataUrl", keyField: "storageKey" }); } catch {}
+
+    // Build the image blocks. Prefer data URLs when we already have them (no
+    // extra fetch) and fall back to hosted URLs. Skip rows we can't resolve.
+    const imageBlocks: any[] = [];
+    for (const row of rows) {
+      const src: string = row.dataUrl || "";
+      if (!src) continue;
+      if (src.startsWith("data:")) {
+        const m = src.match(/^data:([^;,]+)(?:;[^;,]+=[^;,]+)*;base64,(.+)$/s);
+        if (!m) continue;
+        imageBlocks.push({ type: "image", source: { type: "base64", media_type: m[1], data: m[2] } });
+      } else {
+        imageBlocks.push({ type: "image", source: { type: "url", url: src } });
+      }
+    }
+    if (imageBlocks.length === 0) {
+      return res.status(400).json({ error: "no_readable_photos", detail: "Photos exist but couldn't be prepared for AI review." });
+    }
+
+    // Grab job context so the model can be specific (loss type override, address
+    // for regional hints, water category if already set on intake).
+    const job: any = sqlite.prepare("SELECT loss_type, water_category, address, description FROM jobs WHERE id = ?").get(jobId) || {};
+
+    const prompt = [
+      "You are a certified IICRC S500 water/fire damage restoration estimator. Multiple job-site photos follow.",
+      "Task: draft a concise scope description that another estimator can hand to a line-item pricing engine.",
+      "",
+      "Job context (may be empty):",
+      `  loss_type: ${job.loss_type || "unknown"}`,
+      `  water_category: ${job.water_category || "unknown"}`,
+      `  address: ${job.address || "unknown"}`,
+      `  intake_description: ${(job.description || "").slice(0, 300)}`,
+      "",
+      "Return STRICT JSON only, no prose, no markdown fences. Shape:",
+      "{",
+      '  "scope": string,           // 2-5 sentences. Plain English. Mention Category (1/2/3), affected materials (drywall, hardwood, vinyl, carpet, insulation, cabinets, subfloor), rooms, obvious quantities, mold/soot/odor if visible.',
+      '  "lossType": string,        // one of: water | fire | mold | storm | reconstruction | "" if unclear',
+      '  "squareFootage": number,   // best estimate of affected sq ft, 0 if unclear',
+      '  "affectedRooms": number,   // count of distinct rooms visible, 0 if unclear',
+      '  "confidence": string,      // low | medium | high',
+      '  "notes": string            // one line: what a human should verify before accepting',
+      "}",
+      "",
+      "Rules:",
+      "- If photos show clean-water source (supply line, pipe), lean Category 1. Sewage/flood/groundwater = Category 3. Grey water or aged clean water = Category 2.",
+      "- Only claim damage you can see. Do not invent floors, rooms, or materials.",
+      "- If the photos are ambiguous, say so in 'notes' and set confidence low.",
+    ].join("\n");
+
+    try {
+      const r = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5",
+          max_tokens: 900,
+          messages: [{
+            role: "user",
+            content: [
+              ...imageBlocks,
+              { type: "text", text: prompt },
+            ],
+          }],
+        }),
+      });
+      if (!r.ok) {
+        const detail = await r.text().catch(() => "");
+        return res.status(502).json({ error: "anthropic_error", status: r.status, detail: detail.slice(0, 400) });
+      }
+      const j: any = await r.json();
+      const text: string = (j.content?.[0]?.text || "").trim();
+      const match = text.match(/\{[\s\S]*\}/);
+      if (!match) {
+        return res.status(502).json({ error: "no_json", raw: text.slice(0, 400) });
+      }
+      const parsed = JSON.parse(match[0]);
+      const scope = String(parsed.scope || "").trim();
+      if (!scope) {
+        return res.status(502).json({ error: "empty_scope", raw: text.slice(0, 400) });
+      }
+      res.json({
+        scope,
+        lossType: String(parsed.lossType || "").toLowerCase() || "auto",
+        squareFootage: Number(parsed.squareFootage) || 0,
+        affectedRooms: Number(parsed.affectedRooms) || 0,
+        confidence: String(parsed.confidence || "medium"),
+        notes: String(parsed.notes || "").slice(0, 300),
+        photoCount: imageBlocks.length,
+        photoIds: rows.map((row: any) => row.id),
+      });
+    } catch (e: any) {
+      res.status(502).json({ error: "vision_call_failed", detail: e?.message });
+    }
+  }));
+
   app.post("/api/estimates/:id/scope-generate", (req, res) => {
     try {
       const estimate = sqlite.prepare("SELECT * FROM estimates WHERE id = ?").get(Number(req.params.id)) as any;
@@ -6701,6 +6983,8 @@ Approve in Partner Portal → Admin View.
   // financials, and margin dashboards. Its estimate total rolls up under
   // the referring partner as "courtesy value delivered".
   try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN job_kind TEXT DEFAULT 'standard'`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN water_category TEXT DEFAULT 'category1'`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN water_class TEXT DEFAULT 'class2'`); } catch(_) {}
   try { sqlite.exec(`ALTER TABLE jobs ADD COLUMN incidental_reason TEXT`); } catch(_) {}
 
   // #16: extend coi_records to support W9 as a document type. w9 rows have

@@ -37,6 +37,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { RotateCcw, ChevronDown, ChevronRight } from "lucide-react";
 import type { Job, Contact, Estimate, Invoice } from "@shared/schema";
 import DryingRecords from "@/components/DryingRecords";
+import DryingPlanCard from "@/components/DryingPlanCard";
 import MitigationSketch from "@/components/MitigationSketch";
 import DocuSketchPanel from "@/components/DocuSketchPanel";
 import JobPhotos from "@/components/JobPhotos";
@@ -2066,7 +2067,8 @@ export default function JobDetail() {
             <div className="border-t pt-2">
               <MitigationSketch jobId={job.id} />
             </div>
-            <div className="border-t pt-6">
+            <div className="border-t pt-6 space-y-4">
+              <DryingPlanCard jobId={job.id} />
               <DryingRecords jobId={job.id} />
             </div>
           </div>
