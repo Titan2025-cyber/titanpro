@@ -65,7 +65,7 @@ const navGroups: NavGroup[] = [
       // Schedule Calendar promoted to a standalone Core entry (was previously
       // buried inside the Scheduling & Dispatch hub). Points at /scheduling
       // which now renders the Scheduling page directly, no redirect hop.
-      { href: "/scheduling", label: "Schedule", icon: Calendar, permission: "scheduling" },
+      { href: "/scheduling", label: "Calendar", icon: Calendar, permission: "scheduling" },
       // Contacts moved to Business Dev — it's a growth/CRM surface, not a
       // daily-ops one. Keeping the route registered means old bookmarks and
       // deep links still work.
