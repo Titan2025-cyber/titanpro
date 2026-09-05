@@ -21,12 +21,25 @@ interface Props {
   onSwitchTab: (tab: string) => void;
 }
 
-// Build a maps deep-link that prefers the native app on iOS/Android and
-// falls back to google.com/maps in the browser. Universal 'https://' URL
-// works everywhere (iOS opens Google Maps app if installed, else Safari;
-// Android opens Google Maps app directly).
+// Build a maps deep-link. On iPhones/iPads open Apple Maps (the native
+// default on iOS, and what Titan techs use in the field); everywhere else
+// send the tech to Google Maps. `https://maps.apple.com/?daddr=...` opens
+// Apple Maps on iOS and falls back to the web UI on desktop, and
+// `https://www.google.com/maps/dir/...` opens Google Maps on Android or
+// the browser.
+function isIOS(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  if (/iPhone|iPad|iPod/i.test(ua)) return true;
+  // iPadOS 13+ reports as MacIntel with touch support.
+  return navigator.platform === "MacIntel" && (navigator as any).maxTouchPoints > 1;
+}
 function mapsDirectionsUrl(address: string): string {
-  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address)}&travelmode=driving`;
+  const enc = encodeURIComponent(address);
+  if (isIOS()) {
+    return `https://maps.apple.com/?daddr=${enc}&dirflg=d`;
+  }
+  return `https://www.google.com/maps/dir/?api=1&destination=${enc}&travelmode=driving`;
 }
 
 interface CheckinRow {

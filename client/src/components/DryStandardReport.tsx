@@ -194,8 +194,18 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
     doc.text(lines, x, cy + 4);
   };
 
+  // Assigned tech falls back to the most recent tech name/signature on any
+  // drying record so the cover isn't stuck showing "—" just because the
+  // job header field is blank.
+  const assignedTechFallback = (() => {
+    for (let i = records.length - 1; i >= 0; i--) {
+      const t = (records[i]?.techSignature || records[i]?.techName || "").toString().trim();
+      if (t) return t;
+    }
+    return "";
+  })();
   fieldCell("Job Number", job.jobNumber, colL, y + 5);
-  fieldCell("Assigned Tech", job.assignedTech || "—", colR, y + 5);
+  fieldCell("Assigned Tech", job.assignedTech || assignedTechFallback || "—", colR, y + 5);
   fieldCell("Property Address", job.address || "—", colL, y + 14);
   fieldCell("Loss Type", (job.lossType || "—").replace(/_/g, " ").toUpperCase(), colR, y + 14);
   fieldCell("Insurance Carrier", job.insuranceCarrier || "", colL, y + 23);
@@ -273,6 +283,18 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
     doc.addPage();
     y = drawBanner("STRUCTURAL DRYING REPORT", "Per-Day Breakdown");
   }
+
+  // Carry-forward state for the per-day panels. Techs sometimes only
+  // record NEW areas or NEW equipment on a given day, leaving the fields
+  // empty on visits where nothing changed. Insurance reviewers still
+  // expect every day to show what's on site, so we inherit the last
+  // non-empty snapshot forward when the day itself is empty. Sorted here
+  // is the chronological order used for rendering (day-number ascending);
+  // we walk it once and snapshot the last non-empty payload.
+  let lastAreasSnap: any[] = [];
+  let lastAreasFromDay: string = "";
+  let lastEquipSnap: any[] = [];
+  let lastEquipFromDay: string = "";
 
   sorted.forEach((rec, idx) => {
     const dayLabel = `Day ${rec.dayNumber || idx + 1} — ${rec.readingDate ? fmtDate(rec.readingDate) : "—"}${rec.readingTime ? " @ " + rec.readingTime : ""}`;
@@ -371,9 +393,18 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
       y += 2;
     }
 
-    // Row 3: Affected areas
-    const areas = parseArr<{ room?: string; material?: string; sqft?: number; wetPct?: number }>(rec.affectedAreas);
-    y = ensureSpace(y, 8 + Math.max(areas.length, 1) * 5 + 4, dayLabel);
+    // Row 3: Affected areas (with carry-forward fallback)
+    const areasOwn = parseArr<{ room?: string; material?: string; sqft?: number; wetPct?: number }>(rec.affectedAreas);
+    let areas = areasOwn;
+    let areasCarried = false;
+    if (areasOwn.length === 0 && lastAreasSnap.length > 0) {
+      areas = lastAreasSnap;
+      areasCarried = true;
+    } else if (areasOwn.length > 0) {
+      lastAreasSnap = areasOwn;
+      lastAreasFromDay = dayLabel;
+    }
+    y = ensureSpace(y, 8 + Math.max(areas.length, 1) * 5 + 4 + (areasCarried ? 4 : 0), dayLabel);
     setFont("bold", 9, BLUE);
     doc.text("AFFECTED AREAS", M, y);
     y += 3;
@@ -382,6 +413,11 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
       doc.text("No affected areas logged for this day.", M + 2, y + 4);
       y += 8;
     } else {
+      if (areasCarried) {
+        setFont("italic" as any, 7, GRAY);
+        doc.text(`Carried forward from ${lastAreasFromDay} — no changes logged this visit`, M + 2, y + 3);
+        y += 4;
+      }
       doc.setFillColor(LGRAY[0], LGRAY[1], LGRAY[2]);
       doc.rect(M, y, CONTENT_W, 5, "F");
       setFont("bold", 7, DARK);
@@ -464,8 +500,25 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
       endDate?: string;
       endTime?: string;
     };
-    const equipment = parseArr<EquipmentEntry>(rec.equipment);
-    y = ensureSpace(y, 8 + Math.max(equipment.length, 1) * 5 + 4, dayLabel);
+    const equipmentOwn = parseArr<EquipmentEntry>(rec.equipment);
+    let equipment = equipmentOwn;
+    let equipCarried = false;
+    if (equipmentOwn.length === 0 && lastEquipSnap.length > 0) {
+      // Carry forward only assets that weren't pulled (no endDate before
+      // this record's date). This shows what a reviewer would expect to
+      // still be on site on that visit even when the tech didn't re-log.
+      const cutoff = rec.readingDate || "";
+      equipment = (lastEquipSnap as EquipmentEntry[]).filter(e => {
+        if (!e.endDate) return true;
+        if (!cutoff) return true;
+        return e.endDate >= cutoff;
+      });
+      equipCarried = equipment.length > 0;
+    } else if (equipmentOwn.length > 0) {
+      lastEquipSnap = equipmentOwn;
+      lastEquipFromDay = dayLabel;
+    }
+    y = ensureSpace(y, 8 + Math.max(equipment.length, 1) * 5 + 4 + (equipCarried ? 4 : 0), dayLabel);
     setFont("bold", 9, BLUE);
     doc.text("EQUIPMENT ON SITE", M, y);
     y += 3;
@@ -474,6 +527,11 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
       doc.text("No equipment logged for this day.", M + 2, y + 4);
       y += 8;
     } else {
+      if (equipCarried) {
+        setFont("italic" as any, 7, GRAY);
+        doc.text(`Carried forward from ${lastEquipFromDay} — still on site, not re-logged this visit`, M + 2, y + 3);
+        y += 4;
+      }
       // Group by room label. Empty / missing room → "Unassigned".
       const groupsMap = new Map<string, EquipmentEntry[]>();
       equipment.forEach(e => {
@@ -870,10 +928,22 @@ export function DryStandardReportGenerator({
   const handleGenerate = async () => {
     setGenerating(true);
     try {
-      const uri = await generateDryReportPDF(job, records);
+      // ALWAYS re-fetch drying records right before rendering so techs who
+      // just added a reading/equipment row see the update in the PDF. The
+      // cached `records` from useQuery can lag behind by minutes depending
+      // on staleTime and focus/mount state — the fresh fetch here bypasses
+      // that entirely. We also invalidate the query so any other listeners
+      // in the app pick up the same fresh data.
+      await queryClient.invalidateQueries({
+        queryKey: ["/api/jobs", String(jobId), "drying-records"],
+      });
+      const fresh = await apiRequest("GET", `/api/jobs/${jobId}/drying-records`)
+        .then(r => r.json())
+        .catch(() => records) as DryingRecord[];
+      const uri = await generateDryReportPDF(job, fresh);
       setPdfDataUri(uri);
       setShowPreview(false);
-      toast({ title: "✅ Drying Report PDF generated" });
+      toast({ title: "✅ Drying Report PDF generated", description: `${fresh.length} record${fresh.length === 1 ? "" : "s"} included` });
     } catch (err: any) {
       toast({
         title: "PDF generation failed",
