@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/lib/auth";
+import { apiRequest } from "@/lib/queryClient";
 
 /**
  * "My Today" — role-scoped landing view for every signed-in user.
@@ -80,16 +81,26 @@ export default function MyToday() {
     if (showSpinner) setLoading(true);
     setError(null);
     try {
-      const token = localStorage.getItem("staffToken") || "";
-      const res = await fetch("/api/my/today", {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error(`Failed to load (${res.status})`);
+      // Use apiRequest so the Authorization header is attached from
+      // window.__titanToken__ (set by AuthProvider). Raw fetch with a wrong
+      // localStorage key was causing spurious 401s on the daily to-do card.
+      const res = await apiRequest("/api/my/today");
       const json = await res.json();
       setData(json);
     } catch (e: any) {
-      setError(e?.message || "Failed to load");
+      const msg = String(e?.message || "Failed to load");
+      // 401 = session expired/invalid. Bounce to login instead of a dead-end
+      // "Try again" that will keep failing.
+      if (/^401[:\s]/.test(msg) || msg.includes("(401)")) {
+        try {
+          const s = (window as any).localStorage;
+          if (s) s.removeItem("titan_pro_staff_token");
+        } catch { /* ignore */ }
+        (window as any).__titanToken__ = undefined;
+        window.location.href = "/login?reason=session_expired";
+        return;
+      }
+      setError(msg);
     } finally {
       setLoading(false);
       setRefreshing(false);
