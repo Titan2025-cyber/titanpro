@@ -39,7 +39,6 @@ import DryingRecords from "@/components/DryingRecords";
 import MitigationSketch from "@/components/MitigationSketch";
 import DocuSketchPanel from "@/components/DocuSketchPanel";
 import JobPhotos from "@/components/JobPhotos";
-import JobFloorPlan from "@/components/JobFloorPlan";
 const JobDocuments = lazy(() => import("@/components/JobDocuments"));
 
 function TabLoading() {
@@ -1432,7 +1431,6 @@ export default function JobDetail() {
           </TabsTrigger>
           {!isRecon && <TabsTrigger value="mitigation"><Droplets className="w-3 h-3 mr-1 inline-block" />Mitigation</TabsTrigger>}
           <TabsTrigger value="photos"><Camera className="w-3 h-3 mr-1 inline-block" />Photos</TabsTrigger>
-          <TabsTrigger value="floor-plan"><MapPin className="w-3 h-3 mr-1 inline-block" />Floor Plan</TabsTrigger>
           <TabsTrigger value="documents"><FolderOpen className="w-3 h-3 mr-1 inline-block" />Documents</TabsTrigger>
           <TabsTrigger value="estimates">Estimates ({visibleEstimates.length})</TabsTrigger>
           <TabsTrigger value="invoices">Invoices ({visibleInvoices.length})</TabsTrigger>
@@ -1775,10 +1773,8 @@ export default function JobDetail() {
           <JobPhotos jobId={job.id} phase={phaseFilter} />
         </TabsContent>
 
-        {/* ── Floor Plan Tab ── */}
-        <TabsContent value="floor-plan" className="mt-4">
-          <JobFloorPlan jobId={job.id} />
-        </TabsContent>
+        {/* Standalone Floor Plan tab retired — sketch tool lives on the
+            Mitigation tab (MitigationSketch). */}
 
         {/* ── Documents Tab ── */}
         <TabsContent value="documents" className="mt-4">

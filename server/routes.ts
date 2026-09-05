@@ -4041,6 +4041,111 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   });
 
+  // Preview how many jobs would move for a candidate merge, so the UI can
+  // show "3 aliases → 12 jobs will move to State Farm" before the operator
+  // confirms. Read-only, no writes.
+  app.post("/api/insurance-carriers/merge/preview", (req, res) => {
+    ensureCarriersTable();
+    const canonical = String(req.body?.canonical || "").trim();
+    const aliases = Array.isArray(req.body?.aliases)
+      ? (req.body.aliases as unknown[])
+          .map((a) => String(a || "").trim())
+          .filter((a) => a && a.toLowerCase() !== canonical.toLowerCase())
+      : [];
+    if (!canonical) return res.status(400).json({ error: "canonical required" });
+    if (aliases.length === 0) return res.json({ aliases: [], totalJobs: 0, perAlias: [] });
+    const perAlias = aliases.map((a) => {
+      const row: any = sqlite
+        .prepare("SELECT COUNT(*) AS n FROM jobs WHERE insurance_carrier = ? COLLATE NOCASE")
+        .get(a);
+      return { alias: a, jobs: Number(row?.n || 0) };
+    });
+    const totalJobs = perAlias.reduce((s, x) => s + x.jobs, 0);
+    res.json({ canonical, aliases, perAlias, totalJobs });
+  });
+
+  // Merge one or more typo aliases into a canonical carrier name.
+  //   body: { canonical: "State Farm", aliases: ["Statefarm", "State Farm Ins"] }
+  // Effects:
+  //   1. Ensure canonical exists as an active row.
+  //   2. UPDATE jobs SET insurance_carrier = canonical
+  //        WHERE insurance_carrier IN aliases (case-insensitive).
+  //   3. Soft-delete each alias row in insurance_carriers so it stops
+  //      appearing in the picker.
+  //   4. Store the aliases in the canonical row's `aliases` column (comma-
+  //      list) as a breadcrumb so future imports can auto-collapse them.
+  // Wrapped in a single sqlite transaction — either the whole merge
+  // succeeds or nothing changes.
+  app.post("/api/insurance-carriers/merge", (req, res) => {
+    ensureCarriersTable();
+    const canonicalRaw = String(req.body?.canonical || "").trim();
+    const aliasesRaw = Array.isArray(req.body?.aliases)
+      ? (req.body.aliases as unknown[])
+          .map((a) => String(a || "").trim())
+          .filter((a) => a && a.toLowerCase() !== canonicalRaw.toLowerCase())
+      : [];
+    if (!canonicalRaw) return res.status(400).json({ error: "canonical required" });
+    if (aliasesRaw.length === 0) return res.status(400).json({ error: "at least one alias required" });
+
+    // Dedupe alias list case-insensitively so we don't run the same UPDATE
+    // twice against the same underlying name.
+    const seen = new Set<string>();
+    const aliases = aliasesRaw.filter((a) => {
+      const k = a.toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+
+    try {
+      const now = new Date().toISOString();
+      const result = sqlite.transaction(() => {
+        // 1. Upsert canonical.
+        sqlite
+          .prepare("INSERT OR IGNORE INTO insurance_carriers (name, created_at) VALUES (?, ?)")
+          .run(canonicalRaw, now);
+        sqlite
+          .prepare("UPDATE insurance_carriers SET is_active = 1 WHERE name = ? COLLATE NOCASE")
+          .run(canonicalRaw);
+
+        // 2. Reassign job rows for each alias.
+        let jobsMoved = 0;
+        const updateJobs = sqlite.prepare(
+          "UPDATE jobs SET insurance_carrier = ? WHERE insurance_carrier = ? COLLATE NOCASE"
+        );
+        for (const a of aliases) {
+          const info: any = updateJobs.run(canonicalRaw, a);
+          jobsMoved += Number(info?.changes || 0);
+        }
+
+        // 3. Soft-delete alias rows in the carrier directory.
+        const softDelete = sqlite.prepare(
+          "UPDATE insurance_carriers SET is_active = 0 WHERE name = ? COLLATE NOCASE"
+        );
+        for (const a of aliases) softDelete.run(a);
+
+        // 4. Append aliases to the canonical row's `aliases` breadcrumb.
+        const canonicalRow: any = sqlite
+          .prepare("SELECT aliases FROM insurance_carriers WHERE name = ? COLLATE NOCASE")
+          .get(canonicalRaw);
+        const prior = String(canonicalRow?.aliases || "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const merged = Array.from(new Set([...prior, ...aliases])).join(", ");
+        sqlite
+          .prepare("UPDATE insurance_carriers SET aliases = ? WHERE name = ? COLLATE NOCASE")
+          .run(merged, canonicalRaw);
+
+        return { jobsMoved, aliases, canonical: canonicalRaw };
+      })();
+
+      res.json({ ok: true, ...result });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   // Carrier scorecard (derived from jobs + supplements + invoices + payments)
   app.get("/api/carrier-scorecard", (_req, res) => {
     const jobs = sqlite.prepare("SELECT * FROM jobs WHERE (status IS NULL OR status != 'closed') AND insurance_carrier IS NOT NULL AND insurance_carrier != ''").all() as any[];

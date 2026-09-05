@@ -2,8 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   RefreshCw, TrendingUp, Info, Award, DollarSign,
-  Clock, CheckCircle2, XCircle, ChevronDown, ChevronUp
+  Clock, CheckCircle2, XCircle, ChevronDown, ChevronUp, GitMerge
 } from "lucide-react";
+import { CarrierMergeDialog } from "@/components/CarrierMergeDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -283,6 +284,7 @@ function EmptyState() {
 // ─────────────────────────────────────────────────────────────────────────────
 export default function CarrierScorecard() {
   const [sortBy, setSortBy] = useState<SortKey>("grade");
+  const [mergeOpen, setMergeOpen] = useState(false);
 
   const { data: rawCarriers = [], isLoading, refetch, isFetching } = useQuery<any[]>({
     queryKey: ["/api/carrier-scorecard"],
@@ -330,6 +332,17 @@ export default function CarrierScorecard() {
               <SelectItem value="jobs">Sort by Jobs</SelectItem>
             </SelectContent>
           </Select>
+          {/* Fix scorecard rows split by typos ("Statefarm" vs "State Farm"). */}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs gap-1"
+            onClick={() => setMergeOpen(true)}
+            data-testid="button-open-merge"
+          >
+            <GitMerge className="w-3.5 h-3.5" />
+            Merge duplicates
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -343,6 +356,13 @@ export default function CarrierScorecard() {
           </Button>
         </div>
       </div>
+
+      <CarrierMergeDialog
+        open={mergeOpen}
+        onOpenChange={setMergeOpen}
+        carriers={carriers.map((c) => ({ name: c.carrier, totalJobs: c.totalJobs }))}
+        onDone={() => refetch()}
+      />
 
       {/* Grade formula info card */}
       <GradeInfoCard />
