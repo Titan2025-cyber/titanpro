@@ -113,6 +113,7 @@ const TechNotifications = lazy(() => import("@/pages/TechNotifications"));
 const XactimateImport = lazy(() => import("@/pages/XactimateImport"));
 const AIEstimateReview = lazy(() => import("@/pages/AIEstimateReview"));
 const ReferralDashboard = lazy(() => import("@/pages/ReferralDashboard"));
+const WeeklyPayouts = lazy(() => import("@/pages/WeeklyPayouts"));
 const CarrierARIntelligence = lazy(() => import("@/pages/CarrierARIntelligence"));
 const AISupplementEngine = lazy(() => import("@/pages/AISupplementEngine"));
 const CommTimeline = lazy(() => import("@/pages/CommTimeline"));
@@ -376,6 +377,7 @@ function AuthenticatedRoutes() {
         <Route path="/partner-scorecard"><Redirect to="/partner-hub?tab=scorecard" /></Route>
         <Route path="/route-planner" component={() => <Page component={RoutePlanner} name="RoutePlanner" />} />
         <Route path="/bd-calendar" component={() => <Page component={BDCalendar} name="BDCalendar" />} />
+        <Route path="/weekly-payouts" component={() => <Page component={WeeklyPayouts} name="WeeklyPayouts" />} />
         <Route path="/referral-dashboard"><Redirect to="/partner-hub?tab=referrals" /></Route>
         <Route path="/follow-ups" component={() => <Page component={FollowUps} name="FollowUps" />} />
         <Route path="/reviews" component={() => <Page component={ReviewRequests} name="ReviewRequests" />} />

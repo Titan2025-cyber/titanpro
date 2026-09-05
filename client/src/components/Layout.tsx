@@ -19,7 +19,7 @@ import {
   Droplets, Mic, FileSearch, UserRound, Trophy, UserCog, KeyRound,
   FileSpreadsheet, QrCode, Handshake, ArrowLeft, LayoutDashboard as DashIcon,
   Package, Lock, Inbox,
-  Trash2, Settings as SettingsIcon,
+  Trash2, Settings as SettingsIcon, Wallet,
 } from "lucide-react";
 import { useState, useEffect, type ReactNode } from "react";
 import GlobalSearch from "@/components/GlobalSearch";
@@ -186,6 +186,9 @@ const navGroups: NavGroup[] = [
       { href: "/reviews", label: "Review Requests", icon: Star, permission: "follow-ups" },
       // Calendar (was BD Calendar) — now has per-person and per-type filters.
       { href: "/bd-calendar", label: "Calendar", icon: CalendarDays, permission: "business-dev" },
+      // Weekly Payouts — the marketing rep's Thu→Wed cycle. Every partner,
+      // every referral, signed vs unsigned, what's owed, how it was paid.
+      { href: "/weekly-payouts", label: "Weekly Payouts", icon: Wallet, permission: "payouts" },
       // Removed from sidebar (routes preserved):
       //   /partner-portal-setup — moved to Settings (setup wizard, not daily surface)
       //   /subcontractors-hub   — moved to Field Ops (compliance is Ops)

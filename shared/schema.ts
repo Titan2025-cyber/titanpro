@@ -365,8 +365,40 @@ export const payoutRequests = sqliteTable("payout_requests", {
   description: text("description"),
   adminNotes: text("admin_notes"),
   paidAt: text("paid_at"),
+  // Marketing-rep workflow: how the payout physically moved and which
+  // Thu→Wed weekly cycle it belongs to. weekPeriodStart is the ISO date
+  // of the Thursday that opens the cycle (00:00 America/New_York); every
+  // payout paid within Thu–Wed rolls up to that week's report.
+  paymentMethod: text("payment_method"), // cash | zelle | venmo | cashapp | check | other
+  paymentReference: text("payment_reference"), // txn id / check # / venmo handle used
+  weekPeriodStart: text("week_period_start"), // YYYY-MM-DD (Thursday)
+  // When a marketing rep locks the week's report, every included row's
+  // finalized_at is set. Locked rows can't be edited without unlock.
+  finalizedAt: text("finalized_at"),
   createdAt: text("created_at").notNull().default(""),
 });
+
+// Weekly referral-payout report snapshot. One row per Thu→Wed cycle when
+// the marketing rep clicks "Finalize week". Stores the totals + a JSON
+// payload of the per-partner breakdown so the historical report survives
+// even if underlying payout rows are later edited or deleted.
+export const referralPayoutWeeks = sqliteTable("referral_payout_weeks", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  weekPeriodStart: text("week_period_start").notNull(), // Thursday YYYY-MM-DD
+  weekPeriodEnd: text("week_period_end").notNull(),   // following Wednesday YYYY-MM-DD
+  payableOn: text("payable_on").notNull(),            // Friday after cutoff
+  totalPaid: real("total_paid").default(0),
+  totalPending: real("total_pending").default(0),
+  totalUnsigned: integer("total_unsigned").default(0), // # unsigned referrals in cycle
+  totalSigned: integer("total_signed").default(0),
+  partnerCount: integer("partner_count").default(0),
+  summaryJson: text("summary_json"), // per-partner breakdown, methods, jobs
+  finalizedBy: text("finalized_by"),
+  finalizedAt: text("finalized_at").notNull(),
+  createdAt: text("created_at").notNull().default(""),
+});
+export const insertReferralPayoutWeekSchema = createInsertSchema(referralPayoutWeeks).omit({ id: true });
+export type ReferralPayoutWeek = typeof referralPayoutWeeks.$inferSelect;
 export const insertPayoutRequestSchema = createInsertSchema(payoutRequests).omit({ id: true });
 export type InsertPayoutRequest = z.infer<typeof insertPayoutRequestSchema>;
 export type PayoutRequest = typeof payoutRequests.$inferSelect;

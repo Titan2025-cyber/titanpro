@@ -752,6 +752,44 @@ if (!jobCostPhaseCols.includes("phase")) {
   sqlite.exec(`ALTER TABLE job_costs ADD COLUMN phase TEXT DEFAULT 'mitigation'`);
 }
 
+// Marketing-rep weekly payout tracker (Thu→Wed cycle, payable Friday).
+// Extends payout_requests with: how the payout moved (payment_method +
+// reference), which weekly cycle it belongs to (week_period_start), and
+// whether the week has been locked (finalized_at).
+const payoutReqCols = (sqlite.prepare("PRAGMA table_info(payout_requests)").all() as any[]).map((c: any) => c.name);
+if (!payoutReqCols.includes("payment_method")) {
+  sqlite.exec(`ALTER TABLE payout_requests ADD COLUMN payment_method TEXT`);
+}
+if (!payoutReqCols.includes("payment_reference")) {
+  sqlite.exec(`ALTER TABLE payout_requests ADD COLUMN payment_reference TEXT`);
+}
+if (!payoutReqCols.includes("week_period_start")) {
+  sqlite.exec(`ALTER TABLE payout_requests ADD COLUMN week_period_start TEXT`);
+}
+if (!payoutReqCols.includes("finalized_at")) {
+  sqlite.exec(`ALTER TABLE payout_requests ADD COLUMN finalized_at TEXT`);
+}
+
+// Weekly report snapshot table — one row per finalized Thu→Wed cycle.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS referral_payout_weeks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    week_period_start TEXT NOT NULL,
+    week_period_end TEXT NOT NULL,
+    payable_on TEXT NOT NULL,
+    total_paid REAL DEFAULT 0,
+    total_pending REAL DEFAULT 0,
+    total_unsigned INTEGER DEFAULT 0,
+    total_signed INTEGER DEFAULT 0,
+    partner_count INTEGER DEFAULT 0,
+    summary_json TEXT,
+    finalized_by TEXT,
+    finalized_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS idx_rpw_period ON referral_payout_weeks(week_period_start);
+`);
+
 // Drying-record multi-location psychrometrics (Inside / Outside / Affected Area).
 // Stored as JSON array of { location, tempF, rhPct, gpp, dewPointF } so the tech
 // can log all three locations per visit. Legacy tempF/rhPct columns remain and

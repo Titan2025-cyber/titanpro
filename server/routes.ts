@@ -57,6 +57,30 @@ function wrapAsync(fn: Handler): Handler {
 
 
 // ── IICRC Category Multipliers ───────────────────────────────────────────────
+// -- Date helpers for the referral-payout weekly cycle ------------------
+// Cody's rule: track referrals Thursday -> Wednesday. weekStartForDate
+// returns the ISO date (YYYY-MM-DD) of the most recent Thursday at or
+// before the given date; addDaysIso shifts an ISO date by N days.
+// All computations run in UTC to keep the date math boundary-safe: the
+// bucket is a calendar-day range, not a timestamp range, and SQLite's
+// date() function is called against these strings which are already
+// UTC-normalized.
+function weekStartForDate(iso: string): string {
+  const d = new Date((iso || "").slice(0, 10) + "T00:00:00Z");
+  if (isNaN(d.getTime())) return iso.slice(0, 10);
+  // getUTCDay(): Sun=0, Mon=1, ..., Thu=4, Fri=5, Sat=6.
+  // Days since most-recent Thursday: (day - 4 + 7) % 7.
+  const back = (d.getUTCDay() - 4 + 7) % 7;
+  d.setUTCDate(d.getUTCDate() - back);
+  return d.toISOString().slice(0, 10);
+}
+function addDaysIso(iso: string, n: number): string {
+  const d = new Date((iso || "").slice(0, 10) + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+
 const IICRC_CATEGORIES: Record<string, number> = {
   "Category 1 (Clean Water)": 1.0,
   "Category 2 (Gray Water)": 1.35,
@@ -2614,22 +2638,223 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }, (req, res) => {
     const id = Number(req.params.id);
     const existing: any = storage.getPayoutRequest ? storage.getPayoutRequest(id) : null;
+    if (existing && existing.finalizedAt) {
+      return res.status(409).json({ error: "This payout is locked in a finalized weekly report. Unlock the week to edit." });
+    }
     const alreadyPaid = existing && String(existing.status || "").toLowerCase() === "paid";
-    const pr = storage.updatePayoutRequest(id, req.body);
+
+    // When transitioning INTO paid, stamp the paid_at + week bucket if the
+    // caller didn't provide them. Thu→Wed cycle: the paid_at date's local
+    // week (Mon-based ISO) doesn't work — we bucket by "most recent Thursday
+    // at or before paid_at".
+    const body: any = { ...req.body };
+    if (body.status === "paid" && !alreadyPaid) {
+      if (!body.paidAt) body.paidAt = new Date().toISOString();
+      if (!body.weekPeriodStart) body.weekPeriodStart = weekStartForDate(body.paidAt);
+    }
+
+    const pr = storage.updatePayoutRequest(id, body);
     if (!pr) return res.status(404).json({ error: "Not found" });
 
     // Auto-apply payout to job on paid — only on the transition INTO paid, with a
     // positive amount, and never twice (guards against double-applying to job finances).
-    if (req.body.status === "paid" && !alreadyPaid && pr && pr.jobId) {
+    if (body.status === "paid" && !alreadyPaid && pr && pr.jobId) {
       const amt = Number(pr.amount);
       if (Number.isFinite(amt) && amt > 0) {
         storage.updateJob(pr.jobId, {
           partnerPayoutApplied: amt,
           partnerPayoutDate: new Date().toISOString(),
         });
+
+        // Cody: "When a payout is added to a referral partner it should be
+        // added to the job that was sent as job cost under business dev."
+        // Auto-insert a job_costs row so gross-margin math counts the payout.
+        // Guard against duplicates by looking for an existing row whose
+        // receipt_ref carries our payout marker.
+        const marker = `payout:${pr.id}`;
+        const dup = sqlite.prepare(
+          "SELECT id FROM job_costs WHERE job_id = ? AND receipt_ref = ?"
+        ).get(pr.jobId, marker);
+        if (!dup) {
+          const partnerContact: any = storage.getContact ? storage.getContact(pr.contactId) : null;
+          const vendor = partnerContact?.name || partnerContact?.company || "Referral Partner";
+          const method = body.paymentMethod || existing?.paymentMethod || "";
+          const desc = `Referral payout — ${vendor}${method ? ` (${method})` : ""}`;
+          const nowIso = new Date().toISOString();
+          sqlite.prepare(
+            `INSERT INTO job_costs (job_id, category, description, quantity, unit_cost, total, vendor, receipt_ref, entered_by, cost_date, created_at, phase)
+             VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'mitigation')`
+          ).run(
+            pr.jobId,
+            "business_development",
+            desc,
+            amt, amt,
+            vendor,
+            marker,
+            (req as any).session?.user?.name || "system",
+            (body.paidAt || nowIso).slice(0, 10),
+            nowIso
+          );
+        }
       }
     }
     res.json(pr);
+  });
+
+  // ── Weekly Referral-Payout Cycle (Thu→Wed, payable Friday) ────────────────
+  // Cody's rule: "We track referral from Thursday to Wednesday every week,
+  // payable that Friday following cutoff Wednesday night."
+  //
+  // Shared builder — used by both /week (live view) and /finalize (snapshot).
+  function buildReferralPayoutWeek(anchor: string) {
+    const weekStart = weekStartForDate(anchor);          // Thursday
+    const weekEnd = addDaysIso(weekStart, 6);            // Wednesday
+    const payableOn = addDaysIso(weekStart, 8);          // Friday after cutoff
+
+    // Every job created in the cycle that has a referral partner attached.
+    const jobs = sqlite.prepare(
+      `SELECT id, job_number, status, created_at, contact_id, referral_partner_id, partner_payout_applied, partner_payout_date
+         FROM jobs
+        WHERE referral_partner_id IS NOT NULL
+          AND date(created_at) BETWEEN date(?) AND date(?)`
+    ).all(weekStart, weekEnd) as any[];
+
+    // Signed = has a signed estimate OR job.status has advanced past lead/estimate.
+    const signedEstIds = new Set<number>(
+      jobs.length
+        ? (sqlite.prepare(
+            `SELECT DISTINCT job_id FROM estimates WHERE job_id IN (${jobs.map(()=>"?").join(",")}) AND deleted_at IS NULL AND signed_at IS NOT NULL`
+          ).all(...jobs.map(j => j.id)) as any[]).map(r => r.job_id)
+        : []
+    );
+
+    // Payouts linked to those jobs, OR paid within the window, OR bucketed to it.
+    const jobIds = jobs.map(j => j.id);
+    const jobIdList = jobIds.length ? jobIds.map(()=>"?").join(",") : "NULL";
+    const inWindow = sqlite.prepare(
+      `SELECT * FROM payout_requests
+        WHERE (job_id IN (${jobIdList}))
+           OR (paid_at IS NOT NULL AND date(paid_at) BETWEEN date(?) AND date(?))
+           OR (week_period_start = ?)`
+    ).all(...jobIds, weekStart, weekEnd, weekStart) as any[];
+
+    // Partner lookup in one query.
+    const partnerIds = new Set<number>();
+    jobs.forEach(j => partnerIds.add(j.referral_partner_id));
+    inWindow.forEach(p => partnerIds.add(p.contact_id));
+    const partners = partnerIds.size
+      ? sqlite.prepare(
+          `SELECT id, name, company, phone, email FROM contacts WHERE id IN (${Array.from(partnerIds).map(()=>"?").join(",")})`
+        ).all(...Array.from(partnerIds))
+      : [];
+    const partnerById: Record<number, any> = {};
+    (partners as any[]).forEach(p => { partnerById[p.id] = p; });
+
+    const byPartner: Record<number, any> = {};
+    jobs.forEach(j => {
+      const pid = j.referral_partner_id;
+      if (!byPartner[pid]) byPartner[pid] = { partner: partnerById[pid] || { id: pid, name: `Partner #${pid}` }, jobs: [], payouts: [] };
+      const signed = signedEstIds.has(j.id) || !!(j.status && !/^(lead|estimate)$/i.test(j.status));
+      byPartner[pid].jobs.push({
+        id: j.id, jobNumber: j.job_number, status: j.status,
+        createdAt: j.created_at, signed,
+        payoutApplied: j.partner_payout_applied,
+        payoutDate: j.partner_payout_date,
+      });
+    });
+    inWindow.forEach(p => {
+      const pid = p.contact_id;
+      if (!byPartner[pid]) byPartner[pid] = { partner: partnerById[pid] || { id: pid, name: `Partner #${pid}` }, jobs: [], payouts: [] };
+      byPartner[pid].payouts.push({
+        id: p.id, amount: p.amount, status: p.status,
+        paymentMethod: p.payment_method, paymentReference: p.payment_reference,
+        paidAt: p.paid_at, jobId: p.job_id,
+        weekPeriodStart: p.week_period_start, finalizedAt: p.finalized_at,
+        description: p.description,
+      });
+    });
+
+    const rows = Object.values(byPartner);
+    let totalPaid = 0, totalPending = 0, totalSigned = 0, totalUnsigned = 0;
+    rows.forEach((r: any) => {
+      r.jobs.forEach((j: any) => { if (j.signed) totalSigned++; else totalUnsigned++; });
+      r.payouts.forEach((p: any) => {
+        if (String(p.status).toLowerCase() === "paid") totalPaid += Number(p.amount) || 0;
+        else totalPending += Number(p.amount) || 0;
+      });
+    });
+
+    const finalized = sqlite.prepare(
+      "SELECT * FROM referral_payout_weeks WHERE week_period_start = ?"
+    ).get(weekStart) as any;
+
+    return {
+      weekPeriodStart: weekStart, weekPeriodEnd: weekEnd, payableOn,
+      partners: rows,
+      totals: { totalPaid, totalPending, totalSigned, totalUnsigned, partnerCount: rows.length },
+      finalized: finalized || null,
+    };
+  }
+
+  app.get("/api/referral-payouts/week", (req, res) => {
+    const anchor = String(req.query.date || "").trim() || new Date().toISOString().slice(0, 10);
+    res.json(buildReferralPayoutWeek(anchor));
+  });
+
+  // Finalize the current (or given) week: locks every payout_request in the
+  // window and writes a snapshot to referral_payout_weeks.
+  app.post("/api/referral-payouts/finalize", requireRole("owner", "admin"), (req, res) => {
+    const anchor = String(req.body?.date || "").trim() || new Date().toISOString().slice(0, 10);
+    const weekStart = weekStartForDate(anchor);
+    const weekEnd = addDaysIso(weekStart, 6);
+    const payableOn = addDaysIso(weekStart, 8);
+
+    // Refuse to re-finalize.
+    const already = sqlite.prepare("SELECT id FROM referral_payout_weeks WHERE week_period_start = ?").get(weekStart) as any;
+    if (already) return res.status(409).json({ error: "Week already finalized", id: already.id });
+
+    // Snapshot payload matches the live GET so the historical report is
+    // faithful even after later edits.
+    const snapshot = buildReferralPayoutWeek(weekStart);
+
+    const nowIso = new Date().toISOString();
+    const info = sqlite.prepare(
+      `INSERT INTO referral_payout_weeks (week_period_start, week_period_end, payable_on, total_paid, total_pending, total_unsigned, total_signed, partner_count, summary_json, finalized_by, finalized_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      weekStart, weekEnd, payableOn,
+      snapshot.totals.totalPaid, snapshot.totals.totalPending,
+      snapshot.totals.totalUnsigned, snapshot.totals.totalSigned, snapshot.totals.partnerCount,
+      JSON.stringify(snapshot),
+      (req as any).session?.user?.name || "system",
+      nowIso, nowIso
+    );
+
+    // Stamp finalized_at on every payout_request in the window.
+    sqlite.prepare(
+      `UPDATE payout_requests SET finalized_at = ?
+        WHERE (week_period_start = ? OR (paid_at IS NOT NULL AND date(paid_at) BETWEEN date(?) AND date(?)))
+          AND finalized_at IS NULL`
+    ).run(nowIso, weekStart, weekStart, weekEnd);
+
+    res.json(sqlite.prepare("SELECT * FROM referral_payout_weeks WHERE id = ?").get(info.lastInsertRowid));
+  });
+
+  // Unlock a finalized week (rare, owner-only).
+  app.delete("/api/referral-payouts/finalize/:weekStart", requireRole("owner"), (req, res) => {
+    const weekStart = String(req.params.weekStart);
+    const weekEnd = addDaysIso(weekStart, 6);
+    sqlite.prepare("DELETE FROM referral_payout_weeks WHERE week_period_start = ?").run(weekStart);
+    sqlite.prepare(
+      `UPDATE payout_requests SET finalized_at = NULL
+        WHERE (week_period_start = ? OR (paid_at IS NOT NULL AND date(paid_at) BETWEEN date(?) AND date(?)))`
+    ).run(weekStart, weekStart, weekEnd);
+    res.json({ ok: true });
+  });
+
+  // History of finalized weeks (for reports page).
+  app.get("/api/referral-payouts/weeks", (_req, res) => {
+    res.json(sqlite.prepare("SELECT * FROM referral_payout_weeks ORDER BY week_period_start DESC LIMIT 52").all());
   });
 
   // ── Partner Portal ────────────────────────────────────────────────────────
