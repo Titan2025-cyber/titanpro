@@ -271,6 +271,106 @@ export function registerRoutePlannerRoutes(app: Express, sqlite: Database.Databa
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+
+  // ── Route stop suggestions by route type ──────────────────────────────
+  //
+  // Route Planner is a marketing tool. Each route type maps to a different
+  // segment of the referral-partner pipeline:
+  //
+  //   follow_up  -> active partners we've earned at least one job from.
+  //                 Route = periodic "thanks, keep 'em coming" visits.
+  //   hot_leads  -> partners with zero referred jobs BUT recent touch
+  //                 (open follow-up sequence in the last 60 days).
+  //                 Route = new prospects showing signal, worth the drive.
+  //   cold_leads -> partners with zero referred jobs AND no recent touch.
+  //                 Route = cold-canvassing plan.
+  //
+  // Each endpoint returns route-stop candidates:
+  //   { contact_id, label, address, phone, company, sub_label }
+  // Frontend renders as a checkbox list and POSTs selections to
+  // /api/routes/:id/stops.
+
+  const referredJobCount = (contactId: number) =>
+    (sqlite.prepare(
+      "SELECT COUNT(*) AS c FROM jobs WHERE referral_partner_id = ?"
+    ).get(contactId) as any)?.c ?? 0;
+
+  const recentTouchCount = (contactId: number, days = 60) =>
+    (sqlite.prepare(
+      `SELECT COUNT(*) AS c FROM follow_up_sequences
+       WHERE contact_id = ? AND scheduled_at >= date('now', ?)`
+    ).get(contactId, `-${days} days`) as any)?.c ?? 0;
+
+  const partnerAddresses = () =>
+    sqlite.prepare(
+      `SELECT id, name, address, phone, company FROM contacts
+       WHERE type = 'referral' AND (address IS NOT NULL AND TRIM(address) != '')`
+    ).all() as any[];
+
+  const partnerLabel = (p: any) => (p.company ? `${p.name} - ${p.company}` : p.name);
+
+  app.get("/api/routes/suggestions/follow-up", (_req, res) => {
+    try {
+      const rows = partnerAddresses()
+        .map((p) => ({ ...p, jobs_referred: referredJobCount(p.id) }))
+        .filter((p) => p.jobs_referred > 0)
+        .sort((a, b) => b.jobs_referred - a.jobs_referred)
+        .map((p) => ({
+          contact_id: p.id,
+          label: partnerLabel(p),
+          address: p.address,
+          phone: p.phone,
+          company: p.company,
+          sub_label: `${p.jobs_referred} referred job${p.jobs_referred === 1 ? "" : "s"}`,
+        }));
+      res.json(rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.get("/api/routes/suggestions/hot-leads", (_req, res) => {
+    try {
+      const rows = partnerAddresses()
+        .map((p) => ({
+          ...p,
+          jobs_referred: referredJobCount(p.id),
+          recent_touches: recentTouchCount(p.id, 60),
+        }))
+        .filter((p) => p.jobs_referred === 0 && p.recent_touches > 0)
+        .sort((a, b) => b.recent_touches - a.recent_touches)
+        .map((p) => ({
+          contact_id: p.id,
+          label: partnerLabel(p),
+          address: p.address,
+          phone: p.phone,
+          company: p.company,
+          sub_label: `${p.recent_touches} recent touch${p.recent_touches === 1 ? "" : "es"} - 0 jobs yet`,
+        }));
+      res.json(rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.get("/api/routes/suggestions/cold-leads", (_req, res) => {
+    try {
+      const rows = partnerAddresses()
+        .map((p) => ({
+          ...p,
+          jobs_referred: referredJobCount(p.id),
+          recent_touches: recentTouchCount(p.id, 60),
+        }))
+        .filter((p) => p.jobs_referred === 0 && p.recent_touches === 0)
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((p) => ({
+          contact_id: p.id,
+          label: partnerLabel(p),
+          address: p.address,
+          phone: p.phone,
+          company: p.company,
+          sub_label: "No jobs - no recent touch - cold canvass",
+        }));
+      res.json(rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── Priority Follow-Up routes (quick pull from follow-ups) ───────────────────
   app.get("/api/routes/priority-followups/suggestions", (_req, res) => {
     try {

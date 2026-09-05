@@ -17,7 +17,8 @@ import { fmtDate } from "@/lib/dates";
 import {
   MapPin, Plus, Route, Calendar, ChevronRight, Trash2, Edit2, CheckCircle2,
   Circle, Navigation, Star, AlertCircle, Clock, Truck, Users, ArrowUp,
-  ArrowDown, ExternalLink, X, Map, ListOrdered, CalendarPlus, Flag
+  ArrowDown, ExternalLink, X, Map, ListOrdered, CalendarPlus, Flag,
+  Repeat, Flame, Snowflake, Sparkles
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -82,12 +83,26 @@ interface Stats {
   byType: Array<{ type: string; cnt: number }>;
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// ── Constants ───────────────────────────────────────────────────────────────────────
+// Three purpose-built route categories — Cody: the Route Planner is a
+// marketing tool for planning partner-visit runs, and the three real use
+// cases are (1) regular follow-up rounds with active referring partners,
+// (2) new hot-lead drives with prospects showing signal, and (3) cold-lead
+// canvassing with partners we haven't earned business from yet.
 const ROUTE_TYPES = [
-  { value: "dedicated", label: "Dedicated Route", icon: Route, color: "#3b82f6", desc: "Regular recurring territory" },
-  { value: "priority_followup", label: "Priority Follow-Up", icon: Star, color: "#ef4444", desc: "High-value leads & open jobs" },
-  { value: "canvass", label: "Canvass Route", icon: Map, color: "#10b981", desc: "Storm / neighborhood canvass" },
+  { value: "follow_up",  label: "Follow-Up Route", icon: Repeat,    color: "#3b82f6", desc: "Regular visit loop for active partners" },
+  { value: "hot_leads",  label: "Hot Lead Route",  icon: Flame,     color: "#ef4444", desc: "New partners showing early signal" },
+  { value: "cold_leads", label: "Cold Lead Route", icon: Snowflake, color: "#0891b2", desc: "Canvassing prospects we haven't cracked" },
 ];
+
+// Legacy route-type strings that used to live in the DB. Rendering falls back
+// through these so a route created before the rename still displays as its
+// closest new category.
+const LEGACY_TYPE_ALIAS: Record<string, string> = {
+  dedicated: "follow_up",
+  priority_followup: "hot_leads",
+  canvass: "cold_leads",
+};
 
 const STOP_TYPES = [
   { value: "visit", label: "Visit" },
@@ -136,7 +151,8 @@ const tripSchema = z.object({
 
 // ── Helper components ─────────────────────────────────────────────────────────
 function TypeBadge({ type }: { type: string }) {
-  const t = ROUTE_TYPES.find(r => r.value === type);
+  const canonical = LEGACY_TYPE_ALIAS[type] ?? type;
+  const t = ROUTE_TYPES.find(r => r.value === canonical);
   if (!t) return <Badge variant="outline">{type}</Badge>;
   const Icon = t.icon;
   return (
@@ -172,6 +188,7 @@ export default function RoutePlanner() {
   const [showNewRoute, setShowNewRoute] = useState(false);
   const [showNewStop, setShowNewStop] = useState(false);
   const [showScheduleTrip, setShowScheduleTrip] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [editingRoute, setEditingRoute] = useState<SavedRoute | null>(null);
 
   // ── Queries ───────────────────────────────────────────────────────────────
@@ -485,6 +502,10 @@ export default function RoutePlanner() {
               <Button size="sm" variant="outline" onClick={() => { setSelectedRoute(selectedRoute); setShowScheduleTrip(true); }} data-testid="button-schedule-trip">
                 <CalendarPlus className="h-3 w-3 mr-1" />Schedule Trip
               </Button>
+              {/* Auto-pull the right partner cohort for this route's type. */}
+              <Button size="sm" variant="outline" onClick={() => setShowSuggestions(true)} data-testid="button-suggest-stops">
+                <Sparkles className="h-3 w-3 mr-1" />Suggest Stops
+              </Button>
               <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" onClick={() => setShowNewStop(true)} data-testid="button-add-stop">
                 <Plus className="h-3 w-3 mr-1" />Add Stop
               </Button>
@@ -777,6 +798,21 @@ export default function RoutePlanner() {
         </DialogContent>
       </Dialog>
 
+      {/* SUGGEST STOPS DIALOG */}
+      {selectedRoute && routeDetail && (
+        <SuggestStopsDialog
+          open={showSuggestions}
+          onOpenChange={setShowSuggestions}
+          routeId={selectedRoute}
+          routeType={routeDetail.type}
+          existingStopContactIds={routeDetail.stops.map(s => s.contact_id).filter((x): x is number => x != null)}
+          onAdded={() => {
+            queryClient.invalidateQueries({ queryKey: [`/api/routes/${selectedRoute}`] });
+            queryClient.invalidateQueries({ queryKey: ["/api/routes"] });
+          }}
+        />
+      )}
+
       {/* ── SCHEDULE TRIP DIALOG ────────────────────────────────────────── */}
       <Dialog open={showScheduleTrip} onOpenChange={setShowScheduleTrip}>
         <DialogContent className="max-w-sm">
@@ -811,5 +847,217 @@ export default function RoutePlanner() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SuggestStopsDialog — bulk-add candidate stops for the current route type.
+//
+// Wired to three endpoints on the server (see routes_routeplanner.ts):
+//   follow_up  -> /api/routes/suggestions/follow-up  (active partners)
+//   hot_leads  -> /api/routes/suggestions/hot-leads  (prospects w/ touch)
+//   cold_leads -> /api/routes/suggestions/cold-leads (cold canvass)
+//
+// Contacts already on the route are hidden so the operator doesn't add
+// duplicate stops. Each POST includes contact_id so the stop stays linked
+// back to the underlying contact for phone/company lookups.
+// ─────────────────────────────────────────────────────────────────────────────
+interface StopSuggestion {
+  contact_id: number;
+  label: string;
+  address: string;
+  phone?: string | null;
+  company?: string | null;
+  sub_label?: string;
+}
+
+const SUGGESTION_ROUTE: Record<string, string> = {
+  follow_up: "/api/routes/suggestions/follow-up",
+  hot_leads: "/api/routes/suggestions/hot-leads",
+  cold_leads: "/api/routes/suggestions/cold-leads",
+  // Legacy synonyms so routes created before the rename still work.
+  dedicated: "/api/routes/suggestions/follow-up",
+  priority_followup: "/api/routes/suggestions/hot-leads",
+  canvass: "/api/routes/suggestions/cold-leads",
+};
+
+const SUGGESTION_STOP_TYPE: Record<string, string> = {
+  follow_up: "follow_up",
+  hot_leads: "visit",
+  cold_leads: "canvass",
+  dedicated: "follow_up",
+  priority_followup: "visit",
+  canvass: "canvass",
+};
+
+function SuggestStopsDialog({
+  open, onOpenChange, routeId, routeType, existingStopContactIds, onAdded,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  routeId: number;
+  routeType: string;
+  existingStopContactIds: number[];
+  onAdded: () => void;
+}) {
+  const { toast } = useToast();
+  const endpoint = SUGGESTION_ROUTE[routeType] ?? SUGGESTION_ROUTE.follow_up;
+  const stopType = SUGGESTION_STOP_TYPE[routeType] ?? "visit";
+  const canonical = LEGACY_TYPE_ALIAS[routeType] ?? routeType;
+  const meta = ROUTE_TYPES.find(r => r.value === canonical);
+
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [search, setSearch] = useState("");
+
+  const { data: suggestions = [], isLoading, refetch } = useQuery<StopSuggestion[]>({
+    queryKey: [endpoint],
+    queryFn: () => apiRequest(endpoint).then(r => r.json()),
+    enabled: open,
+    staleTime: 30_000,
+  });
+
+  // Reset transient state whenever the dialog opens.
+  useState(() => { if (open) { setSelected(new Set()); setSearch(""); } });
+
+  // Hide contacts already added to this route.
+  const filtered = suggestions.filter(s => !existingStopContactIds.includes(s.contact_id));
+  const searched = search.trim()
+    ? filtered.filter(s => {
+        const q = search.trim().toLowerCase();
+        return (
+          s.label.toLowerCase().includes(q) ||
+          (s.address ?? "").toLowerCase().includes(q) ||
+          (s.company ?? "").toLowerCase().includes(q)
+        );
+      })
+    : filtered;
+
+  const toggle = (id: number) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const addAllVisible = () => setSelected(new Set(searched.map(s => s.contact_id)));
+  const clear = () => setSelected(new Set());
+
+  const [saving, setSaving] = useState(false);
+  const addSelected = async () => {
+    const picks = suggestions.filter(s => selected.has(s.contact_id));
+    if (picks.length === 0) return;
+    setSaving(true);
+    try {
+      // POST each candidate as its own stop. Sequential (not Promise.all)
+      // so order_index stays stable & we don't fight sqlite locks.
+      let base = existingStopContactIds.length;
+      for (const p of picks) {
+        await apiRequest(`/api/routes/${routeId}/stops`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contact_id: p.contact_id,
+            label: p.label,
+            address: p.address,
+            stop_type: stopType,
+            priority: 2,
+            order_index: base++,
+            notes: p.sub_label ?? "",
+          }),
+        });
+      }
+      toast({ title: "Stops added", description: `${picks.length} added to route.` });
+      onAdded();
+      onOpenChange(false);
+    } catch (err: any) {
+      toast({ title: "Add failed", description: String(err?.message || err), variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4" />
+            Suggest stops · {meta?.label ?? routeType}
+          </DialogTitle>
+        </DialogHeader>
+
+        <p className="text-xs text-muted-foreground -mt-1">{meta?.desc}</p>
+
+        <div className="flex items-center gap-2">
+          <Input
+            placeholder="Filter by name, address, company…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            data-testid="input-suggestion-search"
+          />
+          <Button size="sm" variant="ghost" onClick={() => refetch()}>Refresh</Button>
+        </div>
+
+        <div className="max-h-80 overflow-y-auto rounded-md border">
+          {isLoading && <div className="p-4 text-xs text-muted-foreground">Loading…</div>}
+          {!isLoading && searched.length === 0 && (
+            <div className="p-6 text-xs text-muted-foreground text-center space-y-1">
+              <div>No candidates match this route type right now.</div>
+              <div className="opacity-70">
+                Add referral partners with addresses under Contacts → Partners
+                to populate suggestions.
+              </div>
+            </div>
+          )}
+          {searched.map(s => {
+            const checked = selected.has(s.contact_id);
+            return (
+              <label
+                key={s.contact_id}
+                className={`flex items-start gap-2 px-3 py-2 border-b last:border-0 cursor-pointer text-sm ${checked ? "bg-muted" : "hover:bg-muted/60"}`}
+              >
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={checked}
+                  onChange={() => toggle(s.contact_id)}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium truncate">{s.label}</div>
+                  <div className="text-[11px] text-muted-foreground truncate">
+                    {s.address}
+                  </div>
+                  {s.sub_label && (
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground/80 mt-0.5">
+                      {s.sub_label}
+                    </div>
+                  )}
+                </div>
+              </label>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center justify-between pt-1">
+          <div className="text-[11px] text-muted-foreground">
+            {selected.size} selected · {searched.length} shown · {filtered.length} available
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" variant="ghost" onClick={clear} disabled={selected.size === 0}>Clear</Button>
+            <Button size="sm" variant="outline" onClick={addAllVisible} disabled={searched.length === 0}>Select all shown</Button>
+            <Button
+              size="sm"
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+              disabled={selected.size === 0 || saving}
+              onClick={addSelected}
+              data-testid="button-add-suggested"
+            >
+              {saving ? "Adding…" : `Add ${selected.size} stop${selected.size === 1 ? "" : "s"}`}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
