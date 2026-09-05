@@ -33,7 +33,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, ChevronDown, ChevronRight } from "lucide-react";
 import type { Job, Contact, Estimate, Invoice } from "@shared/schema";
 import DryingRecords from "@/components/DryingRecords";
 import MitigationSketch from "@/components/MitigationSketch";
@@ -607,6 +607,177 @@ function NotesTab({ jobId }: { jobId: number }) {
   );
 }
 
+// ProgressAndMilestonesCard ── Collapsible pipeline+dates surface for Activity
+//
+// Cody: "the pipeline function and features need to collapse and work inside
+// milestones the activity page in job detail". So the standalone Pipeline
+// tab is gone and its two features (stage selector + vertical pipeline list)
+// live here, folded into the same collapsible unit as the milestone-date
+// editor that used to sit at the bottom of the Pipeline tab.
+//
+// Collapsed view (default): compact header + horizontal stepper dots so the
+// pipeline picture is legible at a glance without opening the card.
+// Expanded view: the full vertical stage list + the InlineMilestoneDates
+// editor, exactly as they existed on the old Pipeline tab.
+function ProgressAndMilestonesCard({ job }: { job: any }) {
+  // Collapsed by default so the more-frequently-scanned Financial Summary
+  // stays above the fold. Persist per-job in localStorage so a user who
+  // routinely wants it open on a specific job gets that back.
+  const storageKey = `titan.progressMilestones.open.${job.id}`;
+  const [open, setOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem(storageKey) === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(storageKey, open ? "1" : "0"); } catch { /* ignore */ }
+  }, [open, storageKey]);
+
+  const currentOrder = PROGRESS_STAGES.findIndex(
+    (s) => s.key === (job.progressStage || "pending_sale")
+  );
+  const currentStage = PROGRESS_STAGES[Math.max(0, currentOrder)];
+  const completed = Math.max(0, currentOrder);
+  const total = PROGRESS_STAGES.length;
+
+  return (
+    <Card data-testid="card-progress-milestones">
+      <CardHeader className="pb-2">
+        <div className="flex items-start gap-3">
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="mt-0.5 text-muted-foreground hover:text-foreground shrink-0"
+            aria-label={open ? "Collapse" : "Expand"}
+            data-testid="button-toggle-progress-milestones"
+          >
+            {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          </button>
+          <div className="flex-1 min-w-0">
+            <CardTitle className="text-sm flex items-center gap-2 flex-wrap">
+              <TrendingUp className="w-4 h-4 text-[hsl(var(--titan-blue))]" />
+              Progress &amp; Milestones
+              <span className="ml-1 text-[10px] font-medium uppercase tracking-wide px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                {completed}/{total} complete
+              </span>
+              <span className="ml-auto">
+                <StageSelector job={job} />
+              </span>
+            </CardTitle>
+            {/* Horizontal stepper — always visible so the pipeline is
+                legible without expanding. Each dot is a stage; filled
+                dots are past, the highlighted one is current, faint
+                dots are ahead. */}
+            <div className="mt-3 flex items-center gap-1.5" data-testid="mini-pipeline-stepper">
+              {PROGRESS_STAGES.map((stage, idx) => {
+                const isPast = idx < currentOrder;
+                const isCurrent = idx === currentOrder;
+                return (
+                  <div
+                    key={stage.key}
+                    title={stage.label}
+                    className={
+                      "h-1.5 flex-1 rounded-full transition-colors " +
+                      (isCurrent
+                        ? "bg-[hsl(var(--titan-blue))]"
+                        : isPast
+                        ? "bg-green-500/70 dark:bg-green-400/60"
+                        : "bg-muted")
+                    }
+                  />
+                );
+              })}
+            </div>
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              Current: <span className="font-medium">{currentStage?.label ?? "Pending"}</span>
+              {" · "}
+              {open ? "Click the arrow to collapse." : "Click the arrow to edit milestone dates and see the full pipeline."}
+            </p>
+          </div>
+        </div>
+      </CardHeader>
+
+      {open && (
+        <CardContent className="pt-0 space-y-4">
+          {/* Full vertical stage list — same visual language as the old
+              Pipeline tab so muscle memory carries over. */}
+          <div>
+            <p className="text-xs text-muted-foreground mb-2 font-medium">Pipeline stages</p>
+            <div className="space-y-2">
+              {PROGRESS_STAGES.map((stage, idx) => {
+                const isPast = idx < currentOrder;
+                const isCurrent = idx === currentOrder;
+                const dateStr = (job as any)[stage.dateField] as string | undefined;
+                return (
+                  <div
+                    key={stage.key}
+                    className={
+                      "flex items-center gap-3 p-2.5 rounded-lg border transition-all " +
+                      (isCurrent
+                        ? `${stage.color} ${stage.borderColor} shadow-sm`
+                        : isPast
+                        ? "bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800"
+                        : "bg-muted/20 border-border opacity-60")
+                    }
+                  >
+                    <div
+                      className={
+                        "w-7 h-7 rounded-full flex items-center justify-center shrink-0 " +
+                        (isPast
+                          ? "bg-green-100 text-green-700"
+                          : isCurrent
+                          ? `${stage.color} ${stage.textColor}`
+                          : "bg-muted text-muted-foreground")
+                      }
+                    >
+                      {isPast ? (
+                        <span className="text-green-700 text-xs font-bold">✓</span>
+                      ) : (
+                        <stage.icon className="w-3.5 h-3.5" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p
+                          className={
+                            "text-sm font-medium " +
+                            (isCurrent
+                              ? stage.textColor
+                              : isPast
+                              ? "text-green-700 dark:text-green-400"
+                              : "text-muted-foreground")
+                          }
+                        >
+                          {stage.label}
+                        </p>
+                        {isCurrent && (
+                          <Badge className={`text-xs border ${stage.color} ${stage.textColor} ${stage.borderColor}`}>
+                            Current
+                          </Badge>
+                        )}
+                      </div>
+                      {dateStr && (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {stage.dateLabel}: {fmtDate(dateStr, { month: "short", day: "numeric", year: "numeric" })}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-2">
+              Click the stage badge at the top of this card to advance or move the job to any pipeline stage.
+              Dates are auto-stamped when you change stages.
+            </p>
+          </div>
+
+          {/* Editable milestone dates — same component the Pipeline tab used. */}
+          <InlineMilestoneDates job={job} />
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
 // ── Inline Milestone Dates Component ─────────────────────────────────────────
 function InlineMilestoneDates({ job }: { job: any }) {
   const { toast } = useToast();
@@ -958,7 +1129,13 @@ export default function JobDetail() {
     // "Jane signed the Work Auth" lands directly on the Documents tab.
     try {
       const p = new URLSearchParams(window.location.search).get("tab");
-      if (p) return p;
+      if (p) {
+        // Pipeline tab retired — its content now lives inside a collapsible
+        // "Progress & Milestones" card on the Activity tab. Old ?tab=pipeline
+        // deep-links still work by landing on Activity.
+        if (p === "pipeline") return "activity";
+        return p;
+      }
     } catch { /* ignore SSR / bad url */ }
     return "activity";
   });
@@ -1436,7 +1613,6 @@ export default function JobDetail() {
           <TabsTrigger value="invoices">Invoices ({visibleInvoices.length})</TabsTrigger>
           <TabsTrigger value="payments"><DollarSign className="w-3 h-3 mr-1 inline-block" />Payments</TabsTrigger>
           <TabsTrigger value="insurance">Insurance</TabsTrigger>
-          <TabsTrigger value="pipeline"><TrendingUp className="w-3 h-3 mr-1 inline-block" />Pipeline</TabsTrigger>
           <TabsTrigger value="costing">Job Costing</TabsTrigger>
           <TabsTrigger value="supplements">Supplements</TabsTrigger>
           <TabsTrigger value="safety">Safety</TabsTrigger>
@@ -1450,6 +1626,13 @@ export default function JobDetail() {
 
         {/* ── Activity Tab ── */}
         <TabsContent value="activity" className="mt-4 space-y-4">
+          {/* ── Progress & Milestones (formerly the Pipeline tab) ── */}
+          {/* Collapsed by default: the header alone shows the current stage
+              chip + a compact horizontal stepper so the whole pipeline
+              picture is visible without expanding. Click the row to reveal
+              the full vertical stage list + editable milestone dates. */}
+          <ProgressAndMilestonesCard job={job} />
+
           {/* ── Financial Summary ── */}
           <Card data-testid="card-job-financials">
             <CardHeader className="pb-2">
@@ -2057,64 +2240,6 @@ export default function JobDetail() {
           <p className="text-xs text-muted-foreground text-center">Navigate to Estimates to generate a formal carrier rebuttal.</p>
         </TabsContent>
 
-        {/* ── Pipeline Tab ── */}
-        <TabsContent value="pipeline" className="mt-4 space-y-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm flex items-center gap-2">
-                <TrendingUp className="w-4 h-4 text-[hsl(var(--titan-blue))]" />
-                Progress Stage
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0 space-y-3">
-              <div className="flex items-center gap-3 flex-wrap">
-                <p className="text-sm text-muted-foreground">Current Stage:</p>
-                <StageSelector job={job} />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Click the stage badge to advance or move the job to any pipeline stage. Dates are auto-stamped when you change stages.
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm">Pipeline Progress</CardTitle></CardHeader>
-            <CardContent className="pt-0">
-              <div className="space-y-2">
-                {PROGRESS_STAGES.map((stage, idx) => {
-                  const currentOrder = PROGRESS_STAGES.findIndex(s => s.key === (job.progressStage || "pending_sale"));
-                  const isPast = idx < currentOrder;
-                  const isCurrent = idx === currentOrder;
-                  const dateStr = (job as any)[stage.dateField] as string | undefined;
-                  return (
-                    <div key={stage.key} className={`flex items-center gap-3 p-2.5 rounded-lg border transition-all ${
-                      isCurrent ? `${stage.color} ${stage.borderColor} shadow-sm` :
-                      isPast ? "bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800" :
-                      "bg-muted/20 border-border opacity-50"
-                    }`}>
-                      <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
-                        isPast ? "bg-green-100 text-green-700" :
-                        isCurrent ? `${stage.color} ${stage.textColor}` :
-                        "bg-muted text-muted-foreground"
-                      }`}>
-                        {isPast
-                          ? <span className="text-green-700 text-xs font-bold">✓</span>
-                          : <stage.icon className="w-3.5 h-3.5" />}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className={`text-sm font-medium ${isCurrent ? stage.textColor : isPast ? "text-green-700 dark:text-green-400" : "text-muted-foreground"}`}>{stage.label}</p>
-                          {isCurrent && <Badge className={`text-xs border ${stage.color} ${stage.textColor} ${stage.borderColor}`}>Current</Badge>}
-                        </div>
-                        {dateStr && <p className="text-xs text-muted-foreground mt-0.5">{stage.dateLabel}: {fmtDate(dateStr, { month: "short", day: "numeric", year: "numeric" })}</p>}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </CardContent>
-          </Card>
-          <InlineMilestoneDates job={job} />
-        </TabsContent>
 
         <TabsContent value="costing" className="mt-4"><JobCostingPanel jobId={Number(id)} phase={phaseFilter} /></TabsContent>
         <TabsContent value="supplements" className="mt-4"><SupplementPanel jobId={Number(id)} job={job} /></TabsContent>
