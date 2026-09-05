@@ -127,6 +127,12 @@ export const estimates = sqliteTable("estimates", {
   externalFileSize: integer("external_file_size"),
   externalVendor: text("external_vendor"),             // e.g. 'Xactimate', 'ACME Roofing'
   uploadedBy: text("uploaded_by"),
+  // Customer e-signature (public /sign/:token flow). Populated when a
+  // docType='estimate' signature request is completed. See
+  // routes_quickadd_esign.ts and EstimateSignaturePanel.
+  signedAt: text("signed_at"),
+  signerName: text("signer_name"),
+  signerEmail: text("signer_email"),
   createdAt: text("created_at").notNull().default(""),
 });
 export const insertEstimateSchema = createInsertSchema(estimates).omit({ id: true });

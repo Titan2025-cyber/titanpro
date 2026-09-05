@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Estimate, Job, Contact } from "@shared/schema";
 import { SendAndSavePanel } from "@/components/SendAndSavePanel";
+import { EstimateSignaturePanel } from "@/components/EstimateSignaturePanel";
 import { generateEstimatePDF } from "@/lib/pdfEngine";
 
 const IICRC_QUICK_ADD = [
@@ -464,8 +465,19 @@ export default function EstimateDetail() {
       <div className="flex items-center gap-3">
         <Link href="/estimates"><Button variant="ghost" size="sm"><ArrowLeft className="w-4 h-4 mr-1" />Estimates</Button></Link>
         <div className="flex-1">
-          <h1 className="text-xl font-bold">{estimate.title}</h1>
-          <p className="text-sm text-muted-foreground">{job?.jobNumber} · {estimate.status}</p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="text-xl font-bold">{estimate.title}</h1>
+            {(estimate as any).signedAt && (
+              <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300">
+                <CheckCircle2 className="w-3 h-3 mr-1" />
+                Signed by {(estimate as any).signerName || "customer"}
+              </Badge>
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {job?.jobNumber} · {estimate.status}
+            {(estimate as any).signedAt && ` · Signed ${new Date((estimate as any).signedAt).toLocaleDateString()}`}
+          </p>
         </div>
         <Select value={estimate.status} onValueChange={v => updateMutation.mutate({ status: v })}>
           <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
@@ -548,6 +560,56 @@ export default function EstimateDetail() {
                 notes: (estimate as any).notes || undefined,
               })
             }
+          />
+        );
+      })()}
+
+      {/* ── Send-for-Signature ── emails a public /sign/:token link that
+          regenerates the exact estimate PDF, drops a signature block on the
+          last page, and saves the signed copy back to the job Documents tab. */}
+      {(() => {
+        const contact = contacts.find((c: any) => c.id === (job as any)?.contactId);
+        const jobAddress =
+          (job as any)?.address ||
+          [(job as any)?.streetAddress, (job as any)?.city, (job as any)?.state, (job as any)?.zip]
+            .filter(Boolean)
+            .join(", ");
+        const estNumber = estimate.title || `Estimate #${estimate.id}`;
+        return (
+          <EstimateSignaturePanel
+            estimateId={estimate.id}
+            jobId={estimate.jobId}
+            jobNumber={job?.jobNumber}
+            title={`Estimate — ${estNumber}`}
+            defaultRecipientEmail={(contact as any)?.email || ""}
+            defaultRecipientName={(contact as any)?.name || ""}
+            buildFormData={() => ({
+              estimateId: estimate.id,
+              estimateNumber: estNumber,
+              createdAt: (estimate as any).createdAt || undefined,
+              billToName: (contact as any)?.name,
+              billToPhone: (contact as any)?.phone || undefined,
+              billToEmail: (contact as any)?.email || undefined,
+              propertyAddress: jobAddress || (contact as any)?.address || undefined,
+              lineItems: lineItems.map(it => ({
+                description: it.description || "Item",
+                quantity: Number((it as any).quantity ?? it.qty ?? 1) || 1,
+                unitPrice: Number(it.unitPrice) || 0,
+                total: Number(it.total) || 0,
+                unit: (it as any).unit || undefined,
+                category: (it as any).category || undefined,
+                notes: (it as any).notes || undefined,
+              })),
+              subtotal:
+                Number((estimate as any).subtotal) ||
+                lineItems.reduce((s, i) => s + (Number(i.total) || 0), 0),
+              tax: Number((estimate as any).tax) || 0,
+              total:
+                Number((estimate as any).total) ||
+                lineItems.reduce((s, i) => s + (Number(i.total) || 0), 0),
+              notes: (estimate as any).notes || undefined,
+              scopeOfWork: (estimate as any).scopeOfWork || undefined,
+            })}
           />
         );
       })()}

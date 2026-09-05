@@ -586,6 +586,39 @@ export function registerQuickAddAndESignRoutes(
             .run(salesDate, wipDate, row.job_id);
           stageAdvanced = true;
           stageAdvancedLabel = "WIP";
+        } else if (row.doc_type === "estimate") {
+          // A customer-signed estimate is an approval, not a work order —
+          // don't advance the pipeline stage. Just mark the estimates row
+          // 'approved' and stamp signed_at so EstimateDetail can render an
+          // Approved chip. The estimate id is carried in form_data.estimateId
+          // (see EstimateSignaturePanel.buildFormData).
+          try {
+            const fd = updatedFormData ? JSON.parse(updatedFormData) : null;
+            const estimateId = Number(fd?.estimateId);
+            if (estimateId) {
+              // Best-effort: schema.estimates may or may not have signed_at /
+              // signer_name yet. Try the richer UPDATE first, fall back to
+              // status-only if those columns don't exist.
+              try {
+                sqlite
+                  .prepare(
+                    `UPDATE estimates
+                       SET status = 'approved',
+                           signed_at = ?,
+                           signer_name = ?,
+                           signer_email = ?
+                     WHERE id = ?`,
+                  )
+                  .run(now, signerName, row.recipient_email || null, estimateId);
+              } catch {
+                sqlite
+                  .prepare(`UPDATE estimates SET status = 'approved' WHERE id = ?`)
+                  .run(estimateId);
+              }
+            }
+          } catch (e: any) {
+            console.error("[signature] estimate approval failed:", e?.message || e);
+          }
         } else if (
           row.doc_type === "certificate_of_completion"
           && currentRank < STAGE_RANK.invoice_pending

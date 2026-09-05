@@ -98,6 +98,18 @@ function ackBody(docType: string, propertyAddress?: string): AckSection | null {
           "Release — This certificate does not release any lien rights for unpaid amounts owed to Contractor.",
         ],
       };
+    case "estimate":
+      return {
+        heading: "Estimate Acknowledgment & Approval",
+        intro: "By signing below, I approve this estimate and agree to the terms below:",
+        bullets: [
+          "Scope & pricing — I have reviewed the line items, quantities, and prices in this estimate and approve them as the initial scope of work at the property listed above.",
+          "Insurance-approved changes — I understand that the final billed amount may adjust if my insurance carrier approves additional scope or supplements after inspection. Any material change will be re-priced using Contractor's published pricing schedule.",
+          "Validity — This estimate is valid for 30 days from the date shown. Material and labor prices may change after that window.",
+          "Not a work authorization — Approving this estimate does not by itself authorize work to begin. A separate Work Authorization will be signed before mitigation or reconstruction starts.",
+        ],
+        footer: `This approval is governed by the laws of the State of ${stateName}.`,
+      };
     default:
       return null;
   }
@@ -363,6 +375,79 @@ async function generatePdfForDocType(
         documentId,
       });
     }
+    case "estimate": {
+      // The estimate PDF is deterministic given the line items + totals in
+      // formData. We regenerate here (rather than shipping a pre-built PDF)
+      // so the signature block is drawn onto the same document layout.
+      const { generateEstimatePDF } = await loadPdfEngine();
+      const items = Array.isArray(formData.lineItems) ? formData.lineItems : [];
+      const base = generateEstimatePDF({
+        estimateNumber: formData.estimateNumber || "Estimate",
+        status: "approved",
+        jobNumber: jobNumber || undefined,
+        createdAt: formData.createdAt || undefined,
+        billTo: {
+          name: formData.billToName || signerName,
+          phone: formData.billToPhone || undefined,
+          email: formData.billToEmail || undefined,
+          address: propertyAddress,
+        },
+        lineItems: items,
+        subtotal: Number(formData.subtotal) || 0,
+        tax: Number(formData.tax) || 0,
+        total: Number(formData.total) || 0,
+        notes: formData.notes || undefined,
+        scopeOfWork: formData.scopeOfWork || undefined,
+      });
+      // Overlay a signature block on the last page. jsPDF has no easy "open
+      // existing data URI" round-trip, so we render the signature block via
+      // a tiny second-pass PDF using pdf-lib: import lazily to keep the
+      // signing bundle small.
+      const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
+      const pdfBytes = Uint8Array.from(atob(base.split(",")[1]), c => c.charCodeAt(0));
+      const pdf = await PDFDocument.load(pdfBytes);
+      const page = pdf.getPages()[pdf.getPageCount() - 1];
+      const font = await pdf.embedFont(StandardFonts.Helvetica);
+      const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+      const { width: pw } = page.getSize();
+      const sigPngBytes = Uint8Array.from(
+        atob(signatureDataUrl.split(",")[1] || ""),
+        c => c.charCodeAt(0),
+      );
+      const sigImg = await pdf.embedPng(sigPngBytes);
+      // Push a new page for the acknowledgment + signature so it never
+      // collides with the terms/notes block on the estimate itself.
+      const sigPage = pdf.addPage([pw, page.getSize().height]);
+      let cy = sigPage.getSize().height - 60;
+      sigPage.drawText("ESTIMATE APPROVAL", { x: 40, y: cy, size: 14, font: fontBold, color: rgb(0.04, 0.15, 0.25) });
+      cy -= 22;
+      sigPage.drawText(`Estimate: ${formData.estimateNumber || ""}`, { x: 40, y: cy, size: 10, font });
+      cy -= 14;
+      if (jobNumber) { sigPage.drawText(`Job File: ${jobNumber}`, { x: 40, y: cy, size: 10, font }); cy -= 14; }
+      sigPage.drawText(`Property: ${propertyAddress}`, { x: 40, y: cy, size: 10, font, maxWidth: pw - 80 });
+      cy -= 22;
+      sigPage.drawText("By signing below the property owner (or their authorized representative)", { x: 40, y: cy, size: 9, font });
+      cy -= 12;
+      sigPage.drawText("approves this estimate as the initial scope of work.", { x: 40, y: cy, size: 9, font });
+      cy -= 36;
+      const sigW = 220;
+      const sigH = 70;
+      const sigDims = sigImg.scaleToFit(sigW, sigH);
+      sigPage.drawImage(sigImg, { x: 40, y: cy - sigDims.height + 12, width: sigDims.width, height: sigDims.height });
+      sigPage.drawLine({ start: { x: 40, y: cy - 30 }, end: { x: 40 + sigW, y: cy - 30 }, thickness: 0.6, color: rgb(0.1, 0.1, 0.1) });
+      sigPage.drawText("Signature", { x: 40, y: cy - 42, size: 8, font, color: rgb(0.35, 0.35, 0.35) });
+      sigPage.drawText(signerName, { x: 300, y: cy - 22, size: 11, font: fontBold });
+      sigPage.drawLine({ start: { x: 300, y: cy - 30 }, end: { x: 300 + 220, y: cy - 30 }, thickness: 0.6, color: rgb(0.1, 0.1, 0.1) });
+      sigPage.drawText("Printed name", { x: 300, y: cy - 42, size: 8, font, color: rgb(0.35, 0.35, 0.35) });
+      sigPage.drawText(`Signed at: ${new Date(signedAt).toLocaleString()}`, { x: 40, y: cy - 68, size: 8, font, color: rgb(0.35, 0.35, 0.35) });
+      const outBytes = await pdf.save();
+      let bin = "";
+      const chunk = 0x8000;
+      for (let i = 0; i < outBytes.length; i += chunk) {
+        bin += String.fromCharCode.apply(null, Array.from(outBytes.subarray(i, i + chunk)) as any);
+      }
+      return `data:application/pdf;base64,${btoa(bin)}`;
+    }
     default:
       throw new Error(`Unsupported document type: ${docType}`);
   }
@@ -448,6 +533,15 @@ export default function SignDocument() {
       push("Work scope", f.workScope);
       push("Completion date", f.completionDate);
       push("Technician", f.techName);
+    }
+    if (req.docType === "estimate") {
+      push("Estimate", f.estimateNumber);
+      if (Array.isArray(f.lineItems)) {
+        push("Line items", `${f.lineItems.length} item${f.lineItems.length === 1 ? "" : "s"}`);
+      }
+      if (typeof f.total === "number") {
+        push("Estimate total", `$${f.total.toFixed(2)}`);
+      }
     }
     return rows;
   }, [req]);

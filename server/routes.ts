@@ -6660,6 +6660,12 @@ Approve in Partner Portal → Admin View.
   try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN external_file_size INTEGER`); } catch(_) {}
   try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN external_vendor TEXT`); } catch(_) {}
   try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN uploaded_by TEXT`); } catch(_) {}
+  // Customer e-signature on the estimate itself — populated by
+  // routes_quickadd_esign.ts when a public /sign/:token flow completes for a
+  // docType="estimate" request.
+  try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN signed_at TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN signer_name TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE estimates ADD COLUMN signer_email TEXT`); } catch(_) {}
 
   try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN source TEXT DEFAULT 'internal'`); } catch(_) {}
   try { sqlite.exec(`ALTER TABLE invoices ADD COLUMN external_file_url TEXT`); } catch(_) {}
