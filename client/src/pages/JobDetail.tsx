@@ -1208,6 +1208,10 @@ export default function JobDetail() {
   // Settled Amount tile inline editor (Financial Summary). Writes to
   // jobs.settled_amount_manual which overrides the supplement-derived value.
   const [showSettledDialog, setShowSettledDialog] = useState(false);
+  // Credit Memo tile dedicated dialog. Credit memos are billing reductions /
+  // write-offs — tracked separately from payments received so we can
+  // report them at tax time. Requires a reason.
+  const [showCreditMemoDialog, setShowCreditMemoDialog] = useState(false);
 
   // Tabs that only apply to the mitigation phase. When the user switches to
   // Reconstruction, these are hidden — auto-switch away if one is active.
@@ -1752,19 +1756,20 @@ export default function JobDetail() {
                     <ExternalLink className="w-3 h-3 opacity-60" />
                   </span>
                 </button>
-                {/* Credit Memo — clickable, jumps to Payments where credit-memo
-                    entries are recorded via "Record Payment" → credit memo. */}
+                {/* Credit Memo — write-offs / bill reductions. Opens a
+                    dedicated dialog because this is a LOSS (not a
+                    payment) and each entry needs a taxable reason. */}
                 <button
                   type="button"
-                  onClick={() => setActiveTab("payments")}
+                  onClick={() => setShowCreditMemoDialog(true)}
                   className="text-left group focus:outline-none"
                   data-testid="jobfin-creditmemo"
-                  title="Open Payments to enter a credit memo"
+                  title="Record a write-off / bill reduction (tracked for taxes)"
                 >
                   <span className="text-xs text-muted-foreground block mb-0.5">Credit Memo</span>
                   <span className="text-lg font-bold text-red-600 dark:text-red-400 group-hover:underline inline-flex items-center gap-1">
                     {money(phaseFin?.creditMemos ?? 0)}
-                    <ExternalLink className="w-3 h-3 opacity-60" />
+                    <Pencil className="w-3 h-3 opacity-60" />
                   </span>
                 </button>
                 <button
@@ -2405,6 +2410,18 @@ export default function JobDetail() {
         onOpenChange={setShowSettledDialog}
         job={job}
       />
+
+      {/* Credit Memo (write-off) editor — opened from the Financial Summary tile.
+          Suggests the invoiced-vs-settled delta as a starting amount. */}
+      <CreditMemoDialog
+        open={showCreditMemoDialog}
+        onOpenChange={setShowCreditMemoDialog}
+        jobId={job.id}
+        invoicedTotal={(phaseFin as any)?.invoiceTotal ?? 0}
+        collected={(phaseFin as any)?.collected ?? 0}
+        settledAmount={(phaseFin as any)?.settledAmount ?? 0}
+        currentCreditMemos={(phaseFin as any)?.creditMemos ?? 0}
+      />
     </div>
   );
 }
@@ -2759,6 +2776,231 @@ function SettledAmountDialog({
               {save.isPending ? "Saving…" : "Save"}
             </Button>
           </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CreditMemoDialog — records a write-off / bill reduction on a job.
+//
+// Cody: credit memos are the difference between what we invoiced and what
+// we ultimately settled for (carrier haircut, goodwill discount, etc.).
+// They are NOT payments. Every one is tracked with a reason so the annual
+// total can be pulled at tax time.
+//
+// The dialog suggests (invoicedTotal − collected − existingCreditMemos) as
+// a starting amount so a single click captures the remaining shortfall.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CREDIT_MEMO_REASONS = [
+  "Carrier settlement shortfall",
+  "Deductible waiver / write-off",
+  "Goodwill / customer satisfaction",
+  "Duplicate invoice adjustment",
+  "Pricing correction",
+  "Uncollectible / bad debt",
+  "Other",
+];
+
+function CreditMemoDialog({
+  open, onOpenChange, jobId,
+  invoicedTotal, collected, settledAmount, currentCreditMemos,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  jobId: number;
+  invoicedTotal: number;
+  collected: number;
+  settledAmount: number;
+  currentCreditMemos: number;
+}) {
+  const { toast } = useToast();
+
+  // Suggested loss: what's still on the invoice that a settlement / write-off
+  // is going to eat. Falls back to invoicedTotal − settledAmount if the
+  // settlement figure implies a bigger haircut.
+  const settlementDelta = Math.max(0, invoicedTotal - Math.max(collected, settledAmount) - currentCreditMemos);
+  const suggested = settlementDelta > 0
+    ? settlementDelta.toFixed(2)
+    : Math.max(0, invoicedTotal - collected - currentCreditMemos).toFixed(2);
+
+  const [amount, setAmount] = useState<string>(suggested);
+  const [reasonPick, setReasonPick] = useState<string>(CREDIT_MEMO_REASONS[0]);
+  const [note, setNote] = useState<string>("");
+  useEffect(() => {
+    if (open) {
+      setAmount(suggested);
+      setReasonPick(CREDIT_MEMO_REASONS[0]);
+      setNote("");
+    }
+    // suggested is derived from props — safe to include here.
+  }, [open, suggested]);
+
+  const list = useQuery<any[]>({
+    queryKey: [`/api/jobs/${jobId}/credit-memos`],
+    enabled: open,
+  });
+
+  const create = useMutation({
+    mutationFn: () => {
+      const amt = Number(amount);
+      if (!Number.isFinite(amt) || amt <= 0) throw new Error("Enter an amount greater than 0");
+      const combinedReason = note.trim()
+        ? `${reasonPick} — ${note.trim()}`
+        : reasonPick;
+      return apiRequest("POST", `/api/jobs/${jobId}/credit-memo`, {
+        amount: amt,
+        reason: combinedReason,
+      }).then(r => r.json());
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
+      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}/credit-memos`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "invoices"] });
+      toast({ title: "Credit memo recorded" });
+      setNote("");
+    },
+    onError: (err: any) => {
+      toast({ title: "Save failed", description: String(err?.message || err), variant: "destructive" });
+    },
+  });
+
+  const del = useMutation({
+    mutationFn: (id: number) => apiRequest("DELETE", `/api/jobs/${jobId}/credit-memo/${id}`).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
+      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}/credit-memos`] });
+    },
+  });
+
+  const memos = list.data || [];
+  const money = (n: number) => `$${(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Credit Memo (Write-Off)</DialogTitle>
+          <DialogDescription>
+            Records a reduction to the invoiced amount. This is a loss (not
+            a payment) and is tracked separately so it can be reported at
+            tax time.
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* Reference numbers so Cody can see the delta at a glance. */}
+        <div className="grid grid-cols-3 gap-2 text-xs bg-muted/40 rounded-md p-3 border">
+          <div>
+            <div className="text-muted-foreground">Invoiced</div>
+            <div className="font-semibold">{money(invoicedTotal)}</div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">Collected</div>
+            <div className="font-semibold">{money(collected)}</div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">Settled</div>
+            <div className="font-semibold">{money(settledAmount)}</div>
+          </div>
+          <div className="col-span-3 pt-1 border-t mt-1">
+            <div className="text-muted-foreground">Suggested loss (invoiced − received − existing memos)</div>
+            <div className="font-semibold text-red-600 dark:text-red-400">{money(Number(suggested))}</div>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <Label className="text-sm">Loss amount (USD)</Label>
+            <div className="relative mt-1">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+              <Input
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                min="0"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                className="pl-6"
+                data-testid="input-credit-memo-amount"
+                autoFocus
+              />
+            </div>
+          </div>
+
+          <div>
+            <Label className="text-sm">Reason (required for tax)</Label>
+            <Select value={reasonPick} onValueChange={setReasonPick}>
+              <SelectTrigger className="mt-1" data-testid="select-credit-memo-reason">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CREDIT_MEMO_REASONS.map(r => (
+                  <SelectItem key={r} value={r}>{r}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div>
+            <Label className="text-sm">Notes (optional detail)</Label>
+            <Input
+              className="mt-1"
+              placeholder="e.g. State Farm settled at $8,412 vs invoiced $9,200"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              data-testid="input-credit-memo-note"
+            />
+          </div>
+        </div>
+
+        {/* Existing credit memos for this job — quick history + delete. */}
+        {memos.length > 0 && (
+          <div className="border-t pt-3">
+            <div className="text-xs font-semibold text-muted-foreground mb-2">
+              Existing credit memos on this job
+            </div>
+            <div className="space-y-1.5 max-h-40 overflow-y-auto">
+              {memos.map((m: any) => (
+                <div key={m.id} className="flex items-center justify-between gap-2 text-xs bg-muted/30 rounded px-2 py-1.5">
+                  <div className="min-w-0">
+                    <div className="font-semibold text-red-600 dark:text-red-400">{money(m.amount)}</div>
+                    <div className="text-muted-foreground truncate">{m.memo_reason || "(no reason)"}</div>
+                    {m.paid_at && (
+                      <div className="text-[10px] text-muted-foreground/70">
+                        {new Date(m.paid_at).toLocaleDateString()}
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-muted-foreground hover:text-red-600"
+                    onClick={() => del.mutate(m.id)}
+                    disabled={del.isPending}
+                    title="Delete this credit memo"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={create.isPending}>
+            Close
+          </Button>
+          <Button
+            onClick={() => create.mutate()}
+            disabled={create.isPending}
+            className="bg-red-600 hover:bg-red-700 text-white"
+            data-testid="button-save-credit-memo"
+          >
+            {create.isPending ? "Saving…" : "Add credit memo"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -692,7 +692,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           grossProfit: phGrossProfit,
           settledAmount, // claim-level, shown on both phases
           grossMarginPct: phCollected > 0 ? Math.round((phGrossProfit / phCollected) * 100) : 0,
-          outstanding: Math.max(0, phInvoiceTotal - phCollected),
+          // Outstanding = what's still expected in the door. Credit memos
+          // are billing reductions (write-offs / bill-downs to match a
+          // carrier settlement), so subtract them too — the customer isn't
+          // going to pay that portion.
+          outstanding: Math.max(0, phInvoiceTotal - phCollected - phCreditMemos),
           externalEstimateTotal: phExtEst.total,
           externalEstimateCount: phExtEst.count,
           externalInvoiceTotal: phExtInv.total,
@@ -716,7 +720,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         grossProfit,
         settledAmount,
         grossMarginPct: collected > 0 ? Math.round(((collected - totalCosts) / collected) * 100) : 0,
-        outstanding: Math.max(0, invoiceTotal - collected),
+        // See per-phase outstanding above — credit memos are write-offs and
+        // are not part of the collectible receivable.
+        outstanding: Math.max(0, invoiceTotal - collected - creditMemos),
         externalEstimateTotal: extEstTotalJob,
         externalEstimateCount: extEstCountJob,
         externalInvoiceTotal: extInvTotalJob,
@@ -7919,13 +7925,35 @@ Approve in Partner Portal → Admin View.
 
 
   // ── Credit Memo CRUD ──────────────────────────────────────────────────────
+  // Credit memos are billing reductions (write-offs / carrier haircuts /
+  // goodwill discounts). They are NOT payments received. They lower what
+  // the customer owes so Outstanding closes out. The dollar amount is
+  // tracked as a distinct row (type=credit_memo, credit_memo=1) so Cody can
+  // pull an annual write-off total at tax time, and each row requires a
+  // memo_reason to explain why we reduced the bill.
+  app.get("/api/jobs/:id/credit-memos", (req, res) => {
+    try { sqlite.exec(`ALTER TABLE payments ADD COLUMN credit_memo INTEGER DEFAULT 0`); } catch(_) {}
+    try { sqlite.exec(`ALTER TABLE payments ADD COLUMN memo_reason TEXT`); } catch(_) {}
+    const rows = sqlite.prepare(
+      "SELECT id, amount, memo_reason, invoice_id, paid_at FROM payments WHERE job_id = ? AND credit_memo = 1 ORDER BY paid_at DESC"
+    ).all(Number(req.params.id));
+    res.json(rows);
+  });
   app.post("/api/jobs/:id/credit-memo", (req, res) => {
     try { sqlite.exec(`ALTER TABLE payments ADD COLUMN credit_memo INTEGER DEFAULT 0`); } catch(_) {}
     try { sqlite.exec(`ALTER TABLE payments ADD COLUMN memo_reason TEXT`); } catch(_) {}
-    const { amount, reason, invoiceId } = req.body;
+    const { amount, reason, invoiceId } = req.body || {};
+    const amt = Math.abs(Number(amount) || 0);
+    if (amt <= 0) return res.status(400).json({ error: "Amount must be greater than zero" });
+    if (!reason || !String(reason).trim()) return res.status(400).json({ error: "Reason is required for tax tracking" });
     const r = sqlite.prepare(`INSERT INTO payments (job_id, invoice_id, type, amount, credit_memo, memo_reason, paid_at) VALUES (?,?,?,?,1,?,?)`)
-      .run(Number(req.params.id), invoiceId || null, 'credit_memo', Math.abs(amount || 0), reason || '', new Date().toISOString());
+      .run(Number(req.params.id), invoiceId || null, 'credit_memo', amt, String(reason).trim(), new Date().toISOString());
     res.json(sqlite.prepare("SELECT * FROM payments WHERE id=?").get(r.lastInsertRowid));
+  });
+  app.delete("/api/jobs/:jobId/credit-memo/:id", (req, res) => {
+    const jid = Number(req.params.jobId), id = Number(req.params.id);
+    sqlite.prepare("DELETE FROM payments WHERE id = ? AND job_id = ? AND credit_memo = 1").run(id, jid);
+    res.json({ ok: true });
   });
 
 
