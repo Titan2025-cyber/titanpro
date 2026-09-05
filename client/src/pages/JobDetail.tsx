@@ -1908,6 +1908,7 @@ export default function JobDetail() {
           <JobFieldActionBar
             jobId={job.id}
             contactPhone={(contact as any)?.phone || null}
+            jobAddress={job.address || null}
             onSwitchTab={setActiveTab}
           />
 
@@ -2463,6 +2464,7 @@ export default function JobDetail() {
       <MobileJobActionBar
         jobId={job.id}
         contactPhone={(contact as any)?.phone || null}
+        jobAddress={job.address || null}
         onSwitchTab={setActiveTab}
       />
     </div>

@@ -9,7 +9,7 @@
 // Both share the same check-in mutation and GPS handling below.
 
 import { useEffect, useState } from "react";
-import { Camera, MapPin, StickyNote, Phone, LogOut, Loader2, Check } from "lucide-react";
+import { Camera, MapPin, StickyNote, Phone, LogOut, Loader2, Check, Navigation } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery } from "@tanstack/react-query";
@@ -17,7 +17,16 @@ import { useQuery } from "@tanstack/react-query";
 interface Props {
   jobId: number;
   contactPhone?: string | null;
+  jobAddress?: string | null;
   onSwitchTab: (tab: string) => void;
+}
+
+// Build a maps deep-link that prefers the native app on iOS/Android and
+// falls back to google.com/maps in the browser. Universal 'https://' URL
+// works everywhere (iOS opens Google Maps app if installed, else Safari;
+// Android opens Google Maps app directly).
+function mapsDirectionsUrl(address: string): string {
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address)}&travelmode=driving`;
 }
 
 interface CheckinRow {
@@ -91,9 +100,10 @@ function triggerPhoto(onSwitchTab: (tab: string) => void) {
 // the four field actions are usable at the top of the page without scrolling.
 // Same behavior as the sticky mobile bar, styled to fit inline with the rest
 // of the Activity cards.
-export function JobFieldActionBar({ jobId, contactPhone, onSwitchTab }: Props) {
+export function JobFieldActionBar({ jobId, contactPhone, jobAddress, onSwitchTab }: Props) {
   const { busy, confirmed, isCheckedIn, stamp } = useJobCheckin(jobId);
   const dialHref = contactPhone ? `tel:${String(contactPhone).replace(/[^\d+]/g, "")}` : null;
+  const dirHref = jobAddress && jobAddress.trim() ? mapsDirectionsUrl(jobAddress.trim()) : null;
 
   const baseBtn =
     "min-h-[68px] flex flex-col items-center justify-center gap-1 rounded-lg border transition active:scale-[0.98] focus:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--titan-blue))]";
@@ -106,7 +116,7 @@ export function JobFieldActionBar({ jobId, contactPhone, onSwitchTab }: Props) {
       aria-label="Job field actions"
       data-testid="card-job-field-actions"
     >
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-5 gap-2">
         {/* Check-in / Check-out */}
         <button
           type="button"
@@ -171,12 +181,37 @@ export function JobFieldActionBar({ jobId, contactPhone, onSwitchTab }: Props) {
             <span className="text-[11px] font-medium leading-tight">Call</span>
           </button>
         )}
+
+        {/* Directions - opens Google Maps with the job address as destination */}
+        {dirHref ? (
+          <a
+            href={dirHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`${baseBtn} border-sky-200/60 dark:border-sky-900/60 bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-400 hover:bg-sky-100 dark:hover:bg-sky-950/60`}
+            data-testid="btn-field-directions"
+            title={`Directions to ${jobAddress}`}
+          >
+            <Navigation className="w-5 h-5" />
+            <span className="text-[11px] font-medium leading-tight">Directions</span>
+          </a>
+        ) : (
+          <button
+            type="button"
+            disabled
+            className={`${baseBtn} border-neutral-200 dark:border-neutral-800 text-neutral-400 dark:text-neutral-600`}
+            title="No address on file for this job"
+          >
+            <Navigation className="w-5 h-5" />
+            <span className="text-[11px] font-medium leading-tight">Directions</span>
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-export function MobileJobActionBar({ jobId, contactPhone, onSwitchTab }: Props) {
+export function MobileJobActionBar({ jobId, contactPhone, jobAddress, onSwitchTab }: Props) {
   const { busy, confirmed, isCheckedIn, stamp } = useJobCheckin(jobId);
 
   useEffect(() => {
@@ -186,6 +221,7 @@ export function MobileJobActionBar({ jobId, contactPhone, onSwitchTab }: Props) 
   }, []);
 
   const dialHref = contactPhone ? `tel:${String(contactPhone).replace(/[^\d+]/g, "")}` : null;
+  const dirHref = jobAddress && jobAddress.trim() ? mapsDirectionsUrl(jobAddress.trim()) : null;
 
   return (
     <>
@@ -199,7 +235,7 @@ export function MobileJobActionBar({ jobId, contactPhone, onSwitchTab }: Props) 
         role="toolbar"
         aria-label="Job actions"
       >
-        <div className="grid grid-cols-4 gap-0">
+        <div className="grid grid-cols-5 gap-0">
           {/* Check-in / Check-out */}
           <button
             type="button"
@@ -264,6 +300,29 @@ export function MobileJobActionBar({ jobId, contactPhone, onSwitchTab }: Props) 
             >
               <Phone className="w-6 h-6" />
               <span className="text-[11px] font-medium leading-tight">Call</span>
+            </button>
+          )}
+
+          {/* Directions - opens Google Maps to the job address */}
+          {dirHref ? (
+            <a
+              href={dirHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="min-h-[64px] flex flex-col items-center justify-center gap-0.5 text-sky-700 dark:text-sky-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 active:scale-95 transition"
+              data-testid="btn-mobile-directions"
+            >
+              <Navigation className="w-6 h-6" />
+              <span className="text-[11px] font-medium leading-tight">Directions</span>
+            </a>
+          ) : (
+            <button
+              type="button"
+              disabled
+              className="min-h-[64px] flex flex-col items-center justify-center gap-0.5 text-neutral-400 dark:text-neutral-600"
+            >
+              <Navigation className="w-6 h-6" />
+              <span className="text-[11px] font-medium leading-tight">Directions</span>
             </button>
           )}
         </div>
