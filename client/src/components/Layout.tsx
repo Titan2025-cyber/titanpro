@@ -88,7 +88,9 @@ const navGroups: NavGroup[] = [
       // Dispatch (was "Scheduling & Dispatch" — Schedule tab moved to Core).
       // Hub still bundles Dispatch, Appt Reminders, and Departure Checklist.
       { href: "/scheduling-hub", label: "Dispatch", icon: Grid3X3, permission: "scheduling" },
-      { href: "/technician-hub", label: "Technicians", icon: HardHat, permission: "technician" },
+      // Technicians hub retired from the sidebar. Scorecard, Training (LMS),
+      // and Certifications now live under HR Management > Workforce.
+      // Route /technician-hub remains for legacy links.
       { href: "/safety-hub", label: "Safety", icon: ShieldAlert, permission: "safety" },
       { href: "/drying-hub", label: "Drying & Compliance", icon: Droplets, permission: "technician" },
       // — Standalone field tools —

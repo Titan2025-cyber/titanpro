@@ -19,8 +19,17 @@ import { fmtDateShort, todayLocalISO } from "@/lib/dates";
 import {
   Users, BookOpen, GraduationCap, AlertTriangle, Bot, ShieldCheck,
   Plus, Trash2, Loader2, FileText, Copy, ClipboardCheck, Star, Sparkles,
-  CalendarClock, Check, X, Clock,
+  CalendarClock, Check, X, Clock, Award, HardHat,
 } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+// Workforce tab bundles the three tech-management surfaces that used to live
+// under Field Ops > Technicians. Cody: "the tech module can be deleted;
+// scorecard, training LMS, certifications can all move to a new tab under
+// HR management." We keep the underlying page components untouched -- just
+// rehome them here so HR is the single home for people-side work.
+import TechScorecard from "@/pages/TechScorecard";
+import TechLMS from "@/pages/TechLMS";
+import CertTracker from "@/pages/CertTracker";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 const j = (r: Response) => r.json();
@@ -797,14 +806,40 @@ function ComplianceTab() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
+function WorkforceTab() {
+  return (
+    <div className="p-4 md:p-6">
+      <div className="mb-4">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <HardHat className="w-5 h-5" /> Workforce
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Field performance, training progress, and certifications for every crew member.
+        </p>
+      </div>
+      <Tabs defaultValue="scorecard" className="w-full">
+        <TabsList className="grid grid-cols-3 max-w-lg">
+          <TabsTrigger value="scorecard" className="gap-1"><Award className="w-4 h-4" /> Scorecard</TabsTrigger>
+          <TabsTrigger value="lms" className="gap-1"><GraduationCap className="w-4 h-4" /> Training (LMS)</TabsTrigger>
+          <TabsTrigger value="certs" className="gap-1"><ShieldCheck className="w-4 h-4" /> Certifications</TabsTrigger>
+        </TabsList>
+        <TabsContent value="scorecard" className="mt-4"><TechScorecard /></TabsContent>
+        <TabsContent value="lms" className="mt-4"><TechLMS /></TabsContent>
+        <TabsContent value="certs" className="mt-4"><CertTracker /></TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
 export default function HRHub() {
   return (
     <HubShell
       title="HR Management"
-      description="Employee records, handbook, trainings, discipline & reviews, plus an AI HR assistant grounded on SC, GA & federal employment law."
+      description="Employee records, workforce performance, handbook, trainings, discipline & reviews, plus an AI HR assistant grounded on SC, GA & federal employment law."
       icon={Users}
       tabs={[
         { value: "employees", label: "Employees", icon: Users, component: EmployeesTab },
+        { value: "workforce", label: "Workforce", icon: HardHat, component: WorkforceTab },
         { value: "handbook", label: "Handbook", icon: BookOpen, component: HandbookTab },
         { value: "trainings", label: "Trainings", icon: GraduationCap, component: TrainingsTab },
         { value: "discipline", label: "Write-ups & Reviews", icon: AlertTriangle, component: DisciplineTab },
