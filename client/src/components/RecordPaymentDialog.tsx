@@ -116,6 +116,8 @@ export default function RecordPaymentDialog({ open, onOpenChange, invoice, onRec
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      // Refresh the Job Overview "Financial Summary" Received/Outstanding tiles.
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
       // A/R aging + cash-flow surfaces recompute off invoices/payments.
       queryClient.invalidateQueries({ queryKey: ["/api/ar/aging"] });
       queryClient.invalidateQueries({ queryKey: ["/api/cash-flow"] });

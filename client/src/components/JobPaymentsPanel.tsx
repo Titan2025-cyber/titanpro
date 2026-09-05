@@ -112,6 +112,7 @@ export default function JobPaymentsPanel({ jobId }: { jobId: number }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
       queryClient.invalidateQueries({ queryKey: ["/api/ar/aging"] });
       queryClient.invalidateQueries({ queryKey: ["/api/cash-flow"] });
       toast({ title: "Payment removed" });

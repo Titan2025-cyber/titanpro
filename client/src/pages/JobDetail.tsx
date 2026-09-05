@@ -1483,18 +1483,36 @@ export default function JobDetail() {
                   <span className="text-xs text-muted-foreground block mb-0.5">Settled Amount <span className="text-[9px] normal-case text-muted-foreground/70">(claim-level)</span></span>
                   <span className="text-lg font-bold text-[hsl(var(--titan-blue))]">{money(phaseFin?.settledAmount ?? 0)}</span>
                 </div>
-                <div data-testid="jobfin-collected">
-                  <span className="text-xs text-muted-foreground block mb-0.5">Collected Revenue</span>
-                  <span className="text-lg font-bold text-green-600 dark:text-green-400">{money(phaseFin?.collected ?? 0)}</span>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("payments")}
+                  className="text-left group focus:outline-none"
+                  data-testid="jobfin-collected"
+                  title="View payment history"
+                >
+                  <span className="text-xs text-muted-foreground block mb-0.5">Received</span>
+                  <span className="text-lg font-bold text-green-600 dark:text-green-400 group-hover:underline inline-flex items-center gap-1">
+                    {money(phaseFin?.collected ?? 0)}
+                    <ExternalLink className="w-3 h-3 opacity-60" />
+                  </span>
+                </button>
                 <div data-testid="jobfin-creditmemo">
                   <span className="text-xs text-muted-foreground block mb-0.5">Credit Memo</span>
                   <span className="text-lg font-bold text-red-600 dark:text-red-400">{money(phaseFin?.creditMemos ?? 0)}</span>
                 </div>
-                <div data-testid="jobfin-outstanding">
-                  <span className="text-xs text-muted-foreground block mb-0.5">Outstanding Balance</span>
-                  <span className={`text-lg font-bold ${(phaseFin?.outstanding ?? 0) > 0 ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}>{money(phaseFin?.outstanding ?? 0)}</span>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("payments")}
+                  className="text-left group focus:outline-none"
+                  data-testid="jobfin-outstanding"
+                  title="View payment history"
+                >
+                  <span className="text-xs text-muted-foreground block mb-0.5">Outstanding</span>
+                  <span className={`text-lg font-bold group-hover:underline inline-flex items-center gap-1 ${(phaseFin?.outstanding ?? 0) > 0 ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}>
+                    {money(phaseFin?.outstanding ?? 0)}
+                    <ExternalLink className="w-3 h-3 opacity-60" />
+                  </span>
+                </button>
                 <div data-testid="jobfin-grossprofit">
                   <span className="text-xs text-muted-foreground block mb-0.5">Gross Profit</span>
                   <span className={`text-lg font-bold ${(phaseFin?.grossProfit ?? 0) >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>{money(phaseFin?.grossProfit ?? 0)}</span>
