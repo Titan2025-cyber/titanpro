@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import {
   Clock, PlayCircle, Droplets, PenLine, Camera, Briefcase,
-  ArrowRight, CheckCircle2, RefreshCw,
+  ArrowRight, CheckCircle2, RefreshCw, AlertTriangle, DollarSign, Receipt, FileWarning,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -43,6 +43,28 @@ type ClockStatus =
   | { open: true; since: string; jobId?: number | null; jobNumber?: string | null; address?: string | null }
   | { open: false };
 
+type ClaimAgingRow = {
+  jobId: number;
+  jobNumber: string;
+  address?: string | null;
+  carrier?: string | null;
+  daysStale: number;
+  reason: string;
+  action: string;
+  amount?: number;
+  invoiceId?: number;
+  invoiceNumber?: string;
+  estimateId?: number;
+  title?: string;
+  adjusterName?: string | null;
+};
+type ClaimsAging = {
+  dryOutNoInvoice: ClaimAgingRow[];
+  invoicesUnpaid: ClaimAgingRow[];
+  estimatesWaiting: ClaimAgingRow[];
+  totals: { unpaidAR: number; waitingApproval: number; itemCount: number };
+};
+
 type MyToday = {
   generatedAt: string;
   me: { id: number; name: string; role: string };
@@ -51,6 +73,7 @@ type MyToday = {
   signaturesPending: SigPending[];
   photoTasks: PhotoTask[];
   clockStatus: ClockStatus;
+  claimsAging?: ClaimsAging | null;
 };
 
 function elapsed(sinceIso: string): string {
@@ -171,6 +194,12 @@ export default function MyToday() {
           <>
             {/* Clock — always at the top, thumb-reach on mobile. */}
             <ClockCard status={data.clockStatus} />
+
+            {/* Claims aging — owner/admin/office only. Full-width so the
+                dollar totals get the attention they deserve. */}
+            {data.claimsAging && data.claimsAging.totals.itemCount > 0 && (
+              <ClaimsAgingCard aging={data.claimsAging} />
+            )}
 
             {/* Everything else — single column on mobile, 2 columns md+. */}
             <div className="grid gap-4 md:grid-cols-2">
@@ -405,5 +434,151 @@ function PhotosCard({ items }: { items: PhotoTask[] }) {
         </Link>
       ))}
     </SectionCard>
+  );
+}
+
+/**
+ * Claims aging — the single most valuable card on MyToday for owners.
+ * Surfaces every stalled bit of the claim-to-cash pipeline so nothing
+ * silently sits in "waiting on somebody" limbo for a month.
+ *
+ * Three buckets:
+ *  1. Dry-out complete ≥ 1d, no invoice sent → send the invoice.
+ *  2. Invoice sent ≥ 30d, still unpaid → follow up (carrier / customer).
+ *  3. Estimate sent ≥ 7d, no adjuster movement → nudge the adjuster.
+ *
+ * Every row is one-tap: it deep-links straight to the exact tab on the
+ * job so the owner can act without hunting.
+ */
+function ClaimsAgingCard({ aging }: { aging: ClaimsAging }) {
+  const fmtUsd = (n: number) =>
+    n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : `$${n.toFixed(0)}`;
+  const staleTone = (days: number, thresholds: [number, number]) =>
+    days >= thresholds[1] ? "text-red-600 dark:text-red-400"
+    : days >= thresholds[0] ? "text-amber-600 dark:text-amber-400"
+    : "text-muted-foreground";
+
+  return (
+    <Card className="border-amber-500/40 bg-gradient-to-br from-amber-500/5 to-red-500/5">
+      <CardContent className="p-4 sm:p-5">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-5 h-5 text-amber-600" />
+            <div>
+              <div className="text-sm font-semibold">Claims aging</div>
+              <div className="text-[11px] text-muted-foreground">
+                {aging.totals.itemCount} item{aging.totals.itemCount === 1 ? "" : "s"} need attention
+              </div>
+            </div>
+          </div>
+          <div className="text-right">
+            {aging.totals.unpaidAR > 0 && (
+              <div className="text-sm font-bold text-red-600 dark:text-red-400 tabular-nums">
+                {fmtUsd(aging.totals.unpaidAR)} unpaid
+              </div>
+            )}
+            {aging.totals.waitingApproval > 0 && (
+              <div className="text-[11px] text-muted-foreground tabular-nums">
+                {fmtUsd(aging.totals.waitingApproval)} awaiting approval
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Dry-out done, no invoice */}
+        {aging.dryOutNoInvoice.length > 0 && (
+          <div className="mb-3">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <FileWarning className="w-3.5 h-3.5 text-amber-600" />
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Ready to invoice ({aging.dryOutNoInvoice.length})
+              </div>
+            </div>
+            <div className="space-y-1">
+              {aging.dryOutNoInvoice.slice(0, 4).map(r => (
+                <Link key={`inv-${r.jobId}`} href={`/jobs/${r.jobId}?tab=invoices`}>
+                  <a className="flex items-center justify-between gap-2 py-2 px-2 rounded hover:bg-background/60 min-h-[44px]">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium truncate">{r.jobNumber}</div>
+                      <div className="text-[11px] text-muted-foreground truncate">
+                        {r.address || "No address"}
+                        {r.carrier ? ` · ${r.carrier}` : ""}
+                      </div>
+                    </div>
+                    <div className={`text-[11px] font-medium shrink-0 tabular-nums ${staleTone(r.daysStale, [3, 7])}`}>
+                      {r.daysStale}d dry
+                    </div>
+                  </a>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Unpaid invoices */}
+        {aging.invoicesUnpaid.length > 0 && (
+          <div className="mb-3">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <Receipt className="w-3.5 h-3.5 text-red-600" />
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Unpaid invoices ({aging.invoicesUnpaid.length})
+              </div>
+            </div>
+            <div className="space-y-1">
+              {aging.invoicesUnpaid.slice(0, 4).map(r => (
+                <Link key={`iu-${r.invoiceId}`} href={`/jobs/${r.jobId}?tab=invoices`}>
+                  <a className="flex items-center justify-between gap-2 py-2 px-2 rounded hover:bg-background/60 min-h-[44px]">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium truncate">
+                        {r.invoiceNumber || r.jobNumber}
+                        <span className="ml-1.5 text-[11px] text-muted-foreground font-normal">
+                          {r.jobNumber}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground truncate">
+                        {r.carrier || "No carrier"} · {fmtUsd(r.amount || 0)}
+                      </div>
+                    </div>
+                    <div className={`text-[11px] font-medium shrink-0 tabular-nums ${staleTone(r.daysStale, [45, 60])}`}>
+                      {r.daysStale}d
+                    </div>
+                  </a>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Estimates awaiting adjuster */}
+        {aging.estimatesWaiting.length > 0 && (
+          <div>
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <DollarSign className="w-3.5 h-3.5 text-amber-600" />
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Awaiting adjuster ({aging.estimatesWaiting.length})
+              </div>
+            </div>
+            <div className="space-y-1">
+              {aging.estimatesWaiting.slice(0, 4).map(r => (
+                <Link key={`ew-${r.estimateId}`} href={`/jobs/${r.jobId}?tab=estimates`}>
+                  <a className="flex items-center justify-between gap-2 py-2 px-2 rounded hover:bg-background/60 min-h-[44px]">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium truncate">{r.jobNumber}</div>
+                      <div className="text-[11px] text-muted-foreground truncate">
+                        {r.title || "Estimate"} · {fmtUsd(r.amount || 0)}
+                        {r.adjusterName ? ` · ${r.adjusterName}` : ""}
+                      </div>
+                    </div>
+                    <div className={`text-[11px] font-medium shrink-0 tabular-nums ${staleTone(r.daysStale, [10, 21])}`}>
+                      {r.daysStale}d
+                    </div>
+                  </a>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

@@ -2,6 +2,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { UserSelect } from "@/components/UserSelect";
 import { CarrierSelect } from "@/components/CarrierSelect";
 import { ContactCombobox } from "@/components/ContactCombobox";
+import { AddressAutocomplete } from "@/components/AddressAutocomplete";
 import { useState, useEffect, useRef } from "react";
 import { Link, useLocation } from "wouter";
 import {
@@ -1084,7 +1085,29 @@ export default function Jobs() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <Label>Address</Label>
-                    <Input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="Job site address" />
+                    <AddressAutocomplete
+                      value={form.address}
+                      onChange={(v) => setForm((f) => ({ ...f, address: v }))}
+                      onSelect={(s) => {
+                        // Auto-pick the market based on the selected city
+                        // so operators don't have to touch the Location
+                        // dropdown for the two markets we actually serve.
+                        const city = (s.city || "").toLowerCase();
+                        const nextLoc =
+                          city.includes("augusta") || city.includes("martinez") || city.includes("evans") || city.includes("grovetown")
+                            ? "Augusta"
+                            : city.includes("columbia") || city.includes("lexington") || city.includes("cayce") || city.includes("west columbia") || city.includes("irmo")
+                            ? "Columbia"
+                            : "";
+                        setForm((f) => ({
+                          ...f,
+                          address: s.label,
+                          ...(nextLoc ? { location: nextLoc } : {}),
+                        }));
+                      }}
+                      placeholder="Job site address"
+                      testId="input-job-address"
+                    />
                     {propLookup.status !== "idle" && (
                       <p className={`text-[11px] mt-1 ${
                         propLookup.status === "loading" ? "text-muted-foreground" :

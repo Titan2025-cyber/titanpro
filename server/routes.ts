@@ -587,6 +587,71 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Address autocomplete backed by Nominatim (OpenStreetMap). Free, no API
+  // key required, but rate-limited to ~1 req/sec per source IP so we cache
+  // in-memory for 10 min to keep the New Job dialog responsive when the
+  // operator retypes similar strings.
+  const addrCache = new Map<string, { at: number; results: any[] }>();
+  const ADDR_CACHE_TTL_MS = 10 * 60 * 1000;
+  app.get("/api/address-suggest", async (req, res) => {
+    const q = String(req.query.q || "").trim();
+    if (q.length < 4) return res.json([]);
+    const key = q.toLowerCase();
+    const cached = addrCache.get(key);
+    if (cached && Date.now() - cached.at < ADDR_CACHE_TTL_MS) {
+      return res.json(cached.results);
+    }
+    try {
+      // Bias to US results and viewbox around Cody's Augusta/Columbia service area
+      // so the top hits skew local without excluding out-of-market queries.
+      const url = new URL("https://nominatim.openstreetmap.org/search");
+      url.searchParams.set("q", q);
+      url.searchParams.set("format", "jsonv2");
+      url.searchParams.set("addressdetails", "1");
+      url.searchParams.set("limit", "6");
+      url.searchParams.set("countrycodes", "us");
+      // South Carolina / Georgia bounding box (rough) — viewbox format is
+      // left,top,right,bottom (lon,lat,lon,lat).
+      url.searchParams.set("viewbox", "-84.5,35.2,-78.5,31.5");
+      url.searchParams.set("bounded", "0");
+      const resp = await fetch(url.toString(), {
+        headers: { "User-Agent": "TitanPro/1.0 (cody@titanaugusta.com)" },
+      });
+      if (!resp.ok) return res.json([]);
+      const rows = (await resp.json()) as any[];
+      const results = rows
+        .filter((r) => r && r.display_name)
+        .map((r) => {
+          const a = r.address || {};
+          const streetLine = [
+            [a.house_number, a.road].filter(Boolean).join(" "),
+          ].filter(Boolean).join(", ");
+          const city = a.city || a.town || a.village || a.hamlet || a.suburb || "";
+          const state = a.state_code || a.state || "";
+          const zip = a.postcode || "";
+          const full = [streetLine, city, state, zip].filter(Boolean).join(", ");
+          return {
+            id: String(r.place_id),
+            label: full || r.display_name,
+            display: r.display_name,
+            street: streetLine,
+            city,
+            state,
+            zip,
+            lat: r.lat ? Number(r.lat) : null,
+            lng: r.lon ? Number(r.lon) : null,
+          };
+        })
+        // Drop results without a house number — city-only hits waste the
+        // operator's time when they're trying to pick a service address.
+        .filter((r) => r.street && /\d/.test(r.street));
+      addrCache.set(key, { at: Date.now(), results });
+      res.json(results);
+    } catch (_e: any) {
+      res.json([]);
+    }
+  });
+
 
   // ── Job Financial Summary (all jobs in one call) ──────────────────────────
   app.get("/api/jobs/financials", (_req, res) => {
@@ -3768,6 +3833,124 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ? { open: true, since: openClock.clockInAt, jobId: openClock.jobId, jobNumber: openClock.jobNumber, address: openClock.address }
       : { open: false };
 
+    // Claims aging block — owner/admin/office only. Flags jobs where the
+    // claim-to-cash pipeline is stalling: dry-out done but invoice not sent,
+    // invoice sent long ago and unpaid, or estimate submitted but no adjuster
+    // response. Techs never see this (they can't act on it).
+    const canSeeClaims = ["owner", "admin", "general_manager", "office", "project_manager"].includes(
+      (me.role || "").toLowerCase(),
+    );
+    const claimsAging = canSeeClaims
+      ? safe(() => {
+          const nowMs = Date.now();
+          const daysSince = (iso?: string | null) =>
+            iso ? Math.floor((nowMs - new Date(iso).getTime()) / (24 * 3600 * 1000)) : null;
+
+          // 1. Dry-out complete >24h but no invoice sent yet.
+          const dryOutNoInvoice = (sqlite.prepare(`
+            SELECT j.id, j.job_number AS jobNumber, j.address,
+                   j.dry_out_complete AS dryOutDate,
+                   j.insurance_carrier AS carrier
+              FROM jobs j
+             WHERE j.dry_out_complete IS NOT NULL
+               AND j.dry_out_complete != ''
+               AND j.status NOT IN ('closed','complete')
+               AND (j.invoice_sent_date IS NULL OR j.invoice_sent_date = '')
+               AND NOT EXISTS (
+                 SELECT 1 FROM invoices i
+                  WHERE i.job_id = j.id
+                    AND i.deleted_at IS NULL
+                    AND i.status IN ('sent','paid','partial')
+               )
+             ORDER BY j.dry_out_complete ASC
+             LIMIT 15
+          `).all() as any[])
+            .map((r) => ({
+              jobId: r.id,
+              jobNumber: r.jobNumber,
+              address: r.address,
+              carrier: r.carrier || null,
+              daysStale: daysSince(r.dryOutDate) ?? 0,
+              reason: "Dry-out complete, no invoice sent",
+              action: "send_invoice",
+            }))
+            .filter((r) => r.daysStale >= 1);
+
+          // 2. Invoice sent >30 days ago and still not paid.
+          const invoicesUnpaid = (sqlite.prepare(`
+            SELECT i.id AS invoiceId, i.job_id AS jobId, i.invoice_number AS invoiceNumber,
+                   i.total, i.created_at AS createdAt,
+                   j.job_number AS jobNumber, j.address, j.insurance_carrier AS carrier
+              FROM invoices i
+              LEFT JOIN jobs j ON j.id = i.job_id
+             WHERE i.deleted_at IS NULL
+               AND i.status = 'sent'
+             ORDER BY i.created_at ASC
+             LIMIT 25
+          `).all() as any[])
+            .map((r) => ({
+              invoiceId: r.invoiceId,
+              jobId: r.jobId,
+              jobNumber: r.jobNumber,
+              invoiceNumber: r.invoiceNumber,
+              amount: Number(r.total || 0),
+              address: r.address,
+              carrier: r.carrier || null,
+              daysStale: daysSince(r.createdAt) ?? 0,
+              reason: "Invoice unpaid",
+              action: "follow_up_invoice",
+            }))
+            .filter((r) => r.daysStale >= 30)
+            .slice(0, 10);
+
+          // 3. Estimate submitted but no adjuster response tracked. Proxy:
+          // estimate with status='sent' older than 5 business days (~7 cal).
+          const estimatesWaiting = (sqlite.prepare(`
+            SELECT e.id AS estimateId, e.job_id AS jobId, e.title, e.total,
+                   e.created_at AS createdAt,
+                   j.job_number AS jobNumber, j.address, j.insurance_carrier AS carrier,
+                   j.adjuster_name AS adjusterName
+              FROM estimates e
+              LEFT JOIN jobs j ON j.id = e.job_id
+             WHERE e.deleted_at IS NULL
+               AND e.status = 'sent'
+             ORDER BY e.created_at ASC
+             LIMIT 25
+          `).all() as any[])
+            .map((r) => ({
+              estimateId: r.estimateId,
+              jobId: r.jobId,
+              jobNumber: r.jobNumber,
+              title: r.title,
+              amount: Number(r.total || 0),
+              address: r.address,
+              carrier: r.carrier || null,
+              adjusterName: r.adjusterName || null,
+              daysStale: daysSince(r.createdAt) ?? 0,
+              reason: "Estimate sent, awaiting adjuster",
+              action: "nudge_adjuster",
+            }))
+            .filter((r) => r.daysStale >= 7)
+            .slice(0, 10);
+
+          // Total — useful for a single-glance "$X waiting on adjuster / customer".
+          const totalUnpaid = invoicesUnpaid.reduce((s, r) => s + r.amount, 0);
+          const totalWaitingApproval = estimatesWaiting.reduce((s, r) => s + r.amount, 0);
+
+          return {
+            dryOutNoInvoice,
+            invoicesUnpaid,
+            estimatesWaiting,
+            totals: {
+              unpaidAR: totalUnpaid,
+              waitingApproval: totalWaitingApproval,
+              itemCount:
+                dryOutNoInvoice.length + invoicesUnpaid.length + estimatesWaiting.length,
+            },
+          };
+        }, null)
+      : null;
+
     res.json({
       generatedAt: new Date().toISOString(),
       me: { id: me.id, name: me.name, role: me.role },
@@ -3776,6 +3959,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       signaturesPending,
       photoTasks,
       clockStatus,
+      claimsAging,
     });
   });
 
@@ -5332,6 +5516,31 @@ cody@titanrestorationllc.com`;
       res.json({ status: "ok", jobs, contacts, invoices, db: walMode, ts: new Date().toISOString() });
     } catch (e: any) {
       res.status(500).json({ status: "error", error: e?.message });
+    }
+  });
+
+  // Deploy-verification endpoint. Reads the commit SHA from build time so we
+  // can confirm Railway actually shipped the newest push instead of guessing
+  // from cached chunk hashes.
+  app.get("/api/version", (_req, res) => {
+    try {
+      const sha =
+        process.env.RAILWAY_GIT_COMMIT_SHA ||
+        process.env.GIT_COMMIT_SHA ||
+        process.env.SOURCE_COMMIT ||
+        "unknown";
+      const shortSha = sha === "unknown" ? sha : sha.slice(0, 8);
+      const startedAt = (global as any).__titan_boot_at || null;
+      res.json({
+        commit: shortSha,
+        fullCommit: sha,
+        branch: process.env.RAILWAY_GIT_BRANCH || null,
+        deployedAt: process.env.RAILWAY_DEPLOYMENT_STARTED_AT || null,
+        startedAt,
+        env: process.env.NODE_ENV || "development",
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
     }
   });
 

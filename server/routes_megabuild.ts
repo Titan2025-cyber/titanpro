@@ -94,6 +94,26 @@ export function registerMegaBuildRoutes(app: Express, sqlite: Sqlite, deps: Deps
     res.json(safeAll(sqlite, `SELECT * FROM scheduler_runs ORDER BY job_name`));
   });
 
+  // Force-send the daily digest right now (owner). Bypasses the 7am ET
+  // window but still honours the once-per-day dedupe, so calling this
+  // twice on the same day is a no-op unless the digest_log row is cleared.
+  app.post("/api/scheduler/digest-now", requireRole("owner"), wrapAsync(async (req: any, res: any) => {
+    const clear = String(req.query.clear || "") === "1";
+    if (clear) {
+      try { sqlite.exec("DELETE FROM daily_digest_log"); } catch {}
+    }
+    const prev = process.env.DIGEST_FORCE;
+    process.env.DIGEST_FORCE = "1";
+    try {
+      await runSchedulerNow(sqlite);
+    } finally {
+      if (prev === undefined) delete process.env.DIGEST_FORCE;
+      else process.env.DIGEST_FORCE = prev;
+    }
+    const row = safeAll(sqlite, `SELECT * FROM scheduler_runs WHERE job_name = 'daily_digest'`);
+    res.json({ ok: true, cleared: clear, run: row[0] || null });
+  }));
+
   // ────────────────────────────────────────────────────────────────────────
   // #1 Adjuster contact log
   // ────────────────────────────────────────────────────────────────────────

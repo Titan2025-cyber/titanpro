@@ -17,6 +17,7 @@
 //                        notification + owner draft.
 
 import type Database from "better-sqlite3";
+import { sendGmailAsEmployee } from "./routes_gmail";
 
 type Sqlite = Database.Database;
 
@@ -444,6 +445,226 @@ async function runNoaaCheck(ctx: SchedulerContext): Promise<string> {
   return `noaa checked=${events.length}, new=${inserted}, zones=${zones.length}`;
 }
 
+// ── Owner daily digest ────────────────────────────────────────────────────
+// Runs every hourly tick but only sends the email when the current hour in
+// America/New_York is between 7:00 and 7:59 AND we haven't already sent a
+// digest today. Keeps everything server-clock-agnostic (Railway runs in UTC
+// so a naive setInterval at 7am would fire at 3am ET in winter). Failures
+// are logged but never crash the tick.
+async function runDailyDigest(ctx: SchedulerContext): Promise<string> {
+  const { sqlite, now } = ctx;
+  const et = new Date(now().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const etHour = et.getHours();
+  const etYmd = `${et.getFullYear()}-${String(et.getMonth() + 1).padStart(2, "0")}-${String(et.getDate()).padStart(2, "0")}`;
+
+  // Ensure the tracking table exists (no-op after first tick).
+  try {
+    sqlite.exec(
+      `CREATE TABLE IF NOT EXISTS daily_digest_log (
+         sent_date TEXT PRIMARY KEY,
+         sent_at TEXT NOT NULL,
+         recipient TEXT,
+         summary TEXT
+       )`,
+    );
+  } catch {}
+
+  // Manual force via env for smoke tests: DIGEST_FORCE=1 sends regardless
+  // of hour, still respecting the once-per-day dedupe.
+  const forced = process.env.DIGEST_FORCE === "1";
+  if (!forced && etHour !== 7) return `skip hour=${etHour}ET`;
+
+  const already = sqlite
+    .prepare("SELECT sent_date FROM daily_digest_log WHERE sent_date = ?")
+    .get(etYmd) as any;
+  if (already) return `already sent ${etYmd}`;
+
+  // Recipient: owner (Cody). Configurable via DIGEST_RECIPIENT if we ever
+  // add a second owner-role user.
+  const overrideTo = (process.env.DIGEST_RECIPIENT || "").trim();
+  const owner: any = sqlite
+    .prepare(
+      "SELECT id, name, gmail_email FROM employees WHERE role = 'owner' AND is_active = 1 AND gmail_refresh_token IS NOT NULL ORDER BY id LIMIT 1",
+    )
+    .get();
+  if (!owner) return "no owner with connected gmail";
+  const to = overrideTo || owner.gmail_email;
+  if (!to) return "owner has no gmail_email";
+
+  // ── Gather metrics ─────────────────────────────────────────────────────
+  const nowMs = now().getTime();
+  const daysSince = (iso?: string | null) =>
+    iso ? Math.floor((nowMs - new Date(iso).getTime()) / (24 * 3600 * 1000)) : null;
+  const yesterdayYmd = (() => {
+    const d = new Date(et);
+    d.setDate(d.getDate() - 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  })();
+
+  const yesterdayJobs = (sqlite
+    .prepare(
+      "SELECT id, job_number, address, loss_type, insurance_carrier FROM jobs WHERE substr(COALESCE(created_at,''),1,10) = ?",
+    )
+    .all(yesterdayYmd) as any[]);
+
+  const yesterdayPayments = (sqlite
+    .prepare(
+      "SELECT id, amount, method, notes FROM payments WHERE substr(COALESCE(created_at,''),1,10) = ? AND (credit_memo IS NULL OR credit_memo = 0)",
+    )
+    .all(yesterdayYmd) as any[]);
+  const paymentsTotal = yesterdayPayments.reduce((s, p) => s + Number(p.amount || 0), 0);
+
+  const dryOutNoInvoice = (sqlite.prepare(`
+    SELECT j.id, j.job_number, j.address, j.dry_out_complete, j.insurance_carrier
+      FROM jobs j
+     WHERE j.dry_out_complete IS NOT NULL AND j.dry_out_complete != ''
+       AND j.status NOT IN ('closed','complete')
+       AND (j.invoice_sent_date IS NULL OR j.invoice_sent_date = '')
+       AND NOT EXISTS (
+         SELECT 1 FROM invoices i
+          WHERE i.job_id = j.id AND i.deleted_at IS NULL
+            AND i.status IN ('sent','paid','partial')
+       )
+     ORDER BY j.dry_out_complete ASC
+     LIMIT 10
+  `).all() as any[]).filter((r: any) => (daysSince(r.dry_out_complete) ?? 0) >= 1);
+
+  const invoicesUnpaid = (sqlite.prepare(`
+    SELECT i.id, i.invoice_number, i.total, i.created_at, i.job_id,
+           j.job_number, j.insurance_carrier
+      FROM invoices i
+      LEFT JOIN jobs j ON j.id = i.job_id
+     WHERE i.deleted_at IS NULL AND i.status = 'sent'
+     ORDER BY i.created_at ASC
+     LIMIT 25
+  `).all() as any[])
+    .map((r: any) => ({ ...r, days: daysSince(r.created_at) ?? 0 }))
+    .filter((r: any) => r.days >= 30)
+    .slice(0, 10);
+  const unpaidTotal = invoicesUnpaid.reduce((s, r) => s + Number(r.total || 0), 0);
+
+  const estimatesWaiting = (sqlite.prepare(`
+    SELECT e.id, e.title, e.total, e.created_at, e.job_id,
+           j.job_number, j.adjuster_name, j.insurance_carrier
+      FROM estimates e
+      LEFT JOIN jobs j ON j.id = e.job_id
+     WHERE e.deleted_at IS NULL AND e.status = 'sent'
+     ORDER BY e.created_at ASC
+     LIMIT 25
+  `).all() as any[])
+    .map((r: any) => ({ ...r, days: daysSince(r.created_at) ?? 0 }))
+    .filter((r: any) => r.days >= 7)
+    .slice(0, 10);
+  const waitingTotal = estimatesWaiting.reduce((s, r) => s + Number(r.total || 0), 0);
+
+  // Today's scheduled jobs (from `job_visits` if present, else assigned_tech
+  // jobs with a scheduled_date matching today).
+  const todayJobs: any[] = (() => {
+    try {
+      return sqlite.prepare(`
+        SELECT j.id, j.job_number, j.address, j.assigned_tech,
+               j.loss_type, j.status
+          FROM jobs j
+         WHERE substr(COALESCE(j.scheduled_date, ''), 1, 10) = ?
+         ORDER BY j.job_number
+         LIMIT 20
+      `).all(etYmd) as any[];
+    } catch { return []; }
+  })();
+
+  const drySkipped: any[] = (() => {
+    try {
+      return (sqlite.prepare(`
+        SELECT j.id, j.job_number, j.address, j.assigned_tech, j.mitigation_start
+          FROM jobs j
+         WHERE j.status = 'drying'
+      `).all() as any[]).filter((j: any) => {
+        const c = (sqlite.prepare(
+          "SELECT COUNT(*) c FROM drying_records WHERE job_id = ? AND reading_date = ?",
+        ).get(j.id, yesterdayYmd) as any)?.c || 0;
+        return c === 0;
+      }).slice(0, 10);
+    } catch { return []; }
+  })();
+
+  // ── Render HTML ─────────────────────────────────────────────────────────
+  const fmtUsd = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+  const li = (rows: any[], render: (r: any) => string) =>
+    rows.length === 0 ? "<li style='color:#999'>None</li>" : rows.map(render).join("");
+  const html = `<!doctype html><html><body style="font-family:-apple-system,Helvetica,Arial,sans-serif;color:#222;max-width:640px;margin:0 auto;padding:16px">
+  <h1 style="font-size:20px;margin:0 0 4px 0">Titan Pro — daily digest</h1>
+  <p style="margin:0 0 24px 0;color:#666;font-size:13px">${et.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "America/New_York" })}</p>
+
+  <h2 style="font-size:15px;margin:24px 0 6px 0;padding-bottom:4px;border-bottom:1px solid #eee">Yesterday</h2>
+  <div style="font-size:13px;line-height:1.6">
+    <div><strong>${yesterdayJobs.length}</strong> new job${yesterdayJobs.length === 1 ? "" : "s"} intaked</div>
+    <div><strong>${fmtUsd(paymentsTotal)}</strong> payments received (${yesterdayPayments.length} txn${yesterdayPayments.length === 1 ? "" : "s"})</div>
+    <div><strong>${drySkipped.length}</strong> drying visit${drySkipped.length === 1 ? "" : "s"} missed</div>
+  </div>
+
+  <h2 style="font-size:15px;margin:24px 0 6px 0;padding-bottom:4px;border-bottom:1px solid #eee">Today's schedule</h2>
+  <ul style="font-size:13px;padding-left:20px;margin:6px 0">
+    ${li(todayJobs, (j) => `<li>${escapeHtml(j.job_number)} — ${escapeHtml(j.address || "no address")}${j.assigned_tech ? ` → <strong>${escapeHtml(j.assigned_tech)}</strong>` : ""}</li>`)}
+  </ul>
+
+  <h2 style="font-size:15px;margin:24px 0 6px 0;padding-bottom:4px;border-bottom:1px solid #eee">Ready to invoice</h2>
+  <ul style="font-size:13px;padding-left:20px;margin:6px 0">
+    ${li(dryOutNoInvoice, (r) => `<li>${escapeHtml(r.job_number)} — ${escapeHtml(r.address || "")}${r.insurance_carrier ? ` (${escapeHtml(r.insurance_carrier)})` : ""} — <strong>${daysSince(r.dry_out_complete) ?? 0}d</strong> since dry-out</li>`)}
+  </ul>
+
+  <h2 style="font-size:15px;margin:24px 0 6px 0;padding-bottom:4px;border-bottom:1px solid #eee">Unpaid invoices — ${fmtUsd(unpaidTotal)} outstanding</h2>
+  <ul style="font-size:13px;padding-left:20px;margin:6px 0">
+    ${li(invoicesUnpaid, (r) => `<li>${escapeHtml(r.invoice_number || "?")} — ${escapeHtml(r.job_number || "")} — ${fmtUsd(Number(r.total || 0))} — <strong>${r.days}d</strong> old${r.insurance_carrier ? ` (${escapeHtml(r.insurance_carrier)})` : ""}</li>`)}
+  </ul>
+
+  <h2 style="font-size:15px;margin:24px 0 6px 0;padding-bottom:4px;border-bottom:1px solid #eee">Awaiting adjuster — ${fmtUsd(waitingTotal)} pending</h2>
+  <ul style="font-size:13px;padding-left:20px;margin:6px 0">
+    ${li(estimatesWaiting, (r) => `<li>${escapeHtml(r.job_number || "?")} — ${escapeHtml(r.title || "Estimate")} — ${fmtUsd(Number(r.total || 0))} — <strong>${r.days}d</strong>${r.adjuster_name ? ` (${escapeHtml(r.adjuster_name)})` : ""}</li>`)}
+  </ul>
+
+  <h2 style="font-size:15px;margin:24px 0 6px 0;padding-bottom:4px;border-bottom:1px solid #eee">Missed drying visits (yesterday)</h2>
+  <ul style="font-size:13px;padding-left:20px;margin:6px 0">
+    ${li(drySkipped, (j) => `<li>${escapeHtml(j.job_number)} — ${escapeHtml(j.address || "")}${j.assigned_tech ? ` → <strong>${escapeHtml(j.assigned_tech)}</strong>` : ""}</li>`)}
+  </ul>
+
+  <p style="margin-top:32px;color:#999;font-size:11px">
+    Sent from Titan Pro. —
+    <a href="https://titanaugusta.pro/today" style="color:#666">Open MyToday</a>
+  </p>
+</body></html>`;
+
+  const subject = `Titan Pro daily — ${et.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" })} — ${fmtUsd(unpaidTotal)} AR / ${dryOutNoInvoice.length} to invoice`;
+
+  const result = await sendGmailAsEmployee(sqlite, owner.id, {
+    to,
+    subject,
+    html,
+    text: "Your Titan Pro daily digest. Open the HTML view to see it formatted, or visit https://titanaugusta.pro/today.",
+  });
+
+  const summary = result.ok
+    ? `sent to ${to} (msg=${result.id || "?"}, unpaid=${fmtUsd(unpaidTotal)}, invoice=${dryOutNoInvoice.length}, adj=${estimatesWaiting.length})`
+    : `failed: ${result.reason}`;
+
+  if (result.ok) {
+    try {
+      sqlite
+        .prepare("INSERT OR REPLACE INTO daily_digest_log (sent_date, sent_at, recipient, summary) VALUES (?,?,?,?)")
+        .run(etYmd, new Date().toISOString(), to, summary);
+    } catch {}
+  }
+  return summary;
+}
+
+function escapeHtml(s: any): string {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 async function runAllJobs(ctx: SchedulerContext) {
   const jobs: Array<[string, () => string | Promise<string>]> = [
     ["adjuster_silence", () => runAdjusterSilence(ctx)],
@@ -452,6 +673,7 @@ async function runAllJobs(ctx: SchedulerContext) {
     ["coi_expiring",      () => runCoiExpiring(ctx)],
     ["cert_expiring",     () => runCertExpiring(ctx)],
     ["noaa_check",        () => runNoaaCheck(ctx)],
+    ["daily_digest",      () => runDailyDigest(ctx)],
   ];
   for (const [name, fn] of jobs) {
     try {

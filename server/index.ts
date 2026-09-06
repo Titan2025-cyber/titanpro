@@ -177,6 +177,10 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
+  // Record boot time so /api/version can report how long this process has
+  // been running (useful for confirming a fresh Railway deploy actually
+  // restarted the process).
+  (global as any).__titan_boot_at = new Date().toISOString();
   httpServer.listen(
     {
       port,
