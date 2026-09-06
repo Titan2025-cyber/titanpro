@@ -20,7 +20,12 @@ import {
 } from "@/components/ui/table";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { registerDejaVuSans } from "@/assets/dejavu-sans";
+// DejaVu Sans registration was removed 2026-09-05 — the addFont call was
+// producing UTF-16BE-encoded strings that jsPDF rendered as `\x00W\x00o\x00o\x00d`
+// (visible null bytes between every character) and turning `≤` into `"d`.
+// The custom font was only used for the six S500 target lines. Switching
+// those to ASCII `<=` renders correctly in the built-in Helvetica and
+// removes the encoding bug entirely.
 // jsPDF (~600KB) is loaded on demand so it isn't bundled into JobDetail on
 // every page load — only fetched when a drying report is actually generated.
 const loadJsPDF = async () => (await import("jspdf")).default;
@@ -118,10 +123,10 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
   // awkward for the per-day breakdown insurance carriers actually want.
   const doc: JsPDFDoc = new jsPDF({ orientation: "portrait", unit: "mm", format: "letter" });
 
-  // Register DejaVu Sans (subset) on this doc so we can render the S500
-  // target lines with the real ≤ symbol. jsPDF's built-in Helvetica is
-  // WinAnsi-only and corrupts non-WinAnsi glyphs (see 3c49aaf).
-  registerDejaVuSans(doc);
+  // No custom font — the previous DejaVu Sans registration was writing
+  // strings as UTF-16BE and rendering null bytes between every character.
+  // All target lines below use ASCII `<=` which jsPDF's built-in Helvetica
+  // handles cleanly.
   const PW = 215.9;
   const PH = 279.4;
   const M  = 12;
@@ -223,25 +228,20 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
   doc.roundedRect(M, y, CONTENT_W, 32, 2, 2, "F");
   setFont("bold", 8, DARK);
   doc.text("Moisture Equivalence (WME)", M + 4, y + 6);
-  // Switch to DejaVu Sans for these six target lines so the ≤ symbol renders
-  // as an actual math glyph instead of the WinAnsi fallback.
-  doc.setFont("DejaVuSans", "normal");
-  doc.setFontSize(8);
-  doc.setTextColor(DARK[0], DARK[1], DARK[2]);
-  doc.text(`Wood/Framing: ≤ ${S500_TARGETS.wood.wme}%`, M + 4, y + 11);
-  doc.text(`Drywall/Gypsum: ≤ ${S500_TARGETS.drywall.wme}%`, M + 4, y + 16);
-  doc.text(`Concrete/Masonry: ≤ ${S500_TARGETS.concrete.wme}%`, M + 4, y + 21);
+  // ASCII `<=` renders cleanly in built-in Helvetica. Avoids the custom
+  // font path that was producing null-byte-per-char corruption.
+  setFont("normal", 8, DARK);
+  doc.text(`Wood/Framing: <= ${S500_TARGETS.wood.wme}%`, M + 4, y + 11);
+  doc.text(`Drywall/Gypsum: <= ${S500_TARGETS.drywall.wme}%`, M + 4, y + 16);
+  doc.text(`Concrete/Masonry: <= ${S500_TARGETS.concrete.wme}%`, M + 4, y + 21);
 
   setFont("bold", 8, DARK);
   doc.text("Atmospheric Targets", M + CONTENT_W / 2 + 2, y + 6);
-  doc.setFont("DejaVuSans", "normal");
-  doc.setFontSize(8);
-  doc.setTextColor(DARK[0], DARK[1], DARK[2]);
-  doc.text(`Indoor GPP: ≤ ${S500_TARGETS.gpp.value} grains/lb`, M + CONTENT_W / 2 + 2, y + 11);
-  doc.text("Relative Humidity: ≤ 50% typical", M + CONTENT_W / 2 + 2, y + 16);
-  doc.text("Temperature: 70–90°F optimal", M + CONTENT_W / 2 + 2, y + 21);
-  // Return control to Helvetica for the rest of the report.
   setFont("normal", 8, DARK);
+  doc.text(`Indoor GPP: <= ${S500_TARGETS.gpp.value} grains/lb`, M + CONTENT_W / 2 + 2, y + 11);
+  doc.text("Relative Humidity: <= 50% typical", M + CONTENT_W / 2 + 2, y + 16);
+  // Use ASCII hyphen and "deg" to avoid any high-glyph fallback.
+  doc.text("Temperature: 70-90 deg F optimal", M + CONTENT_W / 2 + 2, y + 21);
 
   setFont("italic" as any, 7, GRAY);
   doc.text("Clearance per S500 §13.2: all materials at/below dry standard, ambient conditions normalized, no visible mold.", M + 4, y + 28);
