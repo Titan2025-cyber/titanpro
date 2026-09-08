@@ -1366,36 +1366,34 @@ function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; o
   })();
 
   const seededEquip: EquipRow[] = (() => {
-    // Equipment stays installed across visits until a tech explicitly pulls
-    // it, so we carry forward everything that's STILL deployed as of the
-    // most recent record. Rows with an endDate set were already pulled on
-    // some prior day — those must NOT seed forward or they'd re-appear as
-    // active equipment the next day (the user reported exactly this).
+    // Once a piece of equipment is added to the drying record it must appear
+    // on EVERY subsequent day — running while deployed, and still visible as
+    // "Pulled" reference history after it's removed. This is what techs and
+    // adjusters expect on the drying report: a full timeline, not a delta.
     //
-    // Dedupe across the whole history by (type, serial, room) so if the
-    // same asset was pulled and later re-deployed we keep only the current
-    // active instance. Serial-less rows collapse per (type, room).
+    // Dedupe across the whole history by (type, serial, room). If a serial-
+    // less row was re-added later, the latest wins. If a row was pulled and
+    // then re-deployed with the same key, the re-deploy (no endDate) wins.
     if (chronoAsc.length === 0) return [];
-    const activeByKey = new Map<string, EquipRow>();
+    const byKey = new Map<string, EquipRow>();
     chronoAsc.forEach(rec => {
       let rows: EquipRow[] = [];
       try { rows = JSON.parse(rec.equipment || "[]"); } catch { rows = []; }
       rows.filter(Boolean).forEach(r => {
         const serial = (r.serialNumber || "").trim();
         const key = `${(r.type || "").toLowerCase()}␟${serial || "∅"}␟${(r.room || "").toLowerCase()}`;
-        if (r.endDate) {
-          // Pulled — drop it from the active map. If it comes back later
-          // (same key, no endDate) the later record overwrites this.
-          activeByKey.delete(key);
-        } else {
-          activeByKey.set(key, r);
-        }
+        // Latest visit's snapshot of this key wins. That means an
+        // active-yesterday piece seeds forward as active; a pulled-yesterday
+        // piece seeds forward with its endDate/endTime intact so the tech
+        // still sees it on today's record (locked, read-only-ish).
+        byKey.set(key, r);
       });
     });
-    return Array.from(activeByKey.values()).map(r => ({
+    return Array.from(byKey.values()).map(r => ({
       ...r,
       id: Date.now() + Math.random(),
-      // Drop yesterday's daily readings — those are per-visit.
+      // Drop yesterday's daily readings — those are per-visit and would
+      // otherwise duplicate onto every subsequent day.
       dailyReadings: [],
     })) as EquipRow[];
   })();
