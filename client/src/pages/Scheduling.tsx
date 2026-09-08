@@ -780,7 +780,11 @@ export default function Scheduling() {
          click-to-edit on shifts and an Add Shift shortcut. Kept as a
          Dialog so it works on mobile as a full-screen sheet. */}
       <Dialog open={dayDetail != null} onOpenChange={(o) => { if (!o) setDayDetail(null); }}>
-        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+        {/* Wide day sheet — was max-w-lg (~512px) which forced horizontal scroll
+           on desktop for anything longer than a short address or a multi-tech chip
+           row. Bumped to 4xl (~896px) with responsive caps so mobile still fits
+           edge-to-edge and desktop dispatchers see the whole task list at once. */}
+        <DialogContent className="max-w-[95vw] sm:max-w-4xl max-h-[85vh] overflow-y-auto overflow-x-hidden">
           {dayDetail && (() => {
             const parts = dayDetail.split("-");
             const dObj = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
