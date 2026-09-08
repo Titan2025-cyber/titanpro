@@ -49,7 +49,17 @@ const COLOR_PALETTE = [
   "bg-pink-100 border-pink-300 text-pink-700",
 ];
 
+// Pinned tech colors — first-name match wins over the hashed palette so
+// dispatchers see the same color across the whole schedule regardless of
+// last name or nickname variations. Keys are lowercase first tokens.
+const TECH_COLOR_OVERRIDES: Record<string, string> = {
+  justin: "bg-[hsl(var(--titan-red)/0.15)] border-[hsl(var(--titan-red)/0.5)] text-[hsl(var(--titan-red))]",
+  john:   "bg-[hsl(var(--titan-blue)/0.15)] border-[hsl(var(--titan-blue)/0.5)] text-[hsl(var(--titan-blue))]",
+};
+
 function colorForName(name: string) {
+  const first = String(name || "").trim().toLowerCase().split(/\s+/)[0] || "";
+  if (first && TECH_COLOR_OVERRIDES[first]) return TECH_COLOR_OVERRIDES[first];
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
   return COLOR_PALETTE[h % COLOR_PALETTE.length];
