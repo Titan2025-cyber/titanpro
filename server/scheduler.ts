@@ -161,15 +161,18 @@ function runAdjusterSilence(ctx: SchedulerContext): string {
 function runArStalled(ctx: SchedulerContext): string {
   const { sqlite, now } = ctx;
   const day = today(now());
+  // Closed/complete jobs excluded — once closed, stop dunning.
   const overdue: any[] = sqlite.prepare(
     `SELECT i.id, i.invoice_number, i.total, i.due_date, i.status, i.contact_id, i.job_id,
             i.last_touched_at, i.followup_status, i.promise_to_pay_date,
             c.name AS customer_name, c.email AS customer_email, c.phone AS customer_phone
      FROM invoices i
      LEFT JOIN contacts c ON c.id = i.contact_id
+     LEFT JOIN jobs j ON j.id = i.job_id
      WHERE (i.status = 'overdue' OR i.status = 'sent')
        AND i.due_date IS NOT NULL AND i.due_date < ?
-       AND i.paid_at IS NULL`
+       AND i.paid_at IS NULL
+       AND (j.status IS NULL OR j.status NOT IN ('closed','complete'))`
   ).all(day) as any[];
 
   let drafts = 0;
@@ -227,14 +230,17 @@ function runArWeeklyDigest(ctx: SchedulerContext): string {
   const dow = now().getUTCDay(); // 0=Sun,1=Mon
   if (dow !== 1) return "skipped (not Monday)";
   const day = today(now());
+  // Closed/complete jobs excluded from weekly digest.
   const rows: any[] = sqlite.prepare(
     `SELECT i.id, i.invoice_number, i.total, i.due_date,
             c.name AS customer_name
      FROM invoices i
      LEFT JOIN contacts c ON c.id = i.contact_id
+     LEFT JOIN jobs j ON j.id = i.job_id
      WHERE (i.status = 'overdue' OR i.status = 'sent')
        AND i.due_date IS NOT NULL AND i.due_date < ?
        AND i.paid_at IS NULL
+       AND (j.status IS NULL OR j.status NOT IN ('closed','complete'))
      ORDER BY i.due_date ASC`
   ).all(day) as any[];
   if (rows.length === 0) return "no stalled invoices";
@@ -535,6 +541,7 @@ async function runDailyDigest(ctx: SchedulerContext): Promise<string> {
       FROM invoices i
       LEFT JOIN jobs j ON j.id = i.job_id
      WHERE i.deleted_at IS NULL AND i.status = 'sent'
+       AND (j.status IS NULL OR j.status NOT IN ('closed','complete'))
      ORDER BY i.created_at ASC
      LIMIT 25
   `).all() as any[])
@@ -549,6 +556,7 @@ async function runDailyDigest(ctx: SchedulerContext): Promise<string> {
       FROM estimates e
       LEFT JOIN jobs j ON j.id = e.job_id
      WHERE e.deleted_at IS NULL AND e.status = 'sent'
+       AND (j.status IS NULL OR j.status NOT IN ('closed','complete'))
      ORDER BY e.created_at ASC
      LIMIT 25
   `).all() as any[])

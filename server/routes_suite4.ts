@@ -42,9 +42,10 @@ export function registerSuite4Routes(app: Express, sqlite: InstanceType<typeof D
   });
 
   // AR Aging report: per carrier, buckets 0-30, 31-60, 61-90, 90+
+  // Closed/complete jobs excluded — once closed, stop tracking AR.
   app.get("/api/reports/carrier-ar-aging", (_req, res) => {
     const invoices = sqlite.prepare("SELECT * FROM invoices WHERE status != 'paid'").all() as any[];
-    const jobs = sqlite.prepare("SELECT id, insurance_carrier, job_number FROM jobs").all() as any[];
+    const jobs = sqlite.prepare("SELECT id, insurance_carrier, job_number, status FROM jobs").all() as any[];
     const jobMap: Record<number, any> = {};
     jobs.forEach(j => { jobMap[j.id] = j; });
 
@@ -53,6 +54,8 @@ export function registerSuite4Routes(app: Express, sqlite: InstanceType<typeof D
 
     invoices.forEach((inv: any) => {
       const job = jobMap[inv.job_id];
+      const jobStatus = String(job?.status || "").toLowerCase();
+      if (jobStatus === "closed" || jobStatus === "complete") return;
       const carrier = job?.insurance_carrier || "Direct / Unknown";
       const created = inv.created_at ? new Date(inv.created_at).getTime() : now;
       const daysOut = Math.floor((now - created) / (1000 * 60 * 60 * 24));

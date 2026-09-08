@@ -257,7 +257,14 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
   app.post("/api/ar-followup/run", (req, res) => {
     try {
       const rules = sqlite.prepare("SELECT * FROM ar_followup_rules WHERE is_active=1 ORDER BY trigger_days ASC").all() as any[];
-      const invoices = sqlite.prepare("SELECT * FROM invoices WHERE status != 'paid'").all() as any[];
+      // Only follow up on invoices whose job is still open. Closed/complete
+      // jobs drop off AR entirely per business rule.
+      const invoices = sqlite.prepare(`
+        SELECT i.* FROM invoices i
+        LEFT JOIN jobs j ON j.id = i.job_id
+        WHERE i.status != 'paid'
+          AND (j.status IS NULL OR j.status NOT IN ('closed','complete'))
+      `).all() as any[];
       const now = new Date();
       let fired = 0;
       for (const inv of invoices) {
@@ -733,11 +740,13 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
         statusCount[s] = (statusCount[s] || 0) + 1;
       }
 
-      // Carrier AR aging
+      // Carrier AR aging — closed/complete jobs excluded.
       const carrierAging: Record<string, { total: number; count: number }> = {};
       for (const inv of invoices) {
         if (inv.status !== "paid") {
           const job = jobs.find((j: any) => j.id === inv.job_id);
+          const jobStatus = String(job?.status || "").toLowerCase();
+          if (jobStatus === "closed" || jobStatus === "complete") continue;
           const carrier = job?.insurance_carrier || "Unknown";
           if (!carrierAging[carrier]) carrierAging[carrier] = { total: 0, count: 0 };
           carrierAging[carrier].total += (inv.total || 0);

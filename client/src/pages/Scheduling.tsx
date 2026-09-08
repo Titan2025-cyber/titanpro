@@ -147,6 +147,11 @@ export default function Scheduling() {
 
   const { data: shifts = [] } = useQuery<Shift[]>({ queryKey: ["/api/shifts"] });
   const { data: jobs = [] } = useQuery<Job[]>({ queryKey: ["/api/jobs"] });
+  // Contacts drive customer-name search in the job picker AND the calendar
+  // labels below ("TP-2026-0421 — Reese" instead of just the number).
+  const { data: contacts = [] } = useQuery<Array<{ id: number; name?: string | null }>>({
+    queryKey: ["/api/contacts"],
+  });
   // Standalone calendar events — not tied to a job. Fetched over the
   // same range as time-off so month/week both include them.
   const { data: events = [] } = useQuery<CalendarEvent[]>({
@@ -321,11 +326,14 @@ export default function Scheduling() {
                     customer/contact name so dispatchers don't have to
                     scroll a growing list. */}
                 <JobCombobox
-                  jobs={jobs.filter(j => j.status !== "closed")}
+                  jobs={jobs.filter(j => j.status !== "closed" && j.status !== "complete")}
+                  contacts={contacts}
                   value={form.jobId}
                   onChange={(v) => {
                     const job = jobs.find(j => j.id === Number(v));
-                    const label = job ? `${job.jobNumber} — ${job.customerName || job.lossType || "Untitled"}` : "";
+                    const contact = contacts.find(c => c.id === (job as any)?.contactId);
+                    const who = contact?.name || (job as any)?.customerName || "";
+                    const label = job ? `${job.jobNumber} — ${who || job.lossType || "Untitled"}` : "";
                     setForm(f => ({ ...f, jobId: v, title: label || f.title }));
                   }}
                   placeholder="Search jobs by number, customer, address, or loss type…"
@@ -549,12 +557,19 @@ export default function Scheduling() {
               type Item = { kind: "job"; label: string; count: number; time: string }
                         | { kind: "event"; label: string; time: string };
               const items: Item[] = [
-                ...groups.map<Item>(g => ({
-                  kind: "job",
-                  label: g.job ? g.job.jobNumber : (g.shifts[0]?.title || "Unassigned"),
-                  count: g.shifts.length,
-                  time: g.shifts[0]?.startTime || "",
-                })),
+                ...groups.map<Item>(g => {
+                  const j = g.job;
+                  const contact = j ? contacts.find(c => c.id === (j as any).contactId) : null;
+                  const who = contact?.name || (j as any)?.customerName || (j as any)?.customer || "";
+                  const addr = j?.address ? String(j.address).split(",")[0] : "";
+                  const tail = who || addr || (j as any)?.lossType || "";
+                  return {
+                    kind: "job",
+                    label: j ? (tail ? `${j.jobNumber} · ${tail}` : j.jobNumber) : (g.shifts[0]?.title || "Unassigned"),
+                    count: g.shifts.length,
+                    time: g.shifts[0]?.startTime || "",
+                  };
+                }),
                 ...dayEvents.map<Item>(ev => ({
                   kind: "event",
                   label: ev.title,
