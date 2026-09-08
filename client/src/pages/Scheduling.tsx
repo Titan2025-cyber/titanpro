@@ -558,13 +558,27 @@ export default function Scheduling() {
                   const first = g.shifts[0];
                   const times = first?.startTime ? `${first.startTime}${first.endTime ? `–${first.endTime}` : ""}` : "";
                   const label = g.job ? jobDisplayLabel(g.job) : (first?.title || "Unassigned");
+                  // Click routing: single shift → open its edit dialog directly.
+                  // Multiple shifts (multi-tech on one job) → day detail so the
+                  // dispatcher can pick which assignee to edit. This matches how
+                  // month view routes clicks and keeps every chip actionable.
+                  const onChipClick = (e: any) => {
+                    e.stopPropagation();
+                    if (g.shifts.length === 1 && first) openEdit(first);
+                    else setDayDetail(dateStr);
+                  };
                   return (
                     <div
                       key={`${g.key}`}
+                      role="button"
+                      tabIndex={0}
                       className="text-xs rounded border border-border bg-card hover:bg-muted/40 px-1.5 py-1 cursor-pointer transition"
-                      onClick={(e) => { e.stopPropagation(); setDayDetail(dateStr); }}
+                      onClick={onChipClick}
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onChipClick(e); } }}
                       data-testid={`job-group-${dateStr}-${g.key}`}
-                      title={`${label} — ${g.shifts.length} assigned${times ? ` • ${times}` : ""}`}
+                      title={g.shifts.length === 1
+                        ? `Click to edit — ${label}${times ? ` • ${times}` : ""}`
+                        : `${label} — ${g.shifts.length} assigned • click to see all`}
                     >
                       <p className="font-semibold truncate flex items-center gap-1">
                         <Briefcase className="w-2.5 h-2.5 shrink-0 opacity-70" />
@@ -709,7 +723,14 @@ export default function Scheduling() {
                       </div>
                     ))}
                     {more > 0 && (
-                      <div className="text-[10px] text-muted-foreground px-1">+{more} more</div>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setDayDetail(dateStr); }}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); setDayDetail(dateStr); } }}
+                        className="w-full text-left text-[10px] text-muted-foreground px-1 hover:text-foreground hover:underline focus:outline-none"
+                        data-testid={`month-day-more-${dateStr}`}
+                        title={`See all ${items.length} items for this day`}
+                      >+{more} more</button>
                     )}
                   </div>
                 </div>
