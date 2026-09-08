@@ -2,7 +2,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { UserSelect } from "@/components/UserSelect";
 import JobCombobox from "@/components/JobCombobox";
 import { useState } from "react";
-import { Plus, ChevronLeft, ChevronRight, Briefcase, Bell, Plane, Trash2, Calendar as CalIcon, LayoutGrid, ListChecks, X, List, Clock, MapPin, ExternalLink, Users } from "lucide-react";
+import { Plus, ChevronLeft, ChevronRight, Briefcase, Bell, Plane, Trash2, Calendar as CalIcon, LayoutGrid, ListChecks, X, List, Clock, MapPin, ExternalLink, Users, Check, CheckCircle2, Move } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -27,6 +27,7 @@ type CalendarEvent = {
   location: string | null; notes: string | null;
   attendees: string[]; color: string | null;
   createdBy: string | null; createdAt: string;
+  completedAt: string | null; completedBy: string | null;
 };
 
 const BLANK_EVENT = { title: "", eventDate: "", startTime: "09:00", endTime: "10:00", location: "", notes: "", attendees: [] as string[] };
@@ -232,6 +233,50 @@ export default function Scheduling() {
     },
   });
 
+  // ── Completion toggles ─────────────────────────────────────────────
+  // One-click mark-done for shifts and calendar events, callable from any
+  // chip or row in the calendar. Server toggles when `completed` is
+  // omitted; we pass an explicit boolean so the UI stays deterministic.
+  const toggleShiftComplete = useMutation({
+    mutationFn: ({ id, completed }: { id: number; completed: boolean }) =>
+      apiRequest("POST", `/api/shifts/${id}/complete`, { completed }),
+    onSuccess: (_r, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/shifts"] });
+      toast({ title: vars.completed ? "Shift marked complete" : "Shift reopened" });
+    },
+    onError: (e: any) => toast({ title: "Update failed", description: e?.message, variant: "destructive" }),
+  });
+  const toggleEventComplete = useMutation({
+    mutationFn: ({ id, completed }: { id: number; completed: boolean }) =>
+      apiRequest("POST", `/api/calendar-events/${id}/complete`, { completed }),
+    onSuccess: (_r, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar-events"] });
+      toast({ title: vars.completed ? "Event marked complete" : "Event reopened" });
+    },
+    onError: (e: any) => toast({ title: "Update failed", description: e?.message, variant: "destructive" }),
+  });
+
+  // Move a shift or event to a new date without opening the full edit form.
+  // Used by the ⇄ button on task-list rows so a rain-day reshuffle is one click.
+  const moveShift = useMutation({
+    mutationFn: ({ id, shiftDate }: { id: number; shiftDate: string }) =>
+      apiRequest("PATCH", `/api/shifts/${id}`, { shiftDate }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/shifts"] });
+      toast({ title: "Shift moved" });
+    },
+    onError: (e: any) => toast({ title: "Move failed", description: e?.message, variant: "destructive" }),
+  });
+  const moveEvent = useMutation({
+    mutationFn: ({ id, eventDate }: { id: number; eventDate: string }) =>
+      apiRequest("PATCH", `/api/calendar-events/${id}`, { eventDate }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar-events"] });
+      toast({ title: "Event moved" });
+    },
+    onError: (e: any) => toast({ title: "Move failed", description: e?.message, variant: "destructive" }),
+  });
+
   function openCreateEvent(dateStr?: string) {
     setEventEditingId(null);
     setEventForm({ ...BLANK_EVENT, eventDate: dateStr || isoDate(new Date()) });
@@ -378,17 +423,33 @@ export default function Scheduling() {
                   onClick={() => saveMutation.mutate({ ...form, jobId: form.jobId ? Number(form.jobId) : null })}
                   data-testid="button-save-shift"
                 >{saveMutation.isPending ? "Saving…" : editingId != null ? "Update Shift" : "Save Shift"}</Button>
-                {editingId != null && (
-                  <Button
-                    variant="outline"
-                    className="border-destructive text-destructive hover:bg-destructive/10"
-                    disabled={deleteShift.isPending}
-                    onClick={() => {
-                      if (confirm("Delete this shift? This cannot be undone.")) deleteShift.mutate(editingId);
-                    }}
-                    data-testid="button-delete-shift"
-                  ><Trash2 className="w-4 h-4" /></Button>
-                )}
+                {editingId != null && (() => {
+                  const cur = shifts.find(s => s.id === editingId);
+                  const done = !!(cur as any)?.completedAt;
+                  return (
+                    <>
+                      <Button
+                        variant="outline"
+                        className={done ? "border-amber-500 text-amber-700 hover:bg-amber-50" : "border-green-600 text-green-700 hover:bg-green-50"}
+                        disabled={toggleShiftComplete.isPending}
+                        onClick={() => { toggleShiftComplete.mutate({ id: editingId, completed: !done }); setOpen(false); }}
+                        data-testid="button-complete-shift"
+                        title={done ? "Reopen shift" : "Mark shift complete"}
+                      >
+                        {done ? <><Check className="w-4 h-4 mr-1" />Reopen</> : <><CheckCircle2 className="w-4 h-4 mr-1" />Complete</>}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="border-destructive text-destructive hover:bg-destructive/10"
+                        disabled={deleteShift.isPending}
+                        onClick={() => {
+                          if (confirm("Delete this shift? This cannot be undone.")) deleteShift.mutate(editingId);
+                        }}
+                        data-testid="button-delete-shift"
+                      ><Trash2 className="w-4 h-4" /></Button>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           </DialogContent>
@@ -567,8 +628,12 @@ export default function Scheduling() {
               const groups = groupShiftsByJob(dayShifts);
               // Render up to 3 items in the cell (jobs first, then
               // events). Anything beyond becomes a "+N more" chip.
-              type Item = { kind: "job"; label: string; count: number; time: string }
-                        | { kind: "event"; label: string; time: string };
+              // Chips are individually clickable — job chip opens the shift
+              // edit dialog for the earliest shift; event chip opens the
+              // event edit dialog. Empty cell area still opens day detail.
+              type Item =
+                | { kind: "job"; label: string; count: number; time: string; firstShift: Shift; allDone: boolean }
+                | { kind: "event"; label: string; time: string; ev: CalendarEvent };
               const items: Item[] = [
                 ...groups.map<Item>(g => {
                   const j = g.job;
@@ -576,27 +641,33 @@ export default function Scheduling() {
                   const who = contact?.name || (j as any)?.customerName || (j as any)?.customer || "";
                   const addr = j?.address ? String(j.address).split(",")[0] : "";
                   const tail = who || addr || (j as any)?.lossType || "";
+                  const allDone = g.shifts.length > 0 && g.shifts.every(s => !!(s as any).completedAt);
                   return {
                     kind: "job",
                     label: j ? (tail ? `${j.jobNumber} · ${tail}` : j.jobNumber) : (g.shifts[0]?.title || "Unassigned"),
                     count: g.shifts.length,
                     time: g.shifts[0]?.startTime || "",
+                    firstShift: g.shifts[0],
+                    allDone,
                   };
                 }),
                 ...dayEvents.map<Item>(ev => ({
                   kind: "event",
                   label: ev.title,
                   time: ev.startTime || "",
+                  ev,
                 })),
               ];
               const shown = items.slice(0, 3);
               const more = Math.max(0, items.length - shown.length);
               return (
-                <button
-                  type="button"
+                <div
+                  role="button"
+                  tabIndex={0}
                   key={i}
                   onClick={() => setDayDetail(dateStr)}
-                  className={`text-left border-t border-l border-border first:border-l-0 min-h-[92px] p-1.5 flex flex-col gap-1 hover:bg-muted/40 transition-colors ${!inMonth ? "bg-muted/20 text-muted-foreground" : ""} ${today ? "bg-[hsl(var(--titan-red)/0.05)]" : ""} ${(i % 7 === 0) ? "border-l-0" : ""}`}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setDayDetail(dateStr); } }}
+                  className={`text-left border-t border-l border-border first:border-l-0 min-h-[92px] p-1.5 flex flex-col gap-1 hover:bg-muted/40 transition-colors cursor-pointer focus:outline-none focus:ring-1 focus:ring-[hsl(var(--titan-red))] ${!inMonth ? "bg-muted/20 text-muted-foreground" : ""} ${today ? "bg-[hsl(var(--titan-red)/0.05)]" : ""} ${(i % 7 === 0) ? "border-l-0" : ""}`}
                   data-testid={`month-day-${dateStr}`}
                   title={`${date.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })} — ${dayShifts.length} shift${dayShifts.length === 1 ? "" : "s"}${dayEvents.length ? `, ${dayEvents.length} event${dayEvents.length === 1 ? "" : "s"}` : ""}${dayOff.length ? `, ${dayOff.length} out` : ""}`}
                 >
@@ -612,18 +683,28 @@ export default function Scheduling() {
                     {shown.map((it, idx) => it.kind === "job" ? (
                       <div
                         key={`j-${idx}`}
-                        className="truncate text-[10px] leading-tight px-1 py-0.5 rounded border border-border bg-card flex items-center gap-1"
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => { e.stopPropagation(); if (it.firstShift) openEdit(it.firstShift); else setDayDetail(dateStr); }}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); if (it.firstShift) openEdit(it.firstShift); } }}
+                        className={`truncate text-[10px] leading-tight px-1 py-0.5 rounded border border-border bg-card flex items-center gap-1 cursor-pointer hover:bg-muted ${it.allDone ? "opacity-50 line-through" : ""}`}
+                        title={it.allDone ? "Completed — click to edit" : "Click to edit shift"}
                       >
-                        <Briefcase className="w-2.5 h-2.5 shrink-0 opacity-60" />
+                        {it.allDone ? <CheckCircle2 className="w-2.5 h-2.5 shrink-0 opacity-60 text-green-600" /> : <Briefcase className="w-2.5 h-2.5 shrink-0 opacity-60" />}
                         <span className="truncate font-medium">{it.label}</span>
                         <span className="opacity-60 ml-auto">×{it.count}</span>
                       </div>
                     ) : (
                       <div
                         key={`e-${idx}`}
-                        className="truncate text-[10px] leading-tight px-1 py-0.5 rounded border border-blue-300 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 text-blue-900 dark:text-blue-200 flex items-center gap-1"
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => { e.stopPropagation(); openEditEvent(it.ev); }}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); openEditEvent(it.ev); } }}
+                        className={`truncate text-[10px] leading-tight px-1 py-0.5 rounded border border-blue-300 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 text-blue-900 dark:text-blue-200 flex items-center gap-1 cursor-pointer hover:brightness-95 ${it.ev.completedAt ? "opacity-50 line-through" : ""}`}
+                        title={it.ev.completedAt ? "Completed — click to edit" : "Click to edit event"}
                       >
-                        <CalIcon className="w-2.5 h-2.5 shrink-0" />
+                        {it.ev.completedAt ? <CheckCircle2 className="w-2.5 h-2.5 shrink-0 text-green-600" /> : <CalIcon className="w-2.5 h-2.5 shrink-0" />}
                         <span className="truncate">{it.label}</span>
                       </div>
                     ))}
@@ -631,7 +712,7 @@ export default function Scheduling() {
                       <div className="text-[10px] text-muted-foreground px-1">+{more} more</div>
                     )}
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -729,6 +810,8 @@ export default function Scheduling() {
                         contacts={contacts}
                         onOpenEdit={(s) => { setDayDetail(null); openEdit(s); }}
                         onCloseDialog={() => setDayDetail(null)}
+                        onToggleComplete={(id, completed) => toggleShiftComplete.mutate({ id, completed })}
+                        onMove={(id, newDate) => moveShift.mutate({ id, shiftDate: newDate })}
                       />
                     ) : (
                       <div className="space-y-2">
@@ -745,23 +828,50 @@ export default function Scheduling() {
                           .slice()
                           .sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""))
                           .map(ev => (
-                          <button
+                          <div
                             key={`ev-${ev.id}`}
-                            type="button"
-                            onClick={() => { setDayDetail(null); openEditEvent(ev); }}
-                            className="w-full text-left rounded border border-blue-300 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 text-blue-900 dark:text-blue-200 px-2.5 py-2 hover:brightness-95"
+                            className={`rounded border border-blue-300 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 text-blue-900 dark:text-blue-200 px-2.5 py-2 ${ev.completedAt ? "opacity-60" : ""}`}
                             data-testid={`day-event-${ev.id}`}
                           >
                             <div className="flex items-center justify-between gap-2">
-                              <p className="text-sm font-semibold truncate flex items-center gap-1"><CalIcon className="w-3 h-3 shrink-0" />{ev.title}</p>
-                              <p className="text-[11px] opacity-80 tabular-nums shrink-0">{ev.startTime || "--:--"}{ev.endTime ? `–${ev.endTime}` : ""}</p>
+                              <button
+                                type="button"
+                                onClick={() => { setDayDetail(null); openEditEvent(ev); }}
+                                className="text-left flex-1 min-w-0 hover:underline"
+                                title="Click to edit event"
+                              >
+                                <p className={`text-sm font-semibold truncate flex items-center gap-1 ${ev.completedAt ? "line-through" : ""}`}>
+                                  {ev.completedAt ? <CheckCircle2 className="w-3 h-3 shrink-0 text-green-600" /> : <CalIcon className="w-3 h-3 shrink-0" />}
+                                  {ev.title}
+                                </p>
+                              </button>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <p className="text-[11px] opacity-80 tabular-nums">{ev.startTime || "--:--"}{ev.endTime ? `–${ev.endTime}` : ""}</p>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleEventComplete.mutate({ id: ev.id, completed: !ev.completedAt })}
+                                  className="p-1 rounded hover:bg-blue-100 dark:hover:bg-blue-900"
+                                  title={ev.completedAt ? "Reopen event" : "Mark event complete"}
+                                  data-testid={`day-event-complete-${ev.id}`}
+                                >
+                                  <Check className={`w-3.5 h-3.5 ${ev.completedAt ? "text-green-600" : "opacity-60"}`} />
+                                </button>
+                                <input
+                                  type="date"
+                                  defaultValue={ev.eventDate}
+                                  onChange={(e) => { const v = e.target.value; if (v && v !== ev.eventDate) moveEvent.mutate({ id: ev.id, eventDate: v }); }}
+                                  className="text-[10px] px-1 py-0.5 rounded border border-blue-300 bg-white dark:bg-blue-950 dark:text-blue-100 w-[110px]"
+                                  title="Move to another day"
+                                  data-testid={`day-event-move-${ev.id}`}
+                                />
+                              </div>
                             </div>
                             {ev.location && <p className="text-[11px] opacity-80 truncate">📍 {ev.location}</p>}
                             {ev.attendees.length > 0 && (
                               <p className="text-[11px] opacity-90 truncate mt-0.5">With: {ev.attendees.join(", ")}</p>
                             )}
                             {ev.notes && <p className="text-[11px] opacity-70 truncate mt-0.5">{ev.notes}</p>}
-                          </button>
+                          </div>
                         ))}
                       </div>
                     </div>
@@ -838,15 +948,31 @@ export default function Scheduling() {
               />
             </div>
             <div className="flex justify-end gap-2 pt-1">
-              {eventEditingId != null && (
-                <Button
-                  variant="outline"
-                  className="border-destructive text-destructive hover:bg-destructive/10"
-                  disabled={deleteEvent.isPending}
-                  onClick={() => { if (confirm("Delete this event?")) deleteEvent.mutate(eventEditingId); }}
-                  data-testid="button-delete-event"
-                ><Trash2 className="w-4 h-4" /></Button>
-              )}
+              {eventEditingId != null && (() => {
+                const cur = events.find(e => e.id === eventEditingId);
+                const done = !!cur?.completedAt;
+                return (
+                  <>
+                    <Button
+                      variant="outline"
+                      className={done ? "border-amber-500 text-amber-700 hover:bg-amber-50" : "border-green-600 text-green-700 hover:bg-green-50"}
+                      disabled={toggleEventComplete.isPending}
+                      onClick={() => { toggleEventComplete.mutate({ id: eventEditingId, completed: !done }); setEventOpen(false); setEventEditingId(null); }}
+                      data-testid="button-complete-event"
+                      title={done ? "Reopen event" : "Mark event complete"}
+                    >
+                      {done ? <><Check className="w-4 h-4 mr-1" />Reopen</> : <><CheckCircle2 className="w-4 h-4 mr-1" />Complete</>}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="border-destructive text-destructive hover:bg-destructive/10"
+                      disabled={deleteEvent.isPending}
+                      onClick={() => { if (confirm("Delete this event?")) deleteEvent.mutate(eventEditingId); }}
+                      data-testid="button-delete-event"
+                    ><Trash2 className="w-4 h-4" /></Button>
+                  </>
+                );
+              })()}
               <Button variant="outline" onClick={() => { setEventOpen(false); setEventEditingId(null); }}>Cancel</Button>
               <Button
                 onClick={() => saveEvent.mutate({
@@ -961,11 +1087,15 @@ function DayTaskList({
   contacts,
   onOpenEdit,
   onCloseDialog,
+  onToggleComplete,
+  onMove,
 }: {
   groups: Array<{ key: number | "none"; job: Job | null; shifts: Shift[] }>;
   contacts: Array<{ id: number; name?: string | null }>;
   onOpenEdit: (s: Shift) => void;
   onCloseDialog: () => void;
+  onToggleComplete: (id: number, completed: boolean) => void;
+  onMove: (id: number, newDate: string) => void;
 }) {
   const sorted = [...groups].sort((a, b) => {
     const at = a.shifts[0]?.startTime || "99:99";
@@ -1059,24 +1189,54 @@ function DayTaskList({
                   ) : (
                     <>
                       <Users className="w-3 h-3 opacity-60" />
-                      {g.shifts.map(s => (
-                        <button
-                          key={s.id}
-                          type="button"
-                          onClick={() => onOpenEdit(s)}
-                          className={`text-[11px] px-1.5 py-0.5 rounded border hover:brightness-95 transition ${colorForName(s.techName)}`}
-                          title={`Edit shift — ${s.techName}${s.startTime ? ` · ${s.startTime}${s.endTime ? `–${s.endTime}` : ""}` : ""}`}
-                          data-testid={`day-task-shift-${s.id}`}
-                        >
-                          {s.techName}
-                        </button>
-                      ))}
+                      {g.shifts.map(s => {
+                        const done = !!(s as any).completedAt;
+                        return (
+                          <span key={s.id} className={`inline-flex items-center gap-0.5 rounded border ${colorForName(s.techName)} ${done ? "opacity-60" : ""}`}>
+                            <button
+                              type="button"
+                              onClick={() => onOpenEdit(s)}
+                              className={`text-[11px] px-1.5 py-0.5 hover:brightness-95 transition ${done ? "line-through" : ""}`}
+                              title={`Edit shift — ${s.techName}${s.startTime ? ` · ${s.startTime}${s.endTime ? `–${s.endTime}` : ""}` : ""}`}
+                              data-testid={`day-task-shift-${s.id}`}
+                            >
+                              {s.techName}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); onToggleComplete(s.id, !done); }}
+                              className="px-1 py-0.5 hover:brightness-90 border-l border-current/20"
+                              title={done ? "Reopen shift" : "Mark shift complete"}
+                              data-testid={`day-task-shift-done-${s.id}`}
+                            >
+                              <Check className={`w-3 h-3 ${done ? "opacity-90" : "opacity-50"}`} />
+                            </button>
+                          </span>
+                        );
+                      })}
                     </>
                   )}
                 </div>
               </div>
 
-              <div className="shrink-0 text-right">
+              {/* Right action column — move-day picker + count. The date input
+                  moves EVERY shift in the group at once because they share a
+                  job × date grouping; use per-tech edits from the chips above
+                  when only one person's shift needs to slide. */}
+              <div className="shrink-0 text-right flex flex-col items-end gap-1">
+                <input
+                  type="date"
+                  defaultValue={first?.shiftDate || ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (!v || !first || v === first.shiftDate) return;
+                    // Move every shift in this group so the whole job travels together.
+                    g.shifts.forEach(s => onMove(s.id, v));
+                  }}
+                  className="text-[10px] px-1 py-0.5 rounded border border-border bg-card w-[120px]"
+                  title="Move all shifts in this job to another day"
+                  data-testid={`day-task-move-${g.key}`}
+                />
                 <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Shifts</div>
                 <div className="text-sm font-semibold tabular-nums">{g.shifts.length}</div>
               </div>

@@ -351,6 +351,8 @@ export const shifts = sqliteTable("shifts", {
   title: text("title"),
   notes: text("notes"),
   notificationSent: integer("notification_sent").default(0),
+  completedAt: text("completed_at"),        // ISO timestamp when marked done
+  completedBy: text("completed_by"),        // user name who marked it done
   createdAt: text("created_at").notNull().default(""),
 });
 export const insertShiftSchema = createInsertSchema(shifts).omit({ id: true });

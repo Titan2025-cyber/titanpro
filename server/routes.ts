@@ -2849,6 +2849,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ success: true });
   });
 
+  // Mark a shift done / undone from the calendar without a full edit.
+  // Body { completed: boolean } or omit to toggle based on current state.
+  app.post("/api/shifts/:id/complete", (req, res) => {
+    const id = Number(req.params.id);
+    const cur = storage.getShift(id);
+    if (!cur) return res.status(404).json({ error: "Not found" });
+    const currentlyDone = !!(cur as any).completedAt;
+    const wantDone = req.body && typeof req.body.completed === "boolean" ? !!req.body.completed : !currentlyDone;
+    const who = (req as any).user?.name || null;
+    const patch = wantDone
+      ? { completedAt: new Date().toISOString(), completedBy: who }
+      : { completedAt: null, completedBy: null };
+    const updated = storage.updateShift(id, patch as any);
+    res.json(updated);
+  });
+
   // ── Payout Methods ────────────────────────────────────────────────────────
   app.get("/api/payout-methods", (req, res) => {
     const contactId = req.query.contactId ? Number(req.query.contactId) : undefined;

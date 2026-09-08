@@ -903,6 +903,28 @@ if (!docCols.includes("signature_storage_key")) {
 // bucket is on, each entry becomes { storageKey } instead of a data URL. We
 // don't need a new column — the JSON blob is polymorphic.
 
+// Shifts + calendar events — completion tracking so dispatch can mark work
+// as done from the calendar without deleting the historical record.
+const shiftCols = (sqlite.prepare("PRAGMA table_info(shifts)").all() as any[]).map((c: any) => c.name);
+if (!shiftCols.includes("completed_at")) {
+  sqlite.exec(`ALTER TABLE shifts ADD COLUMN completed_at TEXT`);
+}
+if (!shiftCols.includes("completed_by")) {
+  sqlite.exec(`ALTER TABLE shifts ADD COLUMN completed_by TEXT`);
+}
+// calendar_events is created lazily by routes_suite5 (may not exist yet on
+// first boot) — guard with a table-exists check before altering.
+const hasCalendarEvents = (sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='calendar_events'").get() as any);
+if (hasCalendarEvents) {
+  const evCols = (sqlite.prepare("PRAGMA table_info(calendar_events)").all() as any[]).map((c: any) => c.name);
+  if (!evCols.includes("completed_at")) {
+    sqlite.exec(`ALTER TABLE calendar_events ADD COLUMN completed_at TEXT`);
+  }
+  if (!evCols.includes("completed_by")) {
+    sqlite.exec(`ALTER TABLE calendar_events ADD COLUMN completed_by TEXT`);
+  }
+}
+
 // ── Migrate legacy inline blobs to object storage ─────────────────────────
 // Runs asynchronously on boot so it never blocks server startup. Iterates
 // every photo / document row that still has a base64 data URL and no

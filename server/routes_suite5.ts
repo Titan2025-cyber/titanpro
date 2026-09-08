@@ -852,8 +852,17 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
     attendees TEXT NOT NULL DEFAULT '[]',
     color TEXT,
     created_by TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT,
+    completed_by TEXT
   )`);
+  // Additive migration — pre-existing tables won't have the completion cols.
+  // Guarded by the same table_info check the shifts migration in storage.ts uses.
+  {
+    const evCols = (sqlite.prepare("PRAGMA table_info(calendar_events)").all() as any[]).map((c: any) => c.name);
+    if (!evCols.includes("completed_at")) sqlite.exec(`ALTER TABLE calendar_events ADD COLUMN completed_at TEXT`);
+    if (!evCols.includes("completed_by")) sqlite.exec(`ALTER TABLE calendar_events ADD COLUMN completed_by TEXT`);
+  }
 
   function parseAttendees(v: any): string[] {
     if (Array.isArray(v)) return v.map(x => String(x || "").trim()).filter(Boolean);
@@ -880,6 +889,8 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
       attendees: Array.isArray(attendees) ? attendees : [],
       createdBy: row.created_by || null,
       createdAt: row.created_at,
+      completedAt: row.completed_at || null,
+      completedBy: row.completed_by || null,
     };
   }
 
@@ -994,6 +1005,28 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
       const id = Number(req.params.id);
       const info = sqlite.prepare("DELETE FROM calendar_events WHERE id=?").run(id);
       res.json({ ok: true, deleted: info.changes });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // One-click toggle so calendar chips can mark an event done/undone without
+  // opening the full edit dialog. Body: { completed: boolean } — defaults to
+  // toggle-based-on-current-state when omitted.
+  app.post("/api/calendar-events/:id/complete", (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const cur = sqlite.prepare("SELECT * FROM calendar_events WHERE id=?").get(id) as any;
+      if (!cur) return res.status(404).json({ error: "not found" });
+      const currentlyDone = !!cur.completed_at;
+      const wantDone = req.body && typeof req.body.completed === "boolean" ? !!req.body.completed : !currentlyDone;
+      const who = (req as any).user?.name || null;
+      if (wantDone) {
+        sqlite.prepare("UPDATE calendar_events SET completed_at=?, completed_by=? WHERE id=?")
+          .run(new Date().toISOString(), who, id);
+      } else {
+        sqlite.prepare("UPDATE calendar_events SET completed_at=NULL, completed_by=NULL WHERE id=?").run(id);
+      }
+      const row = sqlite.prepare("SELECT * FROM calendar_events WHERE id=?").get(id) as any;
+      res.json(hydrateEvent(row));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 }
