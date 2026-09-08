@@ -5554,9 +5554,7 @@ cody@titanrestorationllc.com`;
   // visibility. Owner-only so it never leaks in prod incidents. Use this to
   // debug "my new job isn't showing up in a bucket" — look at progress_stage,
   // status, division, and job_kind on the tail of the table.
-  app.get("/api/_debug/recent-jobs", requireAuth, (req, res) => {
-    const user = (req as any).user;
-    if (!user || user.role !== "owner") return res.status(403).json({ error: "owner only" });
+  app.get("/api/_debug/recent-jobs", requireRole("owner"), (_req, res) => {
     try {
       const rows = sqlite.prepare(
         `SELECT id, job_number, status, progress_stage, division, job_kind,
