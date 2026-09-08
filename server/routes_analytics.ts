@@ -321,14 +321,18 @@ export function registerAnalyticsRoutes(app: Express, sqlite: Sqlite, requireSta
     techs.sort((a: any, b: any) => b.score - a.score);
 
     // ── 5. Aging AR (0/30/60/90+) ─────────────────────────────────────
+    // Closed/complete jobs excluded per business rule: once a job is
+    // closed we stop tracking AR for it.
     const arRows = safeAll(sqlite, `
-      SELECT id, job_id, invoice_number, total,
-             COALESCE(created_at, '') as issued_at,
+      SELECT invoices.id, invoices.job_id, invoices.invoice_number, invoices.total,
+             COALESCE(invoices.created_at, '') as issued_at,
              (SELECT COALESCE(SUM(p.amount), 0) FROM payments p
                WHERE (p.invoice_id = invoices.id OR p.job_id = invoices.job_id)
                  AND p.type = 'received' AND (p.credit_memo IS NULL OR p.credit_memo = 0)) as paid
         FROM invoices
-       WHERE deleted_at IS NULL
+        LEFT JOIN jobs j ON j.id = invoices.job_id
+       WHERE invoices.deleted_at IS NULL
+         AND (j.status IS NULL OR j.status NOT IN ('closed','complete'))
     `, []);
     const buckets = { d0_30: 0, d31_60: 0, d61_90: 0, d90plus: 0, totalOutstanding: 0 };
     const arDetail: any[] = [];

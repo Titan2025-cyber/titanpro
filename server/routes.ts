@@ -1700,7 +1700,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     for (const k of ESTIMATE_ALLOWED) if (body && k in body) clean[k] = body[k];
     return clean;
   }
-  app.post("/api/estimates", requireRole("owner", "admin", "sales", "general_manager"), (req, res) => {
+  // Estimate create/edit is open to all authenticated employees — techs and
+  // office staff both need to build and send estimates in the field.
+  app.post("/api/estimates", (req, res) => {
     try {
       const body = recomputeDocTotals(whitelistEstimate(req.body));
       const created = storage.createEstimate(body);
@@ -1708,7 +1710,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(created);
     } catch (err: any) { res.status(400).json({ error: err?.message || "Unable to create estimate" }); }
   });
-  app.patch("/api/estimates/:id", requireRole("owner", "admin", "sales", "general_manager"), (req, res) => {
+  app.patch("/api/estimates/:id", (req, res) => {
     const body = recomputeDocTotals(whitelistEstimate(req.body));
     const id = Number(req.params.id);
     const before = storage.getEstimate(id);
@@ -3877,6 +3879,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             .filter((r) => r.daysStale >= 1);
 
           // 2. Invoice sent >30 days ago and still not paid.
+          //    Closed/complete jobs excluded — once closed, don't track.
           const invoicesUnpaid = (sqlite.prepare(`
             SELECT i.id AS invoiceId, i.job_id AS jobId, i.invoice_number AS invoiceNumber,
                    i.total, i.created_at AS createdAt,
@@ -3885,6 +3888,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               LEFT JOIN jobs j ON j.id = i.job_id
              WHERE i.deleted_at IS NULL
                AND i.status = 'sent'
+               AND (j.status IS NULL OR j.status NOT IN ('closed','complete'))
              ORDER BY i.created_at ASC
              LIMIT 25
           `).all() as any[])
@@ -3905,6 +3909,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
           // 3. Estimate submitted but no adjuster response tracked. Proxy:
           // estimate with status='sent' older than 5 business days (~7 cal).
+          // Closed/complete jobs excluded — once closed, don't track.
           const estimatesWaiting = (sqlite.prepare(`
             SELECT e.id AS estimateId, e.job_id AS jobId, e.title, e.total,
                    e.created_at AS createdAt,
@@ -3914,6 +3919,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               LEFT JOIN jobs j ON j.id = e.job_id
              WHERE e.deleted_at IS NULL
                AND e.status = 'sent'
+               AND (j.status IS NULL OR j.status NOT IN ('closed','complete'))
              ORDER BY e.created_at ASC
              LIMIT 25
           `).all() as any[])
@@ -5440,11 +5446,17 @@ Titan Restoration LLC | Augusta, GA` },
     const now = new Date();
     const buckets: Record<string, any[]> = { "0-30": [], "31-60": [], "61-90": [], "90+": [] };
     let totalOutstanding = 0;
+    // Closed/complete jobs are excluded from AR — once a job is closed we
+    // stop tracking it here regardless of invoice state. To keep a real
+    // unpaid receivable visible, either reopen the job or write off/void
+    // the invoice.
     invoices.filter((inv: any) => inv.status !== "paid" && inv.status !== "void").forEach((inv: any) => {
+      const job = jobs.find((j: any) => j.id === inv.jobId);
+      const jobStatus = String(job?.status || "").toLowerCase();
+      if (jobStatus === "closed" || jobStatus === "complete") return;
       const due = inv.dueDate ? new Date(inv.dueDate) : new Date(inv.createdAt);
       const days = Math.floor((now.getTime() - due.getTime()) / (1000 * 60 * 60 * 24));
       const contact = contacts.find((c: any) => c.id === inv.contactId);
-      const job = jobs.find((j: any) => j.id === inv.jobId);
       const entry = { ...inv, daysOverdue: Math.max(0, days), contactName: contact?.name, jobNumber: job?.jobNumber, carrier: job?.insuranceCarrier };
       totalOutstanding += inv.total || 0;
       if (days <= 30) buckets["0-30"].push(entry);
