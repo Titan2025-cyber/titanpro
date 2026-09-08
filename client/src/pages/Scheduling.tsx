@@ -1,7 +1,7 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { UserSelect } from "@/components/UserSelect";
 import JobCombobox from "@/components/JobCombobox";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Plus, ChevronLeft, ChevronRight, Briefcase, Bell, Plane, Trash2, Calendar as CalIcon, LayoutGrid, ListChecks, X, List, Clock, MapPin, ExternalLink, Users, Check, CheckCircle2, Move } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -267,6 +267,15 @@ export default function Scheduling() {
     },
     onError: (e: any) => toast({ title: "Move failed", description: e?.message, variant: "destructive" }),
   });
+  // Generic per-field shift patch used by the inline editor on the day-detail
+  // sheet (time & task-note edits). Quiet on success (no toast spam) but
+  // still surfaces errors so a dispatcher notices when a save fails.
+  const patchShiftMutation = useMutation({
+    mutationFn: ({ id, patch }: { id: number; patch: Partial<Shift> }) =>
+      apiRequest("PATCH", `/api/shifts/${id}`, patch),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/shifts"] }); },
+    onError: (e: any) => toast({ title: "Save failed", description: e?.message, variant: "destructive" }),
+  });
   const moveEvent = useMutation({
     mutationFn: ({ id, eventDate }: { id: number; eventDate: string }) =>
       apiRequest("PATCH", `/api/calendar-events/${id}`, { eventDate }),
@@ -442,7 +451,15 @@ export default function Scheduling() {
                 <div><Label>End</Label><Input type="time" value={form.endTime} onChange={e => setForm(f => ({ ...f, endTime: e.target.value }))} /></div>
               </div>
 
-              <div><Label>Notes</Label><Input value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Additional instructions" /></div>
+              <div>
+                <Label>Task note</Label>
+                <Input
+                  value={form.notes}
+                  onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+                  placeholder="What needs to happen — e.g. deliver 4 airmovers, meet adjuster at 10am, tear-out downstairs bathroom"
+                  data-testid="input-shift-notes"
+                />
+              </div>
 
               {form.jobId && (
                 <div className="flex items-center gap-2 p-2 bg-[hsl(var(--titan-blue)/0.1)] rounded-lg text-xs text-[hsl(var(--titan-blue))]">
@@ -872,6 +889,7 @@ export default function Scheduling() {
                         onCloseDialog={() => setDayDetail(null)}
                         onToggleComplete={(id, completed) => toggleShiftComplete.mutate({ id, completed })}
                         onMove={(id, newDate) => moveShift.mutate({ id, shiftDate: newDate })}
+                        onPatchShift={(id, patch) => patchShiftMutation.mutate({ id, patch })}
                       />
                     ) : (
                       <div className="space-y-2">
@@ -1149,6 +1167,7 @@ function DayTaskList({
   onCloseDialog,
   onToggleComplete,
   onMove,
+  onPatchShift,
 }: {
   groups: Array<{ key: number | "none"; job: Job | null; shifts: Shift[] }>;
   contacts: Array<{ id: number; name?: string | null }>;
@@ -1156,6 +1175,7 @@ function DayTaskList({
   onCloseDialog: () => void;
   onToggleComplete: (id: number, completed: boolean) => void;
   onMove: (id: number, newDate: string) => void;
+  onPatchShift: (id: number, patch: Partial<Shift>) => void;
 }) {
   const sorted = [...groups].sort((a, b) => {
     const at = a.shifts[0]?.startTime || "99:99";
@@ -1242,6 +1262,18 @@ function DayTaskList({
                     {addr}
                   </p>
                 )}
+                {/* Combined task notes across all shifts in this group — the note
+                   is per-shift but we surface a preview here so the dispatcher
+                   sees "what's this job on the calendar for" at a glance. */}
+                {(() => {
+                  const combined = Array.from(new Set(g.shifts.map(s => ((s as any).notes || "").trim()).filter(Boolean)));
+                  if (combined.length === 0) return null;
+                  return (
+                    <p className="text-[11px] text-foreground/80 mt-0.5 line-clamp-2" title={combined.join(" • ")}>
+                      ✎ {combined.join(" • ")}
+                    </p>
+                  );
+                })()}
 
                 <div className="flex flex-wrap gap-1 mt-1.5 items-center">
                   {g.shifts.length === 0 ? (
@@ -1277,6 +1309,23 @@ function DayTaskList({
                     </>
                   )}
                 </div>
+
+                {/* Inline per-shift editors — dispatcher can change start/end times
+                   and add a task note ("what needs to happen") without opening
+                   the dialog. Debounced on blur so we don't spam the API on
+                   every keystroke. Notes are optional but the placeholder makes
+                   the intended use obvious. */}
+                {g.shifts.length > 0 && (
+                  <div className="mt-2 space-y-1 border-t border-dashed border-border pt-1.5">
+                    {g.shifts.map(s => (
+                      <InlineShiftEditor
+                        key={`edit-${s.id}`}
+                        shift={s}
+                        onPatch={(patch) => onPatchShift(s.id, patch)}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Right action column — move-day picker + count. The date input
@@ -1304,6 +1353,75 @@ function DayTaskList({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ── InlineShiftEditor ─────────────────────────────────────────────
+// Compact one-row editor that lets the dispatcher change a shift's start /
+// end time and add a task note directly from the day-detail sheet. Each
+// field commits on blur (or Enter for the note) so a distracted rename
+// still saves. Keeps the primary open-full-editor path intact via chips
+// above — this is the "fast path" for the two most common edits.
+function InlineShiftEditor({
+  shift,
+  onPatch,
+}: {
+  shift: Shift;
+  onPatch: (patch: Partial<Shift>) => void;
+}) {
+  const [start, setStart] = useState(shift.startTime || "");
+  const [end, setEnd] = useState(shift.endTime || "");
+  const [note, setNote] = useState((shift as any).notes || "");
+
+  // Sync local state when the server hands back a new shift (e.g. after
+  // another dispatcher moves the shift or edits the note).
+  useEffect(() => { setStart(shift.startTime || ""); }, [shift.startTime]);
+  useEffect(() => { setEnd(shift.endTime || ""); }, [shift.endTime]);
+  useEffect(() => { setNote((shift as any).notes || ""); }, [(shift as any).notes]);
+
+  const commitTime = (field: "startTime" | "endTime", value: string) => {
+    const current = field === "startTime" ? shift.startTime : shift.endTime;
+    if (value === (current || "")) return;
+    onPatch({ [field]: value || null } as any);
+  };
+  const commitNote = () => {
+    if (note === ((shift as any).notes || "")) return;
+    onPatch({ notes: note || null } as any);
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+      <span className="text-muted-foreground shrink-0 min-w-[64px] truncate" title={shift.techName || ""}>{shift.techName}</span>
+      <input
+        type="time"
+        value={start}
+        onChange={(e) => setStart(e.target.value)}
+        onBlur={() => commitTime("startTime", start)}
+        className="px-1 py-0.5 rounded border border-border bg-card w-[80px] tabular-nums"
+        title="Start time"
+        data-testid={`inline-start-${shift.id}`}
+      />
+      <span className="text-muted-foreground">–</span>
+      <input
+        type="time"
+        value={end}
+        onChange={(e) => setEnd(e.target.value)}
+        onBlur={() => commitTime("endTime", end)}
+        className="px-1 py-0.5 rounded border border-border bg-card w-[80px] tabular-nums"
+        title="End time"
+        data-testid={`inline-end-${shift.id}`}
+      />
+      <input
+        type="text"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        onBlur={commitNote}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
+        placeholder="Task note — what needs to happen (e.g. deliver 4 airmovers)"
+        className="flex-1 min-w-[140px] px-1.5 py-0.5 rounded border border-border bg-card"
+        data-testid={`inline-note-${shift.id}`}
+      />
     </div>
   );
 }
