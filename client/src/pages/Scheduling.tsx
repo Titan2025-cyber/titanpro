@@ -106,6 +106,27 @@ function isoDate(d: Date) {
 // hover interaction that was easy to miss.
 const BLANK_FORM = { techName: "", shiftDate: isoDate(new Date()), startTime: "08:00", endTime: "16:00", title: "", jobId: "", notes: "" };
 
+// Format a stored HH:MM (24h wall-clock) as 12-hour with am/pm suffix.
+// Shift times are stored as local wall-clock strings — no timezone conversion
+// is needed since Titan operates in a single office in Eastern time and the
+// dispatcher enters the exact clock time. "08:00" → "8:00am", "14:30" → "2:30pm".
+// Module-scope so DayJobCard / DayTaskList can render the same format.
+function fmtTime12(t: string | null | undefined): string {
+  if (!t) return "";
+  const [hStr, mStr] = t.split(":");
+  const h = Number(hStr);
+  const m = Number(mStr || "0");
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return t;
+  const suffix = h >= 12 ? "pm" : "am";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return m === 0 ? `${h12}${suffix}` : `${h12}:${String(m).padStart(2, "0")}${suffix}`;
+}
+function fmtTimeRange12(a: string | null | undefined, b: string | null | undefined): string {
+  const s = fmtTime12(a); const e = fmtTime12(b);
+  if (s && e) return `${s}–${e}`;
+  return s || e || "";
+}
+
 export default function Scheduling() {
   const [weekRef, setWeekRef] = useState(new Date());
   const [open, setOpen] = useState(false);
@@ -342,16 +363,27 @@ export default function Scheduling() {
       arr.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
       groups.push({ key, job, shifts: arr });
     }
-    // Put job-linked groups first (by job number), then "none".
+    // Order by the earliest shift start time in the group so dispatchers
+    // read the day top-down in time order (was: alphabetical by job number,
+    // which scattered morning/afternoon work). Shifts with no start time
+    // and unassigned groups sink to the bottom; ties broken by job number
+    // for deterministic ordering.
     groups.sort((a, b) => {
-      if (a.key === "none") return 1;
-      if (b.key === "none") return -1;
+      const at = a.shifts[0]?.startTime || "";
+      const bt = b.shifts[0]?.startTime || "";
+      if (at && bt && at !== bt) return at.localeCompare(bt);
+      if (at && !bt) return -1;
+      if (!at && bt) return 1;
+      if (a.key === "none" && b.key !== "none") return 1;
+      if (b.key === "none" && a.key !== "none") return -1;
       const an = a.job?.jobNumber || "";
       const bn = b.job?.jobNumber || "";
       return an.localeCompare(bn);
     });
     return groups;
   }
+
+
 
   function jobDisplayLabel(job: Job | null | undefined) {
     if (!job) return "Unassigned";
@@ -625,7 +657,7 @@ export default function Scheduling() {
                     into the calendar cell. */}
                 {groupShiftsByJob(dayShifts).map(g => {
                   const first = g.shifts[0];
-                  const times = first?.startTime ? `${first.startTime}${first.endTime ? `–${first.endTime}` : ""}` : "";
+                  const times = fmtTimeRange12(first?.startTime, first?.endTime);
                   const label = g.job ? jobDisplayLabel(g.job) : (first?.title || "Unassigned");
                   // Any shift in this group has its inline editor expanded?
                   const anyExpanded = g.shifts.some(s => expandedShifts.has(s.id));
@@ -662,6 +694,13 @@ export default function Scheduling() {
                             <span>{times || "—"}</span>
                             <span className="text-[10px]">{g.shifts.length} assigned</span>
                           </p>
+                          {/* Task note preview — first non-empty note across the group.
+                             Shows dispatchers "what needs to happen" without opening. */}
+                          {(() => {
+                            const noteText = g.shifts.map(s => ((s as any).notes || "").trim()).find(Boolean) || "";
+                            if (!noteText) return null;
+                            return <p className="truncate opacity-80 text-[10px] pl-3.5" title={noteText}>✎ {noteText}</p>;
+                          })()}
                         </div>
                         <button
                           type="button"
@@ -700,7 +739,7 @@ export default function Scheduling() {
                       <span className="truncate">{ev.title}</span>
                     </p>
                     {(ev.startTime || ev.endTime) && (
-                      <p className="opacity-80 tabular-nums">{ev.startTime || ""}{ev.endTime ? `–${ev.endTime}` : ""}</p>
+                      <p className="opacity-80 tabular-nums">{fmtTimeRange12(ev.startTime, ev.endTime)}</p>
                     )}
                     {ev.attendees.length > 0 && (
                       <p className="opacity-80 truncate text-[10px]">{ev.attendees.slice(0, 2).join(", ")}{ev.attendees.length > 2 ? ` +${ev.attendees.length - 2}` : ""}</p>
@@ -1027,7 +1066,7 @@ export default function Scheduling() {
                                 </p>
                               </button>
                               <div className="flex items-center gap-1 shrink-0">
-                                <p className="text-[11px] opacity-80 tabular-nums">{ev.startTime || "--:--"}{ev.endTime ? `–${ev.endTime}` : ""}</p>
+                                <p className="text-[11px] opacity-80 tabular-nums">{fmtTimeRange12(ev.startTime, ev.endTime) || "--:--"}</p>
                                 <button
                                   type="button"
                                   onClick={() => toggleEventComplete.mutate({ id: ev.id, completed: !ev.completedAt })}
@@ -1194,7 +1233,7 @@ function DayJobCard({ group, onOpenEdit }: {
         return tail ? `${group.job.jobNumber} — ${tail}` : group.job.jobNumber;
       })()
     : (first?.title || "Unassigned");
-  const times = first?.startTime ? `${first.startTime}${first.endTime ? `–${first.endTime}` : ""}` : "";
+  const times = fmtTimeRange12(first?.startTime, first?.endTime);
   const uniqueTechs = Array.from(new Set(group.shifts.map(s => s.techName)));
 
   return (
@@ -1241,7 +1280,7 @@ function DayJobCard({ group, onOpenEdit }: {
               <div className="flex items-center justify-between gap-2">
                 <p className="text-sm font-semibold truncate">{s.techName}</p>
                 <p className="text-[11px] opacity-80 tabular-nums shrink-0">
-                  {s.startTime || "--:--"}{s.endTime ? `–${s.endTime}` : ""}
+                  {fmtTimeRange12(s.startTime, s.endTime) || "--:--"}
                 </p>
               </div>
               {s.title && <p className="text-xs opacity-80 truncate">{s.title}</p>}
@@ -1316,10 +1355,10 @@ function DayTaskList({
               <div className="shrink-0 w-20 pt-0.5">
                 <div className="flex items-center gap-1 text-xs font-semibold tabular-nums">
                   <Clock className="w-3 h-3 opacity-60" />
-                  {first?.startTime || "—"}
+                  {fmtTime12(first?.startTime) || "—"}
                 </div>
                 {first?.endTime && (
-                  <div className="text-[10px] text-muted-foreground tabular-nums pl-4">to {first.endTime}</div>
+                  <div className="text-[10px] text-muted-foreground tabular-nums pl-4">to {fmtTime12(first.endTime)}</div>
                 )}
               </div>
 
@@ -1392,7 +1431,7 @@ function DayTaskList({
                               type="button"
                               onClick={() => onOpenEdit(s)}
                               className={`text-[11px] px-1.5 py-0.5 hover:brightness-95 transition ${done ? "line-through" : ""}`}
-                              title={`Edit shift — ${s.techName}${s.startTime ? ` · ${s.startTime}${s.endTime ? `–${s.endTime}` : ""}` : ""}`}
+                              title={`Edit shift — ${s.techName}${s.startTime ? ` · ${fmtTimeRange12(s.startTime, s.endTime)}` : ""}`}
                               data-testid={`day-task-shift-${s.id}`}
                             >
                               {s.techName}
