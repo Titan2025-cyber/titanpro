@@ -2,7 +2,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { UserSelect } from "@/components/UserSelect";
 import JobCombobox from "@/components/JobCombobox";
 import { useState } from "react";
-import { Plus, ChevronLeft, ChevronRight, Briefcase, Bell, Plane, Trash2, Calendar as CalIcon, LayoutGrid, ListChecks, X } from "lucide-react";
+import { Plus, ChevronLeft, ChevronRight, Briefcase, Bell, Plane, Trash2, Calendar as CalIcon, LayoutGrid, ListChecks, X, List, Clock, MapPin, ExternalLink, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -109,6 +109,9 @@ export default function Scheduling() {
   // bottom panel listing every shift + time-off for that date as a
   // task-style list. Set from clicking a day cell in either view.
   const [dayDetail, setDayDetail] = useState<string | null>(null);
+  // Task-list view is the default when opening a day — users asked for
+  // a full scan of everything scheduled without having to expand cards.
+  const [dayView, setDayView] = useState<"tasks" | "cards">("tasks");
   // Standalone calendar-event dialog state. Kept separate from the shift
   // dialog so we don't cross-wire two very different data shapes.
   const [eventOpen, setEventOpen] = useState(false);
@@ -681,11 +684,42 @@ export default function Scheduling() {
                   )}
 
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">Jobs on this day</p>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Jobs on this day</p>
+                      {groups.length > 0 && (
+                        <div className="inline-flex rounded border border-border overflow-hidden text-[11px]">
+                          <button
+                            type="button"
+                            onClick={() => setDayView("tasks")}
+                            className={`px-2 py-0.5 flex items-center gap-1 ${dayView === "tasks" ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50"}`}
+                            data-testid="day-view-tasks"
+                            title="Task list — flat, scannable"
+                          >
+                            <List className="w-3 h-3" />Tasks
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDayView("cards")}
+                            className={`px-2 py-0.5 flex items-center gap-1 border-l border-border ${dayView === "cards" ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50"}`}
+                            data-testid="day-view-cards"
+                            title="Grouped by job — click to expand"
+                          >
+                            <LayoutGrid className="w-3 h-3" />Grouped
+                          </button>
+                        </div>
+                      )}
+                    </div>
                     {groups.length === 0 ? (
                       <div className="text-xs text-muted-foreground rounded border border-dashed border-border px-3 py-4 text-center">
                         No jobs scheduled. Click <span className="font-semibold">Shift</span> to assign someone to a job, or <span className="font-semibold">Event</span> for a meeting.
                       </div>
+                    ) : dayView === "tasks" ? (
+                      <DayTaskList
+                        groups={groups}
+                        contacts={contacts}
+                        onOpenEdit={(s) => { setDayDetail(null); openEdit(s); }}
+                        onCloseDialog={() => setDayDetail(null)}
+                      />
                     ) : (
                       <div className="space-y-2">
                         {groups.map(g => <DayJobCard key={`${g.key}`} group={g} onOpenEdit={(s) => { setDayDetail(null); openEdit(s); }} />)}
@@ -902,6 +936,144 @@ function DayJobCard({ group, onOpenEdit }: {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── DayTaskList ─────────────────────────────────────────────────────
+// Flat, scannable task-list view of everything scheduled on a day.
+// One row per job (grouped shifts), sorted by start time. All key info
+// visible without expanding — techs, times, address, status, and a
+// direct link into the job. This is the default view when a day is
+// clicked; the Grouped/card view is still available via the toggle.
+function DayTaskList({
+  groups,
+  contacts,
+  onOpenEdit,
+  onCloseDialog,
+}: {
+  groups: Array<{ key: number | "none"; job: Job | null; shifts: Shift[] }>;
+  contacts: Array<{ id: number; name?: string | null }>;
+  onOpenEdit: (s: Shift) => void;
+  onCloseDialog: () => void;
+}) {
+  const sorted = [...groups].sort((a, b) => {
+    const at = a.shifts[0]?.startTime || "99:99";
+    const bt = b.shifts[0]?.startTime || "99:99";
+    if (at !== bt) return at.localeCompare(bt);
+    const an = a.job?.jobNumber || "";
+    const bn = b.job?.jobNumber || "";
+    return an.localeCompare(bn);
+  });
+
+  return (
+    <div className="rounded border border-border divide-y divide-border overflow-hidden">
+      {sorted.map(g => {
+        const j = g.job;
+        const first = g.shifts[0];
+        const contact = j ? contacts.find(c => c.id === (j as any).contactId) : null;
+        const who = contact?.name || (j as any)?.customerName || (j as any)?.customer || "";
+        const addr = j?.address || "";
+        const loss = (j as any)?.lossType || "";
+        const status = String(j?.status || "").toLowerCase();
+        const statusColor =
+          status === "in_progress" || status === "in-progress" ? "bg-blue-100 text-blue-700 border-blue-300"
+          : status === "closed" || status === "complete" ? "bg-neutral-100 text-neutral-600 border-neutral-300"
+          : status === "on_hold" || status === "on-hold" ? "bg-amber-100 text-amber-700 border-amber-300"
+          : "bg-green-100 text-green-700 border-green-300";
+        const techs = Array.from(new Set(g.shifts.map(s => s.techName).filter(Boolean)));
+
+        return (
+          <div
+            key={String(g.key)}
+            className="p-2.5 hover:bg-muted/30 transition"
+            data-testid={`day-task-${g.key}`}
+          >
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 w-20 pt-0.5">
+                <div className="flex items-center gap-1 text-xs font-semibold tabular-nums">
+                  <Clock className="w-3 h-3 opacity-60" />
+                  {first?.startTime || "—"}
+                </div>
+                {first?.endTime && (
+                  <div className="text-[10px] text-muted-foreground tabular-nums pl-4">to {first.endTime}</div>
+                )}
+              </div>
+
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {j ? (
+                    <a
+                      href={`#/jobs/${j.id}`}
+                      onClick={() => onCloseDialog()}
+                      className="text-sm font-semibold hover:underline flex items-center gap-1"
+                      data-testid={`day-task-job-link-${j.id}`}
+                    >
+                      <Briefcase className="w-3.5 h-3.5 opacity-70" />
+                      {j.jobNumber}
+                      <ExternalLink className="w-3 h-3 opacity-50" />
+                    </a>
+                  ) : (
+                    <span className="text-sm font-semibold flex items-center gap-1 text-muted-foreground">
+                      <CalIcon className="w-3.5 h-3.5" />
+                      {first?.title || "Unassigned"}
+                    </span>
+                  )}
+                  {j && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded border capitalize ${statusColor}`}>
+                      {status.replace("_", " ") || "open"}
+                    </span>
+                  )}
+                  {loss && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded border border-border bg-muted/40 text-muted-foreground capitalize">
+                      {loss}
+                    </span>
+                  )}
+                </div>
+
+                {who && (
+                  <p className="text-xs text-foreground mt-0.5 truncate">
+                    {who}
+                  </p>
+                )}
+                {addr && (
+                  <p className="text-[11px] text-muted-foreground truncate flex items-center gap-1 mt-0.5">
+                    <MapPin className="w-3 h-3 shrink-0 opacity-60" />
+                    {addr}
+                  </p>
+                )}
+
+                <div className="flex flex-wrap gap-1 mt-1.5 items-center">
+                  {g.shifts.length === 0 ? (
+                    <span className="text-[11px] text-muted-foreground italic">No one assigned</span>
+                  ) : (
+                    <>
+                      <Users className="w-3 h-3 opacity-60" />
+                      {g.shifts.map(s => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => onOpenEdit(s)}
+                          className={`text-[11px] px-1.5 py-0.5 rounded border hover:brightness-95 transition ${colorForName(s.techName)}`}
+                          title={`Edit shift — ${s.techName}${s.startTime ? ` · ${s.startTime}${s.endTime ? `–${s.endTime}` : ""}` : ""}`}
+                          data-testid={`day-task-shift-${s.id}`}
+                        >
+                          {s.techName}
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="shrink-0 text-right">
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Shifts</div>
+                <div className="text-sm font-semibold tabular-nums">{g.shifts.length}</div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
