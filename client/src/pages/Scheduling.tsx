@@ -66,6 +66,60 @@ function colorForName(name: string) {
   return COLOR_PALETTE[h % COLOR_PALETTE.length];
 }
 
+// Pinned tech dot colors — solid CSS colors used for the small color
+// dots that show on collapsed calendar chips (week + month views).
+// Mirrors TECH_COLOR_OVERRIDES / COLOR_PALETTE but returns a raw CSS
+// color string so we can use it inline on a <span> instead of a set of
+// Tailwind bg/border/text classes (which don't render as a dot alone).
+const DOT_OVERRIDES: Record<string, string> = {
+  justin: "hsl(var(--titan-red))",
+  john:   "hsl(var(--titan-blue))",
+};
+const DOT_PALETTE = [
+  "hsl(var(--titan-blue))",
+  "#a855f7", // purple-500
+  "#22c55e", // green-500
+  "#f97316", // orange-500
+  "#eab308", // yellow-500
+  "hsl(var(--titan-red))",
+  "#14b8a6", // teal-500
+  "#ec4899", // pink-500
+];
+function dotColorForName(name: string) {
+  const first = String(name || "").trim().toLowerCase().split(/\s+/)[0] || "";
+  if (first && DOT_OVERRIDES[first]) return DOT_OVERRIDES[first];
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return DOT_PALETTE[h % DOT_PALETTE.length];
+}
+
+// Small tech-color dots used on collapsed calendar chips. Renders up to
+// 4 dots (one per unique tech on the shift group) with a "+N" indicator
+// beyond that. Deduplicated by first-name so someone assigned twice on
+// the same job doesn't produce two identical dots. Title attribute
+// exposes the full tech list on hover for accessibility.
+function TechDots({ techNames, size = 8 }: { techNames: string[]; size?: number }) {
+  const unique = Array.from(new Set(techNames.filter(Boolean)));
+  if (unique.length === 0) return null;
+  const shown = unique.slice(0, 4);
+  const extra = unique.length - shown.length;
+  return (
+    <span className="inline-flex items-center gap-0.5 shrink-0" title={unique.join(", ")}>
+      {shown.map((n, i) => (
+        <span
+          key={`${n}-${i}`}
+          aria-label={n}
+          style={{ backgroundColor: dotColorForName(n), width: size, height: size }}
+          className="inline-block rounded-full ring-1 ring-background"
+        />
+      ))}
+      {extra > 0 && (
+        <span className="text-[9px] font-semibold opacity-70 leading-none pl-0.5">+{extra}</span>
+      )}
+    </span>
+  );
+}
+
 function getWeekDates(refDate: Date) {
   const d = new Date(refDate);
   const day = d.getDay();
@@ -780,7 +834,7 @@ export default function Scheduling() {
               // edit dialog for the earliest shift; event chip opens the
               // event edit dialog. Empty cell area still opens day detail.
               type Item =
-                | { kind: "job"; label: string; count: number; time: string; firstShift: Shift; allDone: boolean }
+                | { kind: "job"; label: string; count: number; time: string; firstShift: Shift; allDone: boolean; techNames: string[] }
                 | { kind: "event"; label: string; time: string; ev: CalendarEvent };
               const items: Item[] = [
                 ...groups.map<Item>(g => {
@@ -797,6 +851,7 @@ export default function Scheduling() {
                     time: g.shifts[0]?.startTime || "",
                     firstShift: g.shifts[0],
                     allDone,
+                    techNames: g.shifts.map(s => s.techName).filter(Boolean) as string[],
                   };
                 }),
                 ...dayEvents.map<Item>(ev => ({
@@ -849,6 +904,9 @@ export default function Scheduling() {
                         <div className="flex items-center gap-1 truncate">
                           {it.allDone ? <CheckCircle2 className="w-2.5 h-2.5 shrink-0 opacity-60 text-green-600" /> : <Briefcase className="w-2.5 h-2.5 shrink-0 opacity-60" />}
                           <span className="truncate font-medium">{it.label}</span>
+                          {/* Tech-color dots — visible on the collapsed month chip so
+                             the dispatcher can see WHO is on this job without opening it. */}
+                          <TechDots techNames={it.techNames} size={7} />
                           <span className="opacity-60 ml-auto">×{it.count}</span>
                         </div>
                         {noteText && <p className="truncate opacity-70 pl-3">✎ {noteText}</p>}
@@ -1261,8 +1319,14 @@ function DayJobCard({ group, onOpenEdit }: {
               {group.shifts.length} assigned{times ? ` • ${times}` : ""}
             </p>
           </div>
-          <div className="shrink-0 text-[11px] text-muted-foreground">
-            {expanded ? "Hide" : "View"}
+          <div className="shrink-0 flex items-center gap-2">
+            {/* Tech-color dots on the collapsed week-view chip so the dispatcher
+               sees WHO is on the job before expanding. Uses uniqueTechs so a
+               tech assigned twice on the same job shows once. */}
+            <TechDots techNames={uniqueTechs.filter(Boolean) as string[]} size={9} />
+            <span className="text-[11px] text-muted-foreground">
+              {expanded ? "Hide" : "View"}
+            </span>
           </div>
         </div>
       </button>
