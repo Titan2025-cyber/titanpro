@@ -650,7 +650,10 @@ export function generateDirectionToPayPDF(data: DirectionToPayPDFData): string {
   a = field(doc, "Insured / Property Owner", data.signerName, 18, a) + 5;
   a = field(doc, "Property Address", data.propertyAddress, 18, a, 82) + 5;
 
-  b = field(doc, "Claim Number", data.claimNumber, 110, b) + 5;
+  // Claim# may be pending at signing (carrier hasn't assigned one yet). Render
+  // an explicit placeholder so the notice reads correctly and stays valid;
+  // dispatcher can back-fill on the DTP form and regenerate the PDF.
+  b = field(doc, "Claim Number", data.claimNumber || "Pending — to be provided", 110, b) + 5;
   if (data.policyNumber) b = field(doc, "Policy Number", data.policyNumber, 110, b) + 5;
   if (data.dateOfLoss) b = field(doc, "Date of Loss", fmtDate(data.dateOfLoss, { year: "numeric", month: "long", day: "numeric" }), 110, b) + 5;
 

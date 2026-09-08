@@ -141,7 +141,7 @@ export default function EstimateDetail() {
     // a 403 or network error looked identical to a successful save.
     onError: (e: any) => toast({
       title: "Save failed",
-      description: e?.message || "Estimate did not save. Check your role and try again.",
+      description: e?.message || "Estimate did not save. Try again or refresh the page.",
       variant: "destructive",
     }),
   });

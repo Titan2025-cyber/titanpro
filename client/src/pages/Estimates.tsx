@@ -57,7 +57,7 @@ export default function Estimates() {
     },
     onError: (e: any) => toast({
       title: "Create failed",
-      description: e?.message || "Estimate could not be created. Check your role and try again.",
+      description: e?.message || "Estimate could not be created. Try again or refresh the page.",
       variant: "destructive",
     }),
   });

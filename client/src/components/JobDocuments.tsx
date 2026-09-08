@@ -583,9 +583,14 @@ function DirectionToPayForm({
                 placeholder="e.g. State Farm" data-testid="input-dtp-carrier" />
             </div>
             <div>
-              <Label className="text-xs">Claim Number *</Label>
+              {/* Claim # is optional at signing — carriers often assign it AFTER
+                 first-notice-of-loss, so we let the DTP be captured immediately
+                 and back-filled once the number comes in. The PDF renders
+                 "Pending — to be provided" in place of a missing claim #. */}
+              <Label className="text-xs">Claim Number <span className="text-muted-foreground font-normal">(optional — add later)</span></Label>
               <Input className="mt-1 h-8 text-sm" value={form.claimNumber}
-                onChange={e => setForm(f => ({ ...f, claimNumber: e.target.value }))} />
+                onChange={e => setForm(f => ({ ...f, claimNumber: e.target.value }))}
+                placeholder="Pending — to be provided" />
             </div>
             <div>
               <Label className="text-xs">Policy Number</Label>
@@ -657,7 +662,7 @@ function DirectionToPayForm({
           <Button
             className="flex-1 bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white"
             onClick={() => createMutation.mutate()}
-            disabled={createMutation.isPending || !form.signerName || !form.insuranceCarrier || !form.claimNumber || !sigData}
+            disabled={createMutation.isPending || !form.signerName || !form.insuranceCarrier || !sigData}
             data-testid="button-save-direction-to-pay"
           >
             <CheckCircle2 className="w-4 h-4 mr-2" />
