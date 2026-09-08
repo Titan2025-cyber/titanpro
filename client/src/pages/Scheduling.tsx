@@ -399,6 +399,41 @@ export default function Scheduling() {
                 />
               </div>
 
+              {/* Job context panel — rendered when a job is linked so the dispatcher sees
+                 who/where/what without leaving the dialog. Read-only summary; deep-links
+                 to the job file for full edits. */}
+              {form.jobId && (() => {
+                const linkedJob = jobs.find(j => j.id === Number(form.jobId));
+                if (!linkedJob) return null;
+                const contact = contacts.find(c => c.id === (linkedJob as any).contactId);
+                const who = contact?.name || (linkedJob as any).customerName || "—";
+                const addr = (linkedJob as any).address || "—";
+                const loss = (linkedJob as any).lossType || "—";
+                const carrier = (linkedJob as any).insuranceCarrier || "";
+                const stage = (linkedJob as any).progressStage || "pending_sale";
+                return (
+                  <div className="rounded-lg border border-border bg-muted/30 p-2.5 text-xs space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-[hsl(var(--titan-blue))]">{linkedJob.jobNumber}</span>
+                      <a
+                        href={`/jobs/${linkedJob.id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[11px] text-[hsl(var(--titan-blue))] hover:underline"
+                        data-testid="link-open-job-file"
+                      >Open job file ↗</a>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+                      <div><span className="text-muted-foreground">Customer:</span> <span className="font-medium">{who}</span></div>
+                      <div><span className="text-muted-foreground">Loss:</span> <span className="font-medium capitalize">{loss}</span></div>
+                      <div className="col-span-2"><span className="text-muted-foreground">Address:</span> <span className="font-medium">{addr}</span></div>
+                      {carrier && <div className="col-span-2"><span className="text-muted-foreground">Carrier:</span> <span className="font-medium">{carrier}</span></div>}
+                      <div className="col-span-2"><span className="text-muted-foreground">Stage:</span> <span className="font-medium capitalize">{String(stage).replace(/_/g, " ")}</span></div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div><Label>Shift Title</Label><Input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="e.g. Day 1 Water Extraction" /></div>
 
               <div className="grid grid-cols-3 gap-3">
