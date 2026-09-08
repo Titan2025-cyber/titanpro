@@ -1330,7 +1330,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     requireRole("owner", "admin", "sales")(req, res, next);
   }, (req, res) => {
     const jobId = Number(req.params.id);
-    const before: any = sqlite.prepare("SELECT address, latitude, wip_date FROM jobs WHERE id = ?").get(jobId);
+    const before: any = sqlite.prepare("SELECT address, latitude, wip_date, division FROM jobs WHERE id = ?").get(jobId);
+    // Guard: don't let anyone (bulk update, JobDetail dropdown, script)
+    // set a status that contradicts the job's division. A reconstruction-only
+    // job cannot be in workflow phase mitigation/drying; a mitigation-only
+    // job cannot be in reconstruction. Divisions "both" and "" (legacy) are
+    // unconstrained.
+    if (req.body && typeof req.body.status === "string") {
+      const div = String(before?.division || (req.body.division ?? "")).toLowerCase();
+      const st = req.body.status;
+      if (div === "reconstruction" && (st === "mitigation" || st === "drying")) {
+        return res.status(400).json({ error: `Reconstruction-only jobs cannot be moved to '${st}'. Change scope to 'both' first.` });
+      }
+      if (div === "mitigation" && st === "reconstruction") {
+        return res.status(400).json({ error: `Mitigation-only jobs cannot be moved to 'reconstruction'. Change scope to 'both' first.` });
+      }
+    }
     const j = storage.updateJob(jobId, req.body);
     if (!j) return res.status(404).json({ error: "Not found" });
     // If the address changed OR we still have no coordinates, (re)geocode.

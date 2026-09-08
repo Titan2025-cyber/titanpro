@@ -1230,6 +1230,36 @@ export default function JobDetail() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/jobs"] }),
   });
 
+  // Change the job's scope (division) after creation. The server enforces
+  // that status/phase can't contradict scope, so when scope narrows we also
+  // downshift status into the new scope's phase to avoid a 400 rejection.
+  //   scope 'mitigation'      → status must not be reconstruction
+  //   scope 'reconstruction'  → status must not be mitigation / drying
+  //   scope 'both'            → no constraint
+  const updateScope = useMutation({
+    mutationFn: async (nextDivision: "mitigation" | "reconstruction" | "both") => {
+      const patch: any = { division: nextDivision };
+      const curStatus = String(job?.status || "");
+      if (nextDivision === "mitigation" && curStatus === "reconstruction") {
+        patch.status = "mitigation";
+      } else if (nextDivision === "reconstruction" && (curStatus === "mitigation" || curStatus === "drying")) {
+        patch.status = "reconstruction";
+      }
+      return apiRequest("PATCH", `/api/jobs/${id}`, patch);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      toast({ title: "Scope updated" });
+    },
+    onError: (e: any) => {
+      const raw = String(e?.message || "");
+      const tail = raw.includes(":") ? raw.slice(raw.indexOf(":") + 1).trim() : raw;
+      let msg = tail;
+      try { const j = JSON.parse(tail); if (j?.error) msg = j.error; } catch {}
+      toast({ title: "Couldn't change scope", description: msg, variant: "destructive" });
+    },
+  });
+
   const updateLocation = useMutation({
     mutationFn: (location: string) => apiRequest("PATCH", `/api/jobs/${id}`, { location }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/jobs"] }),
@@ -1564,6 +1594,31 @@ export default function JobDetail() {
               </SelectContent>
             </Select>
           </div>
+          {/* Scope selector — owner/admin/GM can change the job's division
+              after creation (mit-only / recon-only / both). Server-side guard
+              rejects a status that contradicts scope; the mutation downshifts
+              status when narrowing scope so the change goes through cleanly.
+              Data (estimates, drying records, invoices) is preserved as-is
+              on the underlying phase — hiding the tab doesn't delete anything. */}
+          {canManageClose && (
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground leading-none px-1">Scope</span>
+              <Select
+                value={String((job as any).division || "both")}
+                onValueChange={(v) => updateScope.mutate(v as any)}
+                disabled={job.status === "closed" || updateScope.isPending}
+              >
+                <SelectTrigger className="w-40" data-testid="select-detail-scope">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="mitigation">Mitigation only</SelectItem>
+                  <SelectItem value="reconstruction">Reconstruction only</SelectItem>
+                  <SelectItem value="both">Both (mit → recon)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           {canManageClose && (
             <div className="flex flex-col gap-1 justify-end">
               <span className="text-[10px] uppercase tracking-wide text-transparent leading-none px-1 select-none">.</span>

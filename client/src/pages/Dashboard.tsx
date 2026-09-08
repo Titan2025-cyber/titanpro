@@ -215,9 +215,12 @@ export default function Dashboard() {
   const [openBucket, setOpenBucket] = useState<null | "active" | "revenue" | "ar" | "cycle" | "payouts">(null);
   const [bucketSearch, setBucketSearch] = useState("");
   const [bucketStatus, setBucketStatus] = useState("all");
+  // Scope filter (division). Independent of workflow-phase status — lets Cody
+  // ask for "mit-scope jobs" separately from "currently in the mit phase".
+  const [bucketScope, setBucketScope] = useState<"all" | "mitigation" | "reconstruction" | "both">("all");
   const [bucketFrom, setBucketFrom] = useState(""); // date-range start (revenue/AR)
   const [bucketTo, setBucketTo] = useState("");     // date-range end (revenue/AR)
-  const openBucketPanel = (b: "active" | "revenue" | "ar" | "cycle" | "payouts") => { setBucketSearch(""); setBucketStatus("all"); setBucketFrom(""); setBucketTo(""); setOpenBucket(b); };
+  const openBucketPanel = (b: "active" | "revenue" | "ar" | "cycle" | "payouts") => { setBucketSearch(""); setBucketStatus("all"); setBucketScope("all"); setBucketFrom(""); setBucketTo(""); setOpenBucket(b); };
   const money = (n: number) => `$${(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
   const fmtDate = (d?: string | null) => d ? fmtDate(d, { month: "short", day: "numeric", year: "numeric" }) : "—";
 
@@ -246,10 +249,27 @@ export default function Dashboard() {
   };
   const dateRangeActive = !!(bucketFrom || bucketTo);
 
-  const filteredActiveJobs = activeJobs.filter(j =>
-    (bucketStatus === "all" || j.status === bucketStatus) &&
-    match(j.jobNumber, j.status, j.lossType, j.address, j.assignedTech, j.insuranceCarrier)
-  );
+  // Workflow-phase filter for the Active Jobs bucket. The status field can
+  // occasionally drift from the job's actual scope — e.g. a reconstruction-only
+  // job whose status got set to "mitigation" by an earlier bulk update. When
+  // the user asks for phase=mitigation, hard-exclude jobs whose division is
+  // reconstruction (they can't legitimately be in the mitigation phase). Same
+  // guard the other way for phase=reconstruction and mitigation-only jobs.
+  const filteredActiveJobs = activeJobs.filter(j => {
+    const div = String((j as any).division || "").toLowerCase();
+    // Explicit scope filter ("all" bypasses). Legacy jobs with blank division
+    // are treated as "both" so they don't drop out of every filter.
+    if (bucketScope !== "all") {
+      const effective = div || "both";
+      if (effective !== bucketScope) return false;
+    }
+    // Scope-aware phase guard: recon-only jobs can't be in the mit phase and
+    // vice-versa. Keeps stale status values out of the wrong bucket.
+    if (bucketStatus === "mitigation" && div === "reconstruction") return false;
+    if (bucketStatus === "reconstruction" && div === "mitigation") return false;
+    return (bucketStatus === "all" || j.status === bucketStatus) &&
+      match(j.jobNumber, j.status, j.lossType, j.address, j.assignedTech, j.insuranceCarrier);
+  });
   const filteredPayments = receivedPayments.filter((p: any) =>
     inDateRange(p.paidAt) &&
     match(p.method, p.reference, p.notes, p.jobId ? `job #${p.jobId}` : "", p.amount)
@@ -874,6 +894,22 @@ export default function Dashboard() {
                   {(openBucket === "active" ? activeStatuses : arStatuses).map(s => (
                     <option key={s} value={s} className="capitalize">{s}</option>
                   ))}
+                </select>
+              )}
+              {/* Scope filter — only on Active Jobs. Filters on job.division so
+                  a recon-only job never leaks into the mit view even if its
+                  status field is stale. */}
+              {openBucket === "active" && (
+                <select
+                  value={bucketScope}
+                  onChange={(e) => setBucketScope(e.target.value as any)}
+                  data-testid="select-bucket-scope"
+                  className="h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <option value="all">All scopes</option>
+                  <option value="mitigation">Mitigation only</option>
+                  <option value="reconstruction">Reconstruction only</option>
+                  <option value="both">Both (mit → recon)</option>
                 </select>
               )}
             </div>

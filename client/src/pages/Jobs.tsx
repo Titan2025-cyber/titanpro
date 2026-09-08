@@ -881,13 +881,48 @@ export default function Jobs() {
   });
 
   const bulkUpdateMutation = useMutation({
+    // Bulk-move to a workflow phase. Server-side guard rejects moves that
+    // conflict with a job's scope (e.g. moving a reconstruction-only job to
+    // 'mitigation') with a 400 + message. We call each PATCH individually and
+    // count outcomes so the toast can surface the exact number that were
+    // skipped and why.
     mutationFn: async ({ ids, status }: { ids: number[]; status: string }) => {
-      await Promise.all(ids.map(id => apiRequest("PATCH", `/api/jobs/${id}`, { status })));
+      const results = await Promise.all(ids.map(async (id) => {
+        try {
+          await apiRequest("PATCH", `/api/jobs/${id}`, { status });
+          return { id, ok: true as const };
+        } catch (e: any) {
+          // apiRequest throws `Error("<status>: <body>")` on non-2xx. Pull the
+          // server's error message out so the toast can say WHY the job was
+          // skipped (scope conflict, permission, etc.) instead of a bare code.
+          const raw = String(e?.message || "request failed");
+          let msg = raw;
+          const colon = raw.indexOf(":");
+          if (colon >= 0) {
+            const tail = raw.slice(colon + 1).trim();
+            try { const j = JSON.parse(tail); if (j?.error) msg = j.error; else msg = tail; }
+            catch { msg = tail || raw; }
+          }
+          return { id, ok: false as const, msg };
+        }
+      }));
+      return results;
     },
-    onSuccess: () => {
+    onSuccess: (results) => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       setSelectedIds(new Set());
-      toast({ title: `${selectedIds.size} job${selectedIds.size !== 1 ? "s" : ""} updated to ${bulkStatus}` });
+      const ok = results.filter(r => r.ok).length;
+      const skipped = results.filter(r => !r.ok);
+      if (skipped.length === 0) {
+        toast({ title: `${ok} job${ok !== 1 ? "s" : ""} updated to ${bulkStatus}` });
+      } else {
+        const firstReason = skipped[0]?.msg || "conflict with job scope";
+        toast({
+          title: `${ok} updated, ${skipped.length} skipped`,
+          description: firstReason,
+          variant: skipped.length === results.length ? "destructive" : undefined,
+        });
+      }
     },
     onError: () => toast({ title: "Error", description: "Bulk update failed", variant: "destructive" }),
   });
