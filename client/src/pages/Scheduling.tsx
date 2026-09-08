@@ -2,7 +2,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { UserSelect } from "@/components/UserSelect";
 import JobCombobox from "@/components/JobCombobox";
 import { useState, useEffect } from "react";
-import { Plus, ChevronLeft, ChevronRight, Briefcase, Bell, Plane, Trash2, Calendar as CalIcon, LayoutGrid, ListChecks, X, List, Clock, MapPin, ExternalLink, Users, Check, CheckCircle2, Move } from "lucide-react";
+import { Plus, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Briefcase, Bell, Plane, Trash2, Calendar as CalIcon, LayoutGrid, ListChecks, X, List, Clock, MapPin, ExternalLink, Users, Check, CheckCircle2, Move } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -115,7 +115,18 @@ export default function Scheduling() {
   // Persisted per session in a useState — not localStorage — because
   // dispatchers move between the two constantly and the browser refresh
   // rate matters less than not surprising them next login.
-  const [view, setView] = useState<"week" | "month">("month");
+  const [view, setView] = useState<"week" | "month" | "list">("month");
+  // Set of shift ids whose inline editor is currently expanded under its
+  // chip in week/month view. Kept in-memory only — dispatchers rarely need
+  // to keep an editor open across refreshes.
+  const [expandedShifts, setExpandedShifts] = useState<Set<number>>(new Set());
+  const toggleExpanded = (id: number) => {
+    setExpandedShifts(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
   // The day-detail sheet: when set to an ISO date string, we render a
   // bottom panel listing every shift + time-off for that date as a
   // task-style list. Set from clicking a day cell in either view.
@@ -549,6 +560,12 @@ export default function Scheduling() {
             onClick={() => setView("month")}
             data-testid="button-view-month"
           ><CalIcon className="w-3.5 h-3.5" /> Month</button>
+          <button
+            type="button"
+            className={`px-2.5 py-1 text-xs flex items-center gap-1 border-l border-border ${view === "list" ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}
+            onClick={() => setView("list")}
+            data-testid="button-view-list"
+          ><List className="w-3.5 h-3.5" /> List</button>
         </div>
       </div>
 
@@ -610,10 +627,8 @@ export default function Scheduling() {
                   const first = g.shifts[0];
                   const times = first?.startTime ? `${first.startTime}${first.endTime ? `–${first.endTime}` : ""}` : "";
                   const label = g.job ? jobDisplayLabel(g.job) : (first?.title || "Unassigned");
-                  // Click routing: single shift → open its edit dialog directly.
-                  // Multiple shifts (multi-tech on one job) → day detail so the
-                  // dispatcher can pick which assignee to edit. This matches how
-                  // month view routes clicks and keeps every chip actionable.
+                  // Any shift in this group has its inline editor expanded?
+                  const anyExpanded = g.shifts.some(s => expandedShifts.has(s.id));
                   const onChipClick = (e: any) => {
                     e.stopPropagation();
                     if (g.shifts.length === 1 && first) openEdit(first);
@@ -622,25 +637,53 @@ export default function Scheduling() {
                   return (
                     <div
                       key={`${g.key}`}
-                      role="button"
-                      tabIndex={0}
-                      className="text-xs rounded border border-border bg-card hover:bg-muted/40 px-1.5 py-1 cursor-pointer transition"
-                      onClick={onChipClick}
-                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onChipClick(e); } }}
+                      className="text-xs rounded border border-border bg-card overflow-hidden"
                       data-testid={`job-group-${dateStr}-${g.key}`}
-                      title={g.shifts.length === 1
-                        ? `Click to edit — ${label}${times ? ` • ${times}` : ""}`
-                        : `${label} — ${g.shifts.length} assigned • click to see all`}
                     >
-                      <p className="font-semibold truncate flex items-center gap-1">
-                        <Briefcase className="w-2.5 h-2.5 shrink-0 opacity-70" />
-                        <span className="truncate">{label}</span>
-                      </p>
-                      {first?.title && !g.job && <p className="truncate opacity-80">{first.title}</p>}
-                      <p className="opacity-70 tabular-nums flex items-center gap-1 justify-between">
-                        <span>{times || "—"}</span>
-                        <span className="text-[10px]">{g.shifts.length} assigned</span>
-                      </p>
+                      {/* Chip header — click opens full editor (or day detail if
+                         multi-tech). Chevron toggles inline editors below. */}
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        className="px-1.5 py-1 cursor-pointer hover:bg-muted/40 transition flex items-start gap-1"
+                        onClick={onChipClick}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onChipClick(e); } }}
+                        title={g.shifts.length === 1
+                          ? `Click to edit — ${label}${times ? ` • ${times}` : ""}`
+                          : `${label} — ${g.shifts.length} assigned • click to see all`}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold truncate flex items-center gap-1">
+                            <Briefcase className="w-2.5 h-2.5 shrink-0 opacity-70" />
+                            <span className="truncate">{label}</span>
+                          </p>
+                          {first?.title && !g.job && <p className="truncate opacity-80">{first.title}</p>}
+                          <p className="opacity-70 tabular-nums flex items-center gap-1 justify-between">
+                            <span>{times || "—"}</span>
+                            <span className="text-[10px]">{g.shifts.length} assigned</span>
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); g.shifts.forEach(s => { if (anyExpanded) expandedShifts.delete(s.id); else expandedShifts.add(s.id); }); setExpandedShifts(new Set(expandedShifts)); }}
+                          className="p-0.5 rounded hover:bg-muted shrink-0"
+                          title={anyExpanded ? "Hide quick edit" : "Quick edit (time + note)"}
+                          data-testid={`week-expand-${dateStr}-${g.key}`}
+                        >
+                          {anyExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                        </button>
+                      </div>
+                      {anyExpanded && (
+                        <div className="border-t border-border bg-muted/20 px-1.5 py-1.5 space-y-1">
+                          {g.shifts.map(s => (
+                            <InlineShiftEditor
+                              key={`inline-${s.id}`}
+                              shift={s}
+                              onPatch={(patch) => patchShiftMutation.mutate({ id: s.id, patch })}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -747,19 +790,32 @@ export default function Scheduling() {
                   </div>
                   <div className="space-y-0.5">
                     {shown.map((it, idx) => it.kind === "job" ? (
+                      (() => {
+                        // Task-note preview for the month chip — pull the first
+                        // non-empty note across the group so the dispatcher
+                        // sees "what's on the calendar for" without expanding.
+                        const noteText = it.firstShift && (it.firstShift as any).notes
+                          ? String((it.firstShift as any).notes).trim()
+                          : "";
+                        return (
                       <div
                         key={`j-${idx}`}
                         role="button"
                         tabIndex={0}
                         onClick={(e) => { e.stopPropagation(); if (it.firstShift) openEdit(it.firstShift); else setDayDetail(dateStr); }}
                         onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); if (it.firstShift) openEdit(it.firstShift); } }}
-                        className={`truncate text-[10px] leading-tight px-1 py-0.5 rounded border border-border bg-card flex items-center gap-1 cursor-pointer hover:bg-muted ${it.allDone ? "opacity-50 line-through" : ""}`}
-                        title={it.allDone ? "Completed — click to edit" : "Click to edit shift"}
+                        className={`text-[10px] leading-tight px-1 py-0.5 rounded border border-border bg-card cursor-pointer hover:bg-muted ${it.allDone ? "opacity-50 line-through" : ""}`}
+                        title={it.allDone ? "Completed — click to edit" : `Click to edit shift${noteText ? ` — ${noteText}` : ""}`}
                       >
-                        {it.allDone ? <CheckCircle2 className="w-2.5 h-2.5 shrink-0 opacity-60 text-green-600" /> : <Briefcase className="w-2.5 h-2.5 shrink-0 opacity-60" />}
-                        <span className="truncate font-medium">{it.label}</span>
-                        <span className="opacity-60 ml-auto">×{it.count}</span>
+                        <div className="flex items-center gap-1 truncate">
+                          {it.allDone ? <CheckCircle2 className="w-2.5 h-2.5 shrink-0 opacity-60 text-green-600" /> : <Briefcase className="w-2.5 h-2.5 shrink-0 opacity-60" />}
+                          <span className="truncate font-medium">{it.label}</span>
+                          <span className="opacity-60 ml-auto">×{it.count}</span>
+                        </div>
+                        {noteText && <p className="truncate opacity-70 pl-3">✎ {noteText}</p>}
                       </div>
+                        );
+                      })()
                     ) : (
                       <div
                         key={`e-${idx}`}
@@ -789,6 +845,53 @@ export default function Scheduling() {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* LIST VIEW — flat scannable list of every day that has work,
+         grouped by date, each day rendered with the same DayTaskList
+         used inside the day sheet. Inline time + task-note editors live
+         on every row so the dispatcher can adjust everything without
+         clicking into a dialog. */}
+      {view === "list" && (
+        <div className="space-y-4">
+          {(() => {
+            const dates = view === "list" ? monthGrid.map(d => isoDate(d)) : [];
+            const withWork = dates
+              .map(d => ({ date: d, groups: groupShiftsByJob(shiftsOnDate(d)) }))
+              .filter(x => x.groups.length > 0);
+            if (withWork.length === 0) {
+              return (
+                <div className="rounded border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+                  No shifts scheduled in this range. Use <span className="font-semibold">Assign Job / Shift</span> to add one.
+                </div>
+              );
+            }
+            return withWork.map(({ date, groups }) => {
+              const [y, m, d] = date.split("-").map(Number);
+              const dObj = new Date(y, m - 1, d);
+              const label = dObj.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+              const isToday = date === isoDate(new Date());
+              return (
+                <div key={date} className="space-y-1.5">
+                  <div className="flex items-center gap-2 sticky top-0 bg-background/95 backdrop-blur py-1 z-10">
+                    <h3 className={`text-sm font-semibold ${isToday ? "text-[hsl(var(--titan-red))]" : ""}`}>{label}</h3>
+                    {isToday && <span className="text-[10px] font-semibold uppercase tracking-wide bg-[hsl(var(--titan-red))] text-white px-1.5 py-0.5 rounded">Today</span>}
+                    <span className="text-xs text-muted-foreground">{groups.length} job{groups.length !== 1 ? "s" : ""}</span>
+                  </div>
+                  <DayTaskList
+                    groups={groups}
+                    contacts={contacts}
+                    onOpenEdit={openEdit}
+                    onCloseDialog={() => {}}
+                    onToggleComplete={(id, completed) => toggleShiftComplete.mutate({ id, completed })}
+                    onMove={(id, newDate) => moveShift.mutate({ id, shiftDate: newDate })}
+                    onPatchShift={(id, patch) => patchShiftMutation.mutate({ id, patch })}
+                  />
+                </div>
+              );
+            });
+          })()}
         </div>
       )}
 
