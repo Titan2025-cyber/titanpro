@@ -1690,7 +1690,7 @@ export default function JobDetail() {
             <StickyNote className="w-3 h-3" />
             Notes {notesCount > 0 && <span className="ml-1 bg-[hsl(var(--titan-blue))] text-white text-[10px] px-1.5 py-0 rounded-full leading-5">{notesCount}</span>}
           </TabsTrigger>
-          {!isRecon && <TabsTrigger value="mitigation"><Droplets className="w-3 h-3 mr-1 inline-block" />Mitigation</TabsTrigger>}
+          {jobScope !== "reconstruction" && <TabsTrigger value="mitigation"><Droplets className="w-3 h-3 mr-1 inline-block" />Mitigation</TabsTrigger>}
           <TabsTrigger value="photos"><Camera className="w-3 h-3 mr-1 inline-block" />Photos</TabsTrigger>
           <TabsTrigger value="documents"><FolderOpen className="w-3 h-3 mr-1 inline-block" />Documents</TabsTrigger>
           <TabsTrigger value="estimates">Estimates ({visibleEstimates.length})</TabsTrigger>
@@ -1701,7 +1701,7 @@ export default function JobDetail() {
           <TabsTrigger value="supplements">Supplements</TabsTrigger>
           <TabsTrigger value="safety">Safety</TabsTrigger>
           <TabsTrigger value="hazmat"><FlaskConical className="w-3 h-3 mr-1 inline-block" />Lead &amp; Asbestos</TabsTrigger>
-          {!isRecon && <TabsTrigger value="dry-report">Dry Report</TabsTrigger>}
+          {jobScope !== "reconstruction" && <TabsTrigger value="dry-report">Dry Report</TabsTrigger>}
           <TabsTrigger value="warranty"><Wrench className="w-3 h-3 mr-1 inline-block" />Warranty Calls</TabsTrigger>
           {hasReferralPartner && <TabsTrigger value="referral-payout"><HandCoins className="w-3 h-3 mr-1 inline-block" />Referral Payout</TabsTrigger>}
           <TabsTrigger value="sms-thread"><MessageSquare className="w-3 h-3 mr-1 inline-block" />SMS Thread</TabsTrigger>

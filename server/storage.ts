@@ -634,6 +634,14 @@ if (!jobCols.includes("division")) {
       WHERE division IS NULL`);
   } catch (_) {}
 }
+// Idempotent safety net — any job that slipped through with a NULL/blank
+// division (e.g. legacy voice intake, direct API POST without the field,
+// or an old row that missed the initial backfill) gets set to 'mitigation'
+// so the Mitigation + Dry Report tabs render in JobDetail. Runs every boot;
+// no-op once every row is populated.
+try {
+  sqlite.exec(`UPDATE jobs SET division = 'mitigation' WHERE division IS NULL OR TRIM(division) = ''`);
+} catch (_) {}
 // Service market/branch: 'Augusta' | 'Columbia'. Backfill best-effort from the
 // free-text address (SC or Columbia-area cities => Columbia; else Augusta).
 if (!jobCols.includes("location")) {
@@ -1340,6 +1348,14 @@ class SqliteStorage implements IStorage {
   }
   createJob(data: schema.InsertJob) {
     const d: any = { ...data, createdAt: new Date().toISOString() };
+    // Job division drives which phases the JobDetail workspace exposes
+    // (mitigation-only, reconstruction-only, or both). Default to
+    // "mitigation" when unset so the Mitigation + Dry Report tabs are
+    // never accidentally hidden on a fresh job. Voice-intake and any
+    // future intake path that doesn't pass division inherits this.
+    if (d.division === undefined || d.division === null || d.division === "") {
+      d.division = "mitigation";
+    }
     // Defensive coercion — the client sometimes sends "" for integer-typed
     // columns (year_built, square_feet, contact_id, referral_partner_id)
     // because form inputs stay controlled with an empty string. SQLite will
