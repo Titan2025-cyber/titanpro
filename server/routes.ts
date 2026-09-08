@@ -5550,6 +5550,25 @@ cody@titanrestorationllc.com`;
   // Deploy-verification endpoint. Reads the commit SHA from build time so we
   // can confirm Railway actually shipped the newest push instead of guessing
   // from cached chunk hashes.
+  // Diagnostic: latest few jobs with the raw fields that decide bucket + tab
+  // visibility. Owner-only so it never leaks in prod incidents. Use this to
+  // debug "my new job isn't showing up in a bucket" — look at progress_stage,
+  // status, division, and job_kind on the tail of the table.
+  app.get("/api/_debug/recent-jobs", requireAuth, (req, res) => {
+    const user = (req as any).user;
+    if (!user || user.role !== "owner") return res.status(403).json({ error: "owner only" });
+    try {
+      const rows = sqlite.prepare(
+        `SELECT id, job_number, status, progress_stage, division, job_kind,
+                incidental_reason, created_at, deleted_at
+         FROM jobs ORDER BY id DESC LIMIT 10`
+      ).all();
+      res.json({ rows });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   app.get("/api/version", (_req, res) => {
     try {
       const sha =

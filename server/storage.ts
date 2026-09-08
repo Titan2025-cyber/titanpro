@@ -642,6 +642,12 @@ if (!jobCols.includes("division")) {
 try {
   sqlite.exec(`UPDATE jobs SET division = 'mitigation' WHERE division IS NULL OR TRIM(division) = ''`);
 } catch (_) {}
+// Same idea for progress_stage. A row with NULL/blank progress_stage doesn't
+// match any pipeline bucket (Pending/Pre-Prod/WIP/etc.) so it renders as a
+// ghost — present in the DB, absent from the board. Backfill to 'pending_sale'.
+try {
+  sqlite.exec(`UPDATE jobs SET progress_stage = 'pending_sale' WHERE progress_stage IS NULL OR TRIM(progress_stage) = ''`);
+} catch (_) {}
 // Service market/branch: 'Augusta' | 'Columbia'. Backfill best-effort from the
 // free-text address (SC or Columbia-area cities => Columbia; else Augusta).
 if (!jobCols.includes("location")) {
@@ -1355,6 +1361,19 @@ class SqliteStorage implements IStorage {
     // future intake path that doesn't pass division inherits this.
     if (d.division === undefined || d.division === null || d.division === "") {
       d.division = "mitigation";
+    }
+    // Progress stage drives the pipeline bucket the job renders in. Schema has
+    // a default of "pending_sale", but some intake paths (voice, quick-add,
+    // incidental toggle in Jobs.tsx) can send null/undefined explicitly, which
+    // then overrides the column default. Guarantee a valid value here so the
+    // job always lands in a real bucket. Same treatment for status — blank
+    // status hides the job from any WHERE status != 'closed' inversions.
+    const VALID_STAGES = new Set(["pending_sale","pre_production","wip","invoice_pending","accounts_receivable","complete"]);
+    if (!d.progressStage || !VALID_STAGES.has(String(d.progressStage))) {
+      d.progressStage = "pending_sale";
+    }
+    if (!d.status || String(d.status).trim() === "") {
+      d.status = "new";
     }
     // Defensive coercion — the client sometimes sends "" for integer-typed
     // columns (year_built, square_feet, contact_id, referral_partner_id)
