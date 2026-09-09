@@ -944,6 +944,38 @@ function RecordCard({ record, jobId, readOnly, priorRecords = [] }: { record: Dr
   const [equipRows, setEquipRows] = useState<EquipRow[]>(
     JSON.parse(record.equipment || "[]")
   );
+
+  // Running equipment roster from every earlier record on this job. If a tech
+  // adds a piece to Day 1 AFTER Day 2 was saved (retro-edit), that piece is
+  // still physically on site but wasn't stored on Day 2's `equipment`. So we
+  // derive the carried set here and render it below the day's own log as a
+  // read-only "Also on site" block. Same rule as the PDF report so screen and
+  // paper stay identical.
+  const carriedEquip: EquipRow[] = (() => {
+    if (!priorRecords || priorRecords.length === 0) return [];
+    const keyOf = (e: EquipRow) =>
+      `${String(e.type || "").toLowerCase()}␟${String(e.serialNumber || "").trim()}␟${String(e.room || "").trim().toLowerCase()}`;
+    const cutoff = record.readingDate || "";
+    // Roll a de-duped roster forward through every earlier record.
+    const roster = new Map<string, EquipRow>();
+    const chronoAsc = [...priorRecords]
+      .filter(r => (r as any).recordType !== "missed")
+      .sort((a, b) => (a.dayNumber || 0) - (b.dayNumber || 0));
+    chronoAsc.forEach(pr => {
+      let rows: EquipRow[] = [];
+      try { rows = JSON.parse(pr.equipment || "[]"); } catch { rows = []; }
+      rows.filter(Boolean).forEach(r => roster.set(keyOf(r), r));
+    });
+    // Exclude anything the current day's own log already covers (dedupe) and
+    // anything pulled before this reading date.
+    const ownKeys = new Set(equipRows.map(keyOf));
+    return Array.from(roster.values()).filter(r => {
+      if (ownKeys.has(keyOf(r))) return false;
+      if (!r.endDate) return true;
+      if (!cutoff) return true;
+      return r.endDate >= cutoff;
+    });
+  })();
   const [areaRows, setAreaRows] = useState<AreaRow[]>(
     JSON.parse(record.affectedAreas || "[]")
   );
@@ -1144,6 +1176,37 @@ function RecordCard({ record, jobId, readOnly, priorRecords = [] }: { record: Dr
               areaRows={areaRows}
               readingDate={form.readingDate}
             />
+
+            {/* Carried-forward roster. Read-only list of items added on an
+                EARLIER day that are still deployed at this reading date but
+                aren't in this record's own equipment column (usually because
+                they were added retroactively after this day was saved). This
+                mirrors the report's carry-forward logic so the on-screen view
+                and the PDF always agree. */}
+            {carriedEquip.length > 0 && (
+              <div className="border rounded-md p-2 bg-muted/20">
+                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                  Also On Site — Carried From Earlier Days
+                </p>
+                <div className="space-y-1">
+                  {carriedEquip.map((r, i) => (
+                    <div key={`carried-${i}`} className="text-xs flex items-center gap-2 text-muted-foreground">
+                      <span className="font-medium text-foreground">{r.type}</span>
+                      {r.qty > 1 && <span>×{r.qty}</span>}
+                      {r.serialNumber && <span className="opacity-70">#{r.serialNumber}</span>}
+                      {r.room && <span className="opacity-70">· {r.room}</span>}
+                      {r.placement && <span className="opacity-70">({r.placement})</span>}
+                      <span className="ml-auto text-[10px] opacity-60">since {r.startDate || "earlier"}</span>
+                    </div>
+                  ))}
+                </div>
+                {editing && (
+                  <p className="text-[10px] italic text-muted-foreground mt-2">
+                    Tip: to record daily readings for these on this day, add matching rows above (same type + serial).
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Affected areas */}
             <AffectedAreasTable rows={areaRows} onChange={setAreaRows} readOnly={!editing} />

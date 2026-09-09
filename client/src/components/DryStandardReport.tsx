@@ -501,21 +501,38 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
       endTime?: string;
     };
     const equipmentOwn = parseArr<EquipmentEntry>(rec.equipment);
-    let equipment = equipmentOwn;
-    let equipCarried = false;
-    if (equipmentOwn.length === 0 && lastEquipSnap.length > 0) {
-      // Carry forward only assets that weren't pulled (no endDate before
-      // this record's date). This shows what a reviewer would expect to
-      // still be on site on that visit even when the tech didn't re-log.
-      const cutoff = rec.readingDate || "";
-      equipment = (lastEquipSnap as EquipmentEntry[]).filter(e => {
-        if (!e.endDate) return true;
-        if (!cutoff) return true;
-        return e.endDate >= cutoff;
+    // Always union own-equipment with any earlier-day items that are still
+    // deployed at this reading date. This fixes the retro-edit gap where a
+    // tech adds a piece to Day 1 AFTER Day 2 was saved: Day 2's stored
+    // equipment column no longer holds it, but the physical piece was
+    // still on site — the report has to show it.
+    //
+    // Dedupe by (type|serial|room) so a piece the tech DID re-log on this
+    // day doesn't render twice. Own rows win over carried rows so per-day
+    // detail (start/end times etc.) come from the day's own snapshot when
+    // present.
+    const keyOf = (e: EquipmentEntry) =>
+      `${String(e.type || "").toLowerCase()}␟${String(e.serialNumber || "").trim()}␟${String(e.room || "").trim().toLowerCase()}`;
+    const ownKeys = new Set(equipmentOwn.map(keyOf));
+    const cutoff = rec.readingDate || "";
+    const stillOn = (lastEquipSnap as EquipmentEntry[]).filter(e => {
+      if (ownKeys.has(keyOf(e))) return false; // own row already covers it
+      if (!e.endDate) return true;              // never pulled → still there
+      if (!cutoff) return true;
+      return e.endDate >= cutoff;               // pulled on/after this day
+    });
+    let equipment: EquipmentEntry[] = [...equipmentOwn, ...stillOn];
+    const equipCarried = stillOn.length > 0 && equipmentOwn.length === 0;
+    if (equipmentOwn.length > 0) {
+      // Update rolling roster: keep pre-existing carried items that are still
+      // deployed AND merge in this day's own snapshot so the next day sees
+      // the full picture (including retro-added items from any prior day).
+      const merged = new Map<string, EquipmentEntry>();
+      (lastEquipSnap as EquipmentEntry[]).forEach(e => {
+        if (!e.endDate || (cutoff && e.endDate >= cutoff)) merged.set(keyOf(e), e);
       });
-      equipCarried = equipment.length > 0;
-    } else if (equipmentOwn.length > 0) {
-      lastEquipSnap = equipmentOwn;
+      equipmentOwn.forEach(e => merged.set(keyOf(e), e));
+      lastEquipSnap = Array.from(merged.values());
       lastEquipFromDay = dayLabel;
     }
     y = ensureSpace(y, 8 + Math.max(equipment.length, 1) * 5 + 4 + (equipCarried ? 4 : 0), dayLabel);
