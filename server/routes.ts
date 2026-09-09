@@ -2789,13 +2789,85 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ── Shifts ────────────────────────────────────────────────────────────────
-  app.get("/api/shifts", (_req, res) => { res.json(storage.getShifts()); });
+  // Scope: dispatchers/owners see every shift; a tech sees only shifts assigned
+  // to them so they can't peek at other techs' schedules. Match is by
+  // first-name token (lowercased) because shifts.tech_name is free-form and the
+  // rest of the app (calendar colors, chips) already consistently keys on the
+  // first token. Anonymous requests still get the full list — the endpoint
+  // wasn't previously auth-required and we preserve that for the mobile
+  // in-app calls that don't send a bearer.
+  app.get("/api/shifts", (req, res) => {
+    const all = storage.getShifts();
+    // Try to resolve the caller without failing when unauthenticated.
+    let emp: any = null;
+    try {
+      const token = String(req.headers.authorization || "").replace("Bearer ", "").trim();
+      if (token) {
+        const session: any = sqlite.prepare(
+          "SELECT * FROM staff_sessions WHERE session_token = ? AND expires_at > ?"
+        ).get(token, new Date().toISOString());
+        if (session) {
+          emp = sqlite.prepare("SELECT id, name, role FROM employees WHERE id = ? AND is_active = 1").get(session.employee_id);
+        }
+      }
+    } catch {}
+    if (emp && String(emp.role).toLowerCase() === "tech") {
+      const mine = String(emp.name || "").trim().toLowerCase().split(/\s+/)[0] || "";
+      const filtered = all.filter((s: any) => {
+        const t = String(s.techName || "").trim().toLowerCase().split(/\s+/)[0] || "";
+        return t === mine;
+      });
+      return res.json(filtered);
+    }
+    res.json(all);
+  });
   app.get("/api/shifts/:id", (req, res) => {
     const s = storage.getShift(Number(req.params.id));
     if (!s) return res.status(404).json({ error: "Not found" });
+    // Same tech scope guard as the list endpoint — prevent id-guessing.
+    try {
+      const token = String(req.headers.authorization || "").replace("Bearer ", "").trim();
+      if (token) {
+        const session: any = sqlite.prepare(
+          "SELECT * FROM staff_sessions WHERE session_token = ? AND expires_at > ?"
+        ).get(token, new Date().toISOString());
+        if (session) {
+          const emp: any = sqlite.prepare("SELECT id, name, role FROM employees WHERE id = ? AND is_active = 1").get(session.employee_id);
+          if (emp && String(emp.role).toLowerCase() === "tech") {
+            const mine = String(emp.name || "").trim().toLowerCase().split(/\s+/)[0] || "";
+            const t = String((s as any).techName || "").trim().toLowerCase().split(/\s+/)[0] || "";
+            if (t !== mine) return res.status(404).json({ error: "Not found" });
+          }
+        }
+      }
+    } catch {}
     res.json(s);
   });
+  // Small helper: is the caller a `tech` role (used to reject dispatcher-only
+  // mutations from a tech account). Returns { isTech, firstName, emp } so the
+  // call-site can also enforce "only their own shift" for allowed actions.
+  function resolveCallerScope(req: any): { isTech: boolean; firstName: string; emp: any } {
+    try {
+      const token = String(req.headers.authorization || "").replace("Bearer ", "").trim();
+      if (!token) return { isTech: false, firstName: "", emp: null };
+      const session: any = sqlite.prepare(
+        "SELECT * FROM staff_sessions WHERE session_token = ? AND expires_at > ?"
+      ).get(token, new Date().toISOString());
+      if (!session) return { isTech: false, firstName: "", emp: null };
+      const emp: any = sqlite.prepare("SELECT id, name, role FROM employees WHERE id = ? AND is_active = 1").get(session.employee_id);
+      if (!emp) return { isTech: false, firstName: "", emp: null };
+      const isTech = String(emp.role).toLowerCase() === "tech";
+      const firstName = String(emp.name || "").trim().toLowerCase().split(/\s+/)[0] || "";
+      return { isTech, firstName, emp };
+    } catch {
+      return { isTech: false, firstName: "", emp: null };
+    }
+  }
+
   app.post("/api/shifts", (req, res) => {
+    // Techs can't create shifts (dispatcher-only action).
+    const scope = resolveCallerScope(req);
+    if (scope.isTech) return res.status(403).json({ error: "Only dispatchers can create shifts." });
     const shift = storage.createShift(req.body);
     // Notify the assigned tech by email (best-effort, fire-and-forget).
     // Uses the real SMTP/Gmail transport when configured; silent no-op
@@ -2827,6 +2899,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(shift);
   });
   app.patch("/api/shifts/:id", (req, res) => {
+    // Techs can't edit shifts — they can only mark THEIR OWN complete via
+    // the /complete sub-route below.
+    const scope = resolveCallerScope(req);
+    if (scope.isTech) return res.status(403).json({ error: "Only dispatchers can edit shifts." });
     const prev = storage.getShift(Number(req.params.id));
     const s = storage.updateShift(Number(req.params.id), req.body);
     if (!s) return res.status(404).json({ error: "Not found" });
@@ -2860,6 +2936,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(s);
   });
   app.delete("/api/shifts/:id", (req, res) => {
+    // Dispatcher-only.
+    const scope = resolveCallerScope(req);
+    if (scope.isTech) return res.status(403).json({ error: "Only dispatchers can delete shifts." });
     storage.deleteShift(Number(req.params.id));
     res.json({ success: true });
   });
@@ -2870,6 +2949,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const id = Number(req.params.id);
     const cur = storage.getShift(id);
     if (!cur) return res.status(404).json({ error: "Not found" });
+    // A tech can only mark their own shift complete. Dispatchers can toggle any.
+    const scope = resolveCallerScope(req);
+    if (scope.isTech) {
+      const t = String((cur as any).techName || "").trim().toLowerCase().split(/\s+/)[0] || "";
+      if (t !== scope.firstName) return res.status(403).json({ error: "You can only update your own shifts." });
+    }
     const currentlyDone = !!(cur as any).completedAt;
     const wantDone = req.body && typeof req.body.completed === "boolean" ? !!req.body.completed : !currentlyDone;
     const who = (req as any).user?.name || null;

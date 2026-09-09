@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useAuth } from "@/lib/auth";
 import type { Shift, Job } from "@shared/schema";
 
 // A system user (from User Management) that can be assigned shifts.
@@ -182,6 +183,12 @@ function fmtTimeRange12(a: string | null | undefined, b: string | null | undefin
 }
 
 export default function Scheduling() {
+  // Techs get a read-only view of THEIR OWN schedule. The server already
+  // filters /api/shifts to their name, so this flag drives the UI so
+  // dispatcher-only affordances (create/edit/delete/drag) don't render.
+  // Completing their own shift is still allowed via the check button.
+  const { user } = useAuth();
+  const isTech = !!user && String(user.role).toLowerCase() === "tech";
   const [weekRef, setWeekRef] = useState(new Date());
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -452,15 +459,20 @@ export default function Scheduling() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-xl font-bold">Calendar</h1>
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            onClick={() => openCreateEvent()}
-            data-testid="button-new-event"
-            title="Add an event (meeting, training, etc.) not tied to a job"
-          >
-            <CalIcon className="w-4 h-4 mr-2" />New Event
-          </Button>
+          {/* Dispatcher-only affordances. Techs see a read-only calendar of
+              their own shifts — they don't create events or assign work. */}
+          {!isTech && (
+            <Button
+              variant="outline"
+              onClick={() => openCreateEvent()}
+              data-testid="button-new-event"
+              title="Add an event (meeting, training, etc.) not tied to a job"
+            >
+              <CalIcon className="w-4 h-4 mr-2" />New Event
+            </Button>
+          )}
         <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setEditingId(null); }}>
+          {!isTech && (
           <DialogTrigger asChild>
             <Button
               className="bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red-dark))] text-white"
@@ -470,6 +482,7 @@ export default function Scheduling() {
               <Plus className="w-4 h-4 mr-2" />Assign Job / Shift
             </Button>
           </DialogTrigger>
+          )}
           <DialogContent>
             <DialogHeader><DialogTitle>{editingId != null ? "Edit Shift" : "Assign Job / Shift"}</DialogTitle></DialogHeader>
             <div className="space-y-3">
@@ -672,21 +685,22 @@ export default function Scheduling() {
             >
               <button
                 type="button"
-                className={`w-full flex items-center justify-between px-2 py-1 text-xs font-semibold border-b hover:bg-muted transition-colors ${today ? "text-[hsl(var(--titan-red))]" : "text-muted-foreground"}`}
-                onClick={() => openCreate(dateStr)}
-                title="Add shift for this day"
+                className={`w-full flex items-center justify-between px-2 py-1 text-xs font-semibold border-b transition-colors ${isTech ? "cursor-default" : "hover:bg-muted"} ${today ? "text-[hsl(var(--titan-red))]" : "text-muted-foreground"}`}
+                onClick={() => { if (!isTech) openCreate(dateStr); }}
+                title={isTech ? undefined : "Add shift for this day"}
                 data-testid={`day-header-${dateStr}`}
               >
                 <span>{DAY_LABELS[i]} <span className={`font-bold ${today ? "" : "text-foreground"}`}>{date.getDate()}</span></span>
-                <Plus className="w-3 h-3 opacity-50" />
+                {!isTech && <Plus className="w-3 h-3 opacity-50" />}
               </button>
               <div
-                className="p-1 space-y-1 flex-1 cursor-pointer"
+                className={`p-1 space-y-1 flex-1 ${isTech ? "cursor-default" : "cursor-pointer"}`}
                 onClick={(e) => {
                   // Only trigger add-on-empty when the actual container was
                   // clicked (not a child pill). We check the target directly
                   // instead of stopPropagation on children so shift edits still
-                  // route to their own handler.
+                  // route to their own handler. Techs don't create shifts.
+                  if (isTech) return;
                   if (e.target === e.currentTarget) openCreate(dateStr);
                 }}
               >
@@ -1024,14 +1038,16 @@ export default function Scheduling() {
                         {dayOff.length > 0 && ` • ${dayOff.length} out`}
                       </p>
                     </div>
-                    <div className="flex gap-1 shrink-0">
-                      <Button size="sm" variant="outline" onClick={() => { setDayDetail(null); openCreateEvent(dayDetail); }} data-testid="button-day-add-event">
-                        <CalIcon className="w-4 h-4 mr-1" />Event
-                      </Button>
-                      <Button size="sm" onClick={() => { setDayDetail(null); openCreate(dayDetail); }} data-testid="button-day-add-shift">
-                        <Plus className="w-4 h-4 mr-1" />Shift
-                      </Button>
-                    </div>
+                    {!isTech && (
+                      <div className="flex gap-1 shrink-0">
+                        <Button size="sm" variant="outline" onClick={() => { setDayDetail(null); openCreateEvent(dayDetail); }} data-testid="button-day-add-event">
+                          <CalIcon className="w-4 h-4 mr-1" />Event
+                        </Button>
+                        <Button size="sm" onClick={() => { setDayDetail(null); openCreate(dayDetail); }} data-testid="button-day-add-shift">
+                          <Plus className="w-4 h-4 mr-1" />Shift
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </DialogHeader>
 
