@@ -142,6 +142,27 @@ export const getQueryFn: <T>(options: {
     return await res.json();
   };
 
+// ── Retry policy (2026-09-10) ─────────────────────────────────────────────────
+// Historical default was `retry: false`, which meant a single transient hiccup
+// (network blip, gateway 502, Railway sandbox waking up, SQLite lock retry)
+// would surface as "<Page> failed to load" via the ErrorBoundary and only
+// clear on a manual refresh. That is exactly the symptom the owner reported
+// across the app. Now: retry ONCE for genuinely transient failures
+// (fetch TypeError, HTTP 429/500/502/503/504, timeouts), and never retry
+// deterministic errors (4xx, 401 auth issues), which will always fail again
+// and would just delay the real error. Mutations still don't retry — writes
+// must be intentional. Backoff is a fixed 400ms so the user doesn't feel it.
+function shouldRetryQuery(failureCount: number, error: unknown): boolean {
+  if (failureCount >= 1) return false; // one retry, then give up
+  if (error instanceof TypeError) return true; // fetch network error
+  const msg = error instanceof Error ? error.message : String(error);
+  // getQueryFn's throwIfResNotOk formats messages as "<status>: <body>".
+  const m = msg.match(/^(\d{3}):/);
+  if (!m) return false;
+  const status = Number(m[1]);
+  return status === 408 || status === 425 || status === 429 || (status >= 500 && status < 600);
+}
+
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -149,7 +170,8 @@ export const queryClient = new QueryClient({
       refetchInterval: false,
       refetchOnWindowFocus: false,
       staleTime: Infinity,
-      retry: false,
+      retry: shouldRetryQuery,
+      retryDelay: 400,
     },
     mutations: {
       retry: false,

@@ -5525,6 +5525,82 @@ cody@titanrestorationllc.com`;
     res.json({ draft, statute, state });
   });
 
+  // ── Client error reporting (2026-09-10) ────────────────────────────────────
+  // ErrorBoundary POSTs a payload here every time a page-level render error
+  // is caught. We store it in a rolling table (last 500 entries) so the owner
+  // can look at what actually broke without asking users to open devtools.
+  // Owner-only read endpoint below. The write endpoint is UNAUTHENTICATED on
+  // purpose — an auth failure is a valid reason to hit the boundary and we
+  // still want the report. Payloads are size-capped to prevent abuse.
+  try {
+    sqlite.exec(
+      "CREATE TABLE IF NOT EXISTS client_errors (" +
+      "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+      "created_at TEXT NOT NULL, " +
+      "page TEXT, " +
+      "message TEXT, " +
+      "stack TEXT, " +
+      "component_stack TEXT, " +
+      "url TEXT, " +
+      "user_agent TEXT, " +
+      "attempt INTEGER DEFAULT 0, " +
+      "user_id INTEGER" +
+      ")"
+    );
+    sqlite.exec("CREATE INDEX IF NOT EXISTS idx_client_errors_created ON client_errors(created_at DESC)");
+  } catch (err) {
+    console.warn("[client_errors] table init failed:", err);
+  }
+
+  app.post("/api/client-errors", (req, res) => {
+    try {
+      const b = req.body || {};
+      const clip = (v: any, n: number) => (typeof v === "string" ? v.slice(0, n) : "");
+      const staffTok = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+      let userId: number | null = null;
+      if (staffTok) {
+        try {
+          const row = sqlite.prepare("SELECT user_id FROM sessions WHERE token = ?").get(staffTok) as any;
+          if (row?.user_id) userId = row.user_id;
+        } catch { /* sessions table may not exist in some envs */ }
+      }
+      sqlite.prepare(
+        "INSERT INTO client_errors (created_at, page, message, stack, component_stack, url, user_agent, attempt, user_id) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run(
+        new Date().toISOString(),
+        clip(b.page, 100),
+        clip(b.message, 500),
+        clip(b.stack, 2000),
+        clip(b.componentStack, 2000),
+        clip(b.url, 500),
+        clip(b.userAgent, 300),
+        Number.isFinite(b.attempt) ? Number(b.attempt) : 0,
+        userId,
+      );
+      // Rolling cap — keep newest 500 entries so this never grows unbounded.
+      sqlite.exec("DELETE FROM client_errors WHERE id NOT IN (SELECT id FROM client_errors ORDER BY id DESC LIMIT 500)");
+      console.warn(`[client-error] ${b.page || "?"}: ${clip(b.message, 200)}`);
+      res.status(204).end();
+    } catch (err: any) {
+      // Never let error-reporting itself fail the client. Log and 204.
+      console.warn("[client_errors] insert failed:", err?.message);
+      res.status(204).end();
+    }
+  });
+
+  app.get("/api/client-errors", requireRole("owner", "admin"), (_req, res) => {
+    try {
+      const rows = sqlite.prepare(
+        "SELECT id, created_at, page, message, url, attempt, user_id, substr(component_stack,1,400) AS component_stack " +
+        "FROM client_errors ORDER BY id DESC LIMIT 100"
+      ).all();
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "query_failed" });
+    }
+  });
+
   // ── Health check ─────────────────────────────────────────────────────────
   app.get("/api/health", (_req, res) => {
     try {
