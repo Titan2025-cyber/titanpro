@@ -367,10 +367,20 @@ export function LiveCameraCapture({
       </div>
 
       {/* ── Viewfinder ──────────────────────────────────────────── */}
-      <div className="relative flex-1 bg-black overflow-hidden">
+      {/*
+        Anchor the viewfinder to the TOP of the available area instead of
+        centering it (2026-09-10 fix). On a portrait phone the 4:3 sensor
+        frame fits by width and leaves vertical slack; the default
+        object-contain then centers the video, which pushed it visually
+        down near the shutter and hid what the tech was pointing at. We
+        pin it top with a small buffer below the aspect selector so the
+        subject is always framed high in the screen, above the shutter
+        controls, with breathing room from the header.
+      */}
+      <div className="relative flex-1 bg-black overflow-hidden pt-3">
         <video
           ref={videoRef}
-          className="w-full h-full object-contain"
+          className="w-full h-full object-contain object-top"
           playsInline
           muted
           autoPlay
@@ -525,7 +535,11 @@ function AspectMask({
         frameW = ch * sensor;
       }
       const frameLeft = (cw - frameW) / 2;
-      const frameTop = (ch - frameH) / 2;
+      // Video uses `object-top` (2026-09-10) so the rendered frame is
+      // pinned to the top of the container, not vertically centered.
+      // Keep frameTop at 0 so the crop mask sits directly on the video
+      // rather than floating over dead space.
+      const frameTop = 0;
 
       // Center-crop that rendered frame to the target aspect.
       let cropW = frameW;
@@ -562,7 +576,9 @@ function AspectMask({
   // viewfinder container.
   const barStyle = { background: "rgba(0,0,0,0.55)" } as const;
   return (
-    <div className="absolute inset-0 pointer-events-none" aria-hidden="true">
+    // Match the viewfinder container's top padding so the mask's
+    // coordinate origin lines up with where the video actually renders.
+    <div className="absolute inset-0 pt-3 pointer-events-none" aria-hidden="true">
       {/* top */}
       <div style={{ ...barStyle, position: "absolute", top: 0, left: 0, right: 0, height: box.top }} />
       {/* bottom */}

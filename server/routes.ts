@@ -2614,137 +2614,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.json({ alerted: true, consecutive: false, wetCount: latestFlagged.wetReadings.length, noteAdded: true });
   });
 
-  // ── Drying Plan: deterministic forward reading schedule ───────────────────
-  // For an active/completed drying job, computes the full expected reading
-  // calendar from mitigation_start using the job's water_category as the
-  // baseline day count (S500: Cat1=3, Cat2=4, Cat3=5) and marks each day as
-  // completed | today_due | missed | upcoming based on drying_records rows.
-  // Also returns a target completion date, a missed-day tally, and the next
-  // action a tech should take — all consumed by MyToday + the Drying tab.
+  // ── Drying Plan: DISABLED (2026-09-10) ───────────────────────────────────
+  // The forward-projecting reading calendar was removed at the owner's
+  // request. It flagged any day without a reading as 'missed' and pushed
+  // techs (and Cody) to back-fill days that weren't actually needed for the
+  // job. Drying records are now driven purely by what techs enter — no
+  // synthetic days, no back-fill nag. The endpoint is kept as a stub so a
+  // client that still requests /api/jobs/:id/drying-plan during a rolling
+  // deploy gets an inert empty plan instead of a 404 that trips ErrorBoundary.
   app.get("/api/jobs/:id/drying-plan", (req, res) => {
     const jobId = Number(req.params.id);
-    const job = sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId) as any;
-    if (!job) return res.status(404).json({ error: "job_not_found" });
-
-    // Baseline day count per IICRC S500 category. Techs can extend by simply
-    // logging additional readings past the target — the endpoint auto-grows
-    // the plan to cover the actual reading history so the UI never truncates.
-    const cat = (job.water_category || "category1").toLowerCase();
-    const baseDays = cat.includes("3") ? 5 : cat.includes("2") ? 4 : 3;
-
-    // Start date is mitigation_start; if missing, fall back to created_at so
-    // the plan still renders (day 1 anchored at whatever start we can find).
-    const startIso: string | null =
-      job.mitigation_start || job.created_at || null;
-    if (!startIso) {
-      return res.json({
-        jobId,
-        startDate: null,
-        category: cat,
-        baselineDays: baseDays,
-        days: [],
-        completedCount: 0,
-        missedCount: 0,
-        remainingDays: baseDays,
-        targetCompletionDate: null,
-        nextAction: "Set mitigation start date on the job to build a drying plan.",
-      });
-    }
-
-    const startMs = new Date(startIso).getTime();
-    const dayMs = 24 * 3600 * 1000;
-    const todayMs = new Date(new Date().toISOString().slice(0, 10) + "T00:00:00.000Z").getTime();
-    // Anchor day 1 at the LOCAL date of mitigation_start (strip time-of-day)
-    // so hourly drift doesn't push a same-day reading into day 2.
-    const startDateOnly = new Date(startIso).toISOString().slice(0, 10);
-    const startAnchor = new Date(startDateOnly + "T00:00:00.000Z").getTime();
-    const daysSinceStart = Math.floor((todayMs - startAnchor) / dayMs);
-
-    // All readings for this job, keyed by reading_date ymd.
-    const readings = (() => {
-      try {
-        return sqlite.prepare(
-          "SELECT reading_date AS d, day_number AS n FROM drying_records WHERE job_id = ? ORDER BY reading_date ASC"
-        ).all(jobId) as any[];
-      } catch {
-        return [] as any[];
-      }
-    })();
-    const readingsByDate = new Map<string, number>();
-    for (const r of readings) {
-      const d = String(r.d || "").slice(0, 10);
-      if (!d) continue;
-      readingsByDate.set(d, (readingsByDate.get(d) || 0) + 1);
-    }
-
-    // Plan spans max(baseline, actual days observed + 1) so the tech sees
-    // both the target and any bonus days they've logged past it.
-    const observedMaxDay = daysSinceStart + 1;
-    const totalDays = Math.max(baseDays, observedMaxDay);
-
-    const days: any[] = [];
-    let completedCount = 0;
-    let missedCount = 0;
-
-    for (let i = 1; i <= totalDays; i++) {
-      const dateMs = startAnchor + (i - 1) * dayMs;
-      const dateYmd = new Date(dateMs).toISOString().slice(0, 10);
-      const hasReading = readingsByDate.has(dateYmd);
-      let status: string;
-      if (hasReading) {
-        status = "completed";
-        completedCount++;
-      } else if (dateMs === todayMs) {
-        status = "today_due";
-      } else if (dateMs < todayMs) {
-        status = "missed";
-        missedCount++;
-      } else {
-        status = "upcoming";
-      }
-      days.push({
-        day: i,
-        date: dateYmd,
-        status,
-        readings: readingsByDate.get(dateYmd) || 0,
-      });
-    }
-
-    // Target completion = start + baselineDays - 1 (i.e. day <baseDays>).
-    const targetMs = startAnchor + (baseDays - 1) * dayMs;
-    const targetCompletionDate = new Date(targetMs).toISOString().slice(0, 10);
-
-    // Remaining scheduled days from today (only counting upcoming baseline days).
-    const remainingDays = days.filter(d => d.status === "upcoming" && d.day <= baseDays).length;
-
-    // Next action: today's reading if due, else missed-day catch-up, else the next upcoming reading.
-    let nextAction = "On schedule — no reading due today.";
-    const todayEntry = days.find(d => d.status === "today_due");
-    if (todayEntry) {
-      nextAction = `Log today's reading (Day ${todayEntry.day}) — required by S500.`;
-    } else if (missedCount > 0) {
-      const firstMissed = days.find(d => d.status === "missed");
-      nextAction = `Back-fill ${missedCount} missed day${missedCount > 1 ? "s" : ""} — starting Day ${firstMissed.day} (${firstMissed.date}).`;
-    } else {
-      const nextUpcoming = days.find(d => d.status === "upcoming");
-      if (nextUpcoming) {
-        nextAction = `Next reading: Day ${nextUpcoming.day} on ${nextUpcoming.date}.`;
-      } else if (job.status === "drying") {
-        nextAction = "Baseline schedule met — verify drying goals and advance job status.";
-      }
-    }
-
-    res.json({
+    return res.json({
       jobId,
-      startDate: startDateOnly,
-      category: cat,
-      baselineDays: baseDays,
-      days,
-      completedCount,
-      missedCount,
-      remainingDays,
-      targetCompletionDate,
-      nextAction,
+      startDate: null,
+      category: "",
+      baselineDays: 0,
+      days: [],
+      completedCount: 0,
+      missedCount: 0,
+      remainingDays: 0,
+      targetCompletionDate: null,
+      nextAction: "",
+      disabled: true,
     });
   });
 
