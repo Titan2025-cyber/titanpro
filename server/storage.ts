@@ -1819,18 +1819,6 @@ class SqliteStorage implements IStorage {
   }
   deleteAdjusterMeeting(id: number) { db.delete(schema.adjusterMeetings).where(eq(schema.adjusterMeetings.id, id)).run(); }
 
-  // Inspection Checklists
-  getInspectionChecklists(jobId: number) {
-    return db.select().from(schema.inspectionChecklists).where(eq(schema.inspectionChecklists.jobId, jobId)).all();
-  }
-  getInspectionChecklist(id: number) { return db.select().from(schema.inspectionChecklists).where(eq(schema.inspectionChecklists.id, id)).get(); }
-  createInspectionChecklist(data: schema.InsertInspectionChecklist) {
-    return db.insert(schema.inspectionChecklists).values({ ...data, createdAt: new Date().toISOString() }).returning().get();
-  }
-  updateInspectionChecklist(id: number, data: Partial<schema.InsertInspectionChecklist>) {
-    return db.update(schema.inspectionChecklists).set(data).where(eq(schema.inspectionChecklists.id, id)).returning().get();
-  }
-
   // Review Requests
   getReviewRequests(jobId?: number) {
     if (jobId) return db.select().from(schema.reviewRequests).where(eq(schema.reviewRequests.jobId, jobId)).all();

@@ -41,7 +41,6 @@ const PAGES: PageEntry[] = [
   { id: "page:equipment",   label: "Equipment Hub",       href: "/equipment-hub", icon: Package },
   { id: "page:safety",      label: "Safety Hub",          href: "/safety-hub",    icon: ShieldCheck },
   { id: "page:reports",     label: "Reports Hub",         href: "/reports-hub",   icon: BarChart3 },
-  { id: "page:inspections", label: "Inspections",         href: "/inspections",   icon: Wrench },
   { id: "page:vehicles",    label: "Vehicles",            href: "/vehicles",      icon: Truck },
   { id: "page:messages",    label: "Messages",            href: "/messages",      icon: MessageSquare },
   { id: "page:map",         label: "Service Area Map",    href: "/service-map",   icon: MapPin },

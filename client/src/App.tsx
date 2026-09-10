@@ -97,7 +97,6 @@ const TeamActivity = lazy(() => import("@/pages/TeamActivity"));
 const AdjusterDB = lazy(() => import("@/pages/AdjusterDB"));
 const ARaging = lazy(() => import("@/pages/ARaging"));
 const EquipmentROI = lazy(() => import("@/pages/EquipmentROI"));
-const InspectionChecklist = lazy(() => import("@/pages/InspectionChecklist"));
 const ReviewRequests = lazy(() => import("@/pages/ReviewRequests"));
 const CertTracker = lazy(() => import("@/pages/CertTracker"));
 const PartnerScorecard = lazy(() => import("@/pages/PartnerScorecard"));
@@ -326,7 +325,6 @@ function AuthenticatedRoutes() {
         <Route path="/inventory"><Redirect to="/equipment-hub?tab=consumables" /></Route>
         <Route path="/consumables"><Redirect to="/equipment-hub?tab=consumables" /></Route>
         <Route path="/equipment-roi"><Redirect to="/equipment-hub?tab=roi" /></Route>
-        <Route path="/inspections" component={() => <Page component={InspectionChecklist} name="InspectionChecklist" />} />
         <Route path="/safety"><Redirect to="/safety-hub?tab=log" /></Route>
         <Route path="/certifications"><Redirect to="/hr-hub?tab=workforce" /></Route>
 

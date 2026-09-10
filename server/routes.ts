@@ -5184,18 +5184,6 @@ Titan Restoration LLC | Augusta, GA` },
     storage.deleteAdjusterMeeting(Number(req.params.id)); res.json({ ok: true });
   });
 
-  // ── Inspection Checklists ─────────────────────────────────────────────────
-  app.get("/api/jobs/:jobId/inspections", (req, res) => {
-    res.json(storage.getInspectionChecklists(Number(req.params.jobId)));
-  });
-  app.post("/api/jobs/:jobId/inspections", (req, res) => {
-    res.json(storage.createInspectionChecklist({ ...req.body, jobId: Number(req.params.jobId) }));
-  });
-  app.patch("/api/inspections/:id", (req, res) => {
-    res.json(storage.updateInspectionChecklist(Number(req.params.id), req.body));
-  });
-
-  // ── Review Requests ───────────────────────────────────────────────────────
   app.get("/api/review-requests", (_req, res) => { res.json(storage.getReviewRequests()); });
   app.get("/api/jobs/:jobId/review-requests", (req, res) => {
     res.json(storage.getReviewRequests(Number(req.params.jobId)));

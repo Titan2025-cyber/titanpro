@@ -97,7 +97,6 @@ const navGroups: NavGroup[] = [
       { href: "/time-clock", label: "GPS Time Clock", icon: ClipboardCheck, permission: "time-clock" },
       // Photos Hub (capture + search + AI classify) replaces three separate items.
       { href: "/photos-hub", label: "Photos", icon: Camera, permission: "photos" },
-      { href: "/inspections", label: "Pre-Job Inspections", icon: ClipboardList, permission: "technician" },
       // Subcontractors + COI vault — compliance is a Field Ops concern.
       { href: "/subcontractors-hub", label: "Subcontractors", icon: HardHat, permission: "business-dev" },
       // Removed from sidebar (routes preserved so bookmarks still work):
