@@ -1,27 +1,13 @@
 /*
- * ErrorBoundary.tsx — resilient render-error boundary for page-level trees.
+ * ErrorBoundary.tsx — render-error boundary for page-level trees.
  *
- * The historical version simply displayed "<Page> failed to load" the first
- * time a child threw, which meant a single stale-query render or a transient
- * fetch error took the whole page down until the user refreshed. That was the
- * exact symptom the owner reported ("<page> failed to load … clears on
- * refresh so this has to be a code issue").
+ * Root causes of "failed to load, clears on refresh" were fixed at the
+ * source (null-safe field access, defensive JSON.parse, guarded array reads).
+ * We deliberately do NOT auto-retry here — silent retries hide bugs; if a
+ * page throws we want the fallback UI and a phone-home so the exact stack
+ * lands in /api/client-errors instead of vanishing on a background remount.
  *
- * This version does two things differently:
- *
- * 1. Auto-retry once, silently. When a child throws, we bump `attempt`,
- *    remount the subtree, and give it another shot. If it throws a second
- *    time within the same page mount, we surface the fallback UI. This kills
- *    the class of intermittent failures caused by stale queries settling
- *    between renders or a single network blip.
- *
- * 2. Phone home. Every caught error is POSTed to /api/client-errors with
- *    page name, message, componentStack, url, and userAgent. The server
- *    logs it to a rolling table so we can actually see WHICH pages and
- *    WHICH stacks are flaking in production without asking the user to
- *    open devtools.
- *
- * "Try again" also invalidates every React Query cache entry so the retry
+ * "Try again" invalidates every React Query cache entry so the retry
  * actually re-fetches instead of rendering the same stale state.
  */
 
@@ -35,12 +21,11 @@ interface State {
   hasError: boolean;
   error: string;
   errorInfo: string;
-  attempt: number;      // remount counter — bumping re-renders the subtree
-  autoRetried: boolean; // we only auto-retry once per page mount
+  attempt: number; // remount counter — bumping re-renders the subtree on Try again
 }
 
 export class ErrorBoundary extends Component<Props, State> {
-  state: State = { hasError: false, error: "", errorInfo: "", attempt: 0, autoRetried: false };
+  state: State = { hasError: false, error: "", errorInfo: "", attempt: 0 };
 
   static getDerivedStateFromError(error: Error): Partial<State> {
     return { hasError: true, error: error?.message || "Unknown error" };
@@ -72,22 +57,6 @@ export class ErrorBoundary extends Component<Props, State> {
         keepalive: true, // fire during unload/navigation
       }).catch(() => { /* swallow */ });
     } catch { /* swallow */ }
-
-    // Auto-retry once silently. If the subtree throws again, we bail to the
-    // fallback UI so the user sees a coherent error instead of an infinite
-    // flicker. 250ms delay lets any settling state (queries, ResizeObserver)
-    // resolve before the remount.
-    if (!this.state.autoRetried) {
-      setTimeout(() => {
-        this.setState((s) => ({
-          hasError: false,
-          error: "",
-          errorInfo: "",
-          attempt: s.attempt + 1,
-          autoRetried: true,
-        }));
-      }, 250);
-    }
   }
 
   handleTryAgain = () => {
@@ -99,13 +68,12 @@ export class ErrorBoundary extends Component<Props, State> {
       error: "",
       errorInfo: "",
       attempt: s.attempt + 1,
-      // leave autoRetried alone — manual retry doesn't re-arm the silent one
     }));
   };
 
   handleGoHome = () => {
     window.location.hash = "/";
-    this.setState({ hasError: false, error: "", errorInfo: "", autoRetried: false });
+    this.setState({ hasError: false, error: "", errorInfo: "" });
   };
 
   render() {
@@ -144,8 +112,9 @@ export class ErrorBoundary extends Component<Props, State> {
         </div>
       );
     }
-    // The `key` remounts the entire subtree whenever we bump `attempt`, which
-    // is what allows the silent auto-retry to give the page a fresh start.
+    // The `key` remounts the entire subtree whenever "Try again" bumps
+    // `attempt`, so the retry starts from a fresh mount rather than
+    // rendering the same broken state.
     return <div key={this.state.attempt}>{this.props.children}</div>;
   }
 }

@@ -551,7 +551,7 @@ function ReorderListDialog() {
             ) : (
               <div className="max-h-[55vh] overflow-auto space-y-4">
                 <div className="text-sm">{data.count} item(s) at or below reorder point · est. total <strong>{money(data.estGrandTotal)}</strong></div>
-                {data.groups.map((g) => (
+                {(data.groups || []).map((g) => (
                   <div key={g.vendor}>
                     <div className="font-semibold text-sm mb-1">{g.vendor} <span className="font-normal text-muted-foreground">— est {money(g.estTotal)}</span></div>
                     <Table>
@@ -560,7 +560,7 @@ function ReorderListDialog() {
                         <TableHead className="text-right">Reorder qty</TableHead><TableHead className="text-right">Est. cost</TableHead>
                       </TableRow></TableHeader>
                       <TableBody>
-                        {g.items.map((it) => (
+                        {(g.items || []).map((it) => (
                           <TableRow key={it.id}>
                             <TableCell>{it.name}{it.sku ? <span className="text-xs text-muted-foreground"> [{it.sku}]</span> : null}</TableCell>
                             <TableCell className="text-right text-red-600">{it.onHand} {it.unit}</TableCell>

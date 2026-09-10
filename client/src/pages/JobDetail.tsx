@@ -1111,7 +1111,7 @@ function CustomerPortalCard({ contact }: { contact: Contact }) {
 
         {isActive && (
           <div className="rounded-lg border border-border bg-muted/40 p-3 space-y-2">
-            <p className="text-xs font-semibold flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5 text-green-600" />Login details to share with {contact.name.split(" ")[0]}</p>
+            <p className="text-xs font-semibold flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5 text-green-600" />Login details to share with {String(contact?.name || "").split(" ")[0] || "the customer"}</p>
             <div className="grid gap-1.5 text-sm">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-muted-foreground text-xs">Portal link</span>

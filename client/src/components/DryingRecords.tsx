@@ -1055,8 +1055,8 @@ function RecordCard({ record, jobId, readOnly, priorRecords = [] }: { record: Dr
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex flex-wrap gap-1.5 items-center">
-              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${catInfo?.color}`}>{catInfo?.label.split("—")[0].trim()}</span>
-              <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-purple-100 text-purple-800">{classInfo?.label.split("—")[0].trim()}</span>
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${catInfo?.color || "bg-muted text-muted-foreground"}`}>{String(catInfo?.label || "").split("—")[0].trim() || record.waterCategory || "—"}</span>
+              <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-purple-100 text-purple-800">{String(classInfo?.label || "").split("—")[0].trim() || record.waterClass || "—"}</span>
               {record.structuralDryingComplete === 1 && <Badge className="bg-green-500 text-white text-xs">✓ Dry</Badge>}
               {totalReadings > 0 && wetCount === 0 && record.structuralDryingComplete !== 1 && <Badge className="bg-yellow-400 text-yellow-900 text-xs">All readings at target</Badge>}
               {wetCount > 0 && <Badge variant="destructive" className="text-xs">{wetCount}/{totalReadings} WET</Badge>}

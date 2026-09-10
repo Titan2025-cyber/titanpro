@@ -88,8 +88,17 @@ export default function InspectionChecklist() {
       ) : (
         <div className="space-y-3">
           {(allInspections as any[]).map((insp: any) => {
-            const items = JSON.parse(insp.checklistItems || "[]");
-            const readings = JSON.parse(insp.moistureReadings || "[]");
+            // Both fields are JSON text; a corrupt row shouldn't take the page down.
+            let items: any[] = [];
+            let readings: any[] = [];
+            try {
+              const p = JSON.parse(insp.checklistItems || "[]");
+              items = Array.isArray(p) ? p : [];
+            } catch { items = []; }
+            try {
+              const p = JSON.parse(insp.moistureReadings || "[]");
+              readings = Array.isArray(p) ? p : [];
+            } catch { readings = []; }
             const checked = items.filter((ci: any) => ci.checked).length;
             return (
               <Card key={insp.id} data-testid={`card-inspection-${insp.id}`}>

@@ -84,7 +84,11 @@ export default function SupplementAutoDraft() {
     // Final moisture readings
     const finalReadings = jobDrying.filter((r: any) => r.status === "closed" || r.status === "complete");
     const hasHighMoisture = jobDrying.some((r: any) => {
-      const readings = JSON.parse(r.readings || "[]");
+      let readings: any[] = [];
+      try {
+        const parsed = JSON.parse(r.readings || "[]");
+        readings = Array.isArray(parsed) ? parsed : [];
+      } catch { readings = []; }
       return readings.some((rd: any) => rd.value > 16); // 16% WME threshold per IICRC S500
     });
 

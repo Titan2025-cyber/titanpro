@@ -786,7 +786,7 @@ function ComplianceTab() {
       </div>
       <Card><CardHeader className="pb-2"><CardTitle className="text-base">Flags</CardTitle></CardHeader>
         <CardContent><ul className="space-y-2 text-sm">
-          {data.flags.map((f: any, i: number) => (<li key={i} className="flex items-start gap-2"><ClipboardCheck className={`w-4 h-4 mt-0.5 ${ico(f.level)}`} /><span>{f.text}</span></li>))}
+          {(data.flags || []).map((f: any, i: number) => (<li key={i} className="flex items-start gap-2"><ClipboardCheck className={`w-4 h-4 mt-0.5 ${ico(f.level)}`} /><span>{f.text}</span></li>))}
         </ul></CardContent>
       </Card>
       <div>

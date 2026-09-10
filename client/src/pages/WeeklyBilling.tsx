@@ -150,10 +150,19 @@ function PeriodDetail({ periodStart, groupBy, label }: { periodStart: string; gr
   if (isLoading) return <div className="h-16 bg-muted/50 rounded animate-pulse" />;
   if (!data) return <p className="text-sm text-muted-foreground">Couldn't load details.</p>;
 
+  // Every section reads a top-level array off `data`. A malformed / partial
+  // response used to crash the whole detail panel here — default each bucket
+  // to [] so a missing key just renders "(0)" instead of throwing.
+  const billed: any[] = Array.isArray(data.billed) ? data.billed : [];
+  const collected: any[] = Array.isArray(data.collected) ? data.collected : [];
+  const costs: any[] = Array.isArray(data.costs) ? data.costs : [];
+  const settled: any[] = Array.isArray(data.settled) ? data.settled : [];
+  const creditMemos: any[] = Array.isArray(data.creditMemos) ? data.creditMemos : [];
+
   const sections: { title: string; rows: any[]; render: (r: any) => JSX.Element }[] = [
     {
-      title: `Billed — invoices (${data.billed.length})`,
-      rows: data.billed,
+      title: `Billed — invoices (${billed.length})`,
+      rows: billed,
       render: (r) => (
         <div key={`b-${r.id}`} className="flex items-center justify-between py-1 text-sm" data-testid={`detail-billed-${r.id}`}>
           <span className="flex items-center gap-2">
@@ -166,8 +175,8 @@ function PeriodDetail({ periodStart, groupBy, label }: { periodStart: string; gr
       ),
     },
     {
-      title: `Brought In — payments (${data.collected.length})`,
-      rows: data.collected,
+      title: `Brought In — payments (${collected.length})`,
+      rows: collected,
       render: (r) => (
         <div key={`c-${r.id}`} className="flex items-center justify-between py-1 text-sm" data-testid={`detail-collected-${r.id}`}>
           <span className="flex items-center gap-2">
@@ -179,8 +188,8 @@ function PeriodDetail({ periodStart, groupBy, label }: { periodStart: string; gr
       ),
     },
     {
-      title: `Cost — job costs (${data.costs.length})`,
-      rows: data.costs,
+      title: `Cost — job costs (${costs.length})`,
+      rows: costs,
       render: (r) => (
         <div key={`ct-${r.id}`} className="flex items-center justify-between py-1 text-sm" data-testid={`detail-cost-${r.id}`}>
           <span className="flex items-center gap-2">
@@ -192,8 +201,8 @@ function PeriodDetail({ periodStart, groupBy, label }: { periodStart: string; gr
       ),
     },
     {
-      title: `Settled — supplements (${data.settled.length})`,
-      rows: data.settled,
+      title: `Settled — supplements (${settled.length})`,
+      rows: settled,
       render: (r) => (
         <div key={`s-${r.id}`} className="flex items-center justify-between py-1 text-sm" data-testid={`detail-settled-${r.id}`}>
           <span className="flex items-center gap-2">
@@ -205,8 +214,8 @@ function PeriodDetail({ periodStart, groupBy, label }: { periodStart: string; gr
       ),
     },
     {
-      title: `Credit Memos (${data.creditMemos.length})`,
-      rows: data.creditMemos,
+      title: `Credit Memos (${creditMemos.length})`,
+      rows: creditMemos,
       render: (r) => (
         <div key={`cm-${r.id}`} className="flex items-center justify-between py-1 text-sm" data-testid={`detail-creditmemo-${r.id}`}>
           <span className="flex items-center gap-2">

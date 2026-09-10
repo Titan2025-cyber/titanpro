@@ -60,7 +60,7 @@ function VehicleCard({ vehicle, onAddService, onEdit }: { vehicle: Vehicle; onAd
             <div className="flex items-center gap-2">
               <Truck className="w-5 h-5 text-blue-600" />
               <h3 className="font-bold">{vehicle.name}</h3>
-              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[vehicle.status]}`}>{vehicle.status.replace("_", " ")}</span>
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[vehicle.status] || "bg-muted text-muted-foreground"}`}>{String(vehicle.status || "unknown").replace("_", " ")}</span>
             </div>
             <p className="text-sm text-muted-foreground mt-0.5">
               {[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(" ")}

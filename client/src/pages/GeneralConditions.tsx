@@ -35,7 +35,12 @@ export default function GeneralConditions() {
     queryFn: () => apiRequest(`/api/general-conditions/${selectedJobId}`).then(r => r.json()),
     enabled: !!selectedJobId,
     onSuccess: (data: GCChecklist) => {
-      const parsed: GCItem[] = typeof data.items === "string" ? JSON.parse(data.items) : data.items;
+      // items is stored as JSON text on some rows and as an array on others.
+      let parsed: GCItem[] = [];
+      try {
+        const raw = typeof data.items === "string" ? JSON.parse(data.items) : data.items;
+        parsed = Array.isArray(raw) ? raw : [];
+      } catch { parsed = []; }
       setItems(parsed);
       setLoaded(true);
     },

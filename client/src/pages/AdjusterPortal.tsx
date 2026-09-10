@@ -113,7 +113,11 @@ export default function AdjusterPortal() {
             <div className="divide-y">
               {sessions.map((s: any) => {
                 const expired = isExpired(s.expires_at);
-                const jobIds: number[] = JSON.parse(s.job_ids || "[]");
+                let jobIds: number[] = [];
+                try {
+                  const parsed = JSON.parse(s.job_ids || "[]");
+                  jobIds = Array.isArray(parsed) ? parsed : [];
+                } catch { jobIds = []; }
                 return (
                   <div key={s.id} className="flex items-start gap-4 p-4">
                     <div className={`w-2 h-2 rounded-full mt-2 shrink-0 ${expired ? "bg-red-500" : "bg-green-500"}`} />

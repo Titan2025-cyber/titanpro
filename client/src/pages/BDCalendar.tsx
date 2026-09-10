@@ -422,7 +422,7 @@ function MonthView({
                     }`}
                   >
                     {c.kind === "birthday" ? <Cake className="w-2.5 h-2.5 shrink-0" /> : <Heart className="w-2.5 h-2.5 shrink-0" />}
-                    <span className="truncate">{c.name.split(" ")[0]}</span>
+                    <span className="truncate">{String(c.name || "").split(" ")[0] || "—"}</span>
                   </button>
                 ))}
                 {dayEvents.slice(0, 3).map(ev => {
@@ -657,6 +657,8 @@ export default function BDCalendar() {
   // Celebrations for the currently-viewed month
   const monthCelebrations = useMemo(() =>
     celebrations.filter(c => {
+      // Skip rows without a valid iso date instead of throwing on split of null.
+      if (!c?.date_iso || typeof c.date_iso !== "string") return false;
       const [y, m] = c.date_iso.split("-").map(Number);
       return y === year && (m - 1) === month;
     }),

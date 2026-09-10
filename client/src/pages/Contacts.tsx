@@ -211,7 +211,7 @@ function DeleteContactDialog({
 
   if (!contact) return null;
   const hasBlockers = (impact?.reasons.length || 0) > 0;
-  const nameMatches = confirmName.trim().toLowerCase() === contact.name.trim().toLowerCase();
+  const nameMatches = confirmName.trim().toLowerCase() === String(contact.name || "").trim().toLowerCase();
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

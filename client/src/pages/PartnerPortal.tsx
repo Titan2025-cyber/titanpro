@@ -276,7 +276,11 @@ function WithdrawalHistory({ contactId }: { contactId: number }) {
   return (
     <div className="space-y-2">
       {withdrawals.map((w: any) => {
-        const method = w.method_snapshot ? JSON.parse(w.method_snapshot) : null;
+        // method_snapshot is JSON text pinned at withdrawal submit — don't crash
+        // the portal on a partial write.
+        let method: any = null;
+        try { method = w.method_snapshot ? JSON.parse(w.method_snapshot) : null; }
+        catch { method = null; }
         const Icon = STATUS_ICON[w.status] || Clock;
         return (
           <div key={w.id} className="flex items-start justify-between p-3 rounded-xl border bg-background text-sm">
@@ -1320,7 +1324,9 @@ function AdminView({
           <div className="divide-y">
             {pendingWithdrawals.map((w: any) => {
               const contact = contacts.find(c => c.id === w.contact_id);
-              const method = w.method_snapshot ? JSON.parse(w.method_snapshot) : null;
+              let method: any = null;
+              try { method = w.method_snapshot ? JSON.parse(w.method_snapshot) : null; }
+              catch { method = null; }
               return (
                 <div key={w.id} className="px-4 py-3 flex items-start justify-between gap-3 bg-background" data-testid={`withdrawal-${w.id}`}>
                   <div>

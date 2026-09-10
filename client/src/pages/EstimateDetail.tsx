@@ -305,7 +305,17 @@ export default function EstimateDetail() {
   if (isLoading) return <div className="p-6 text-muted-foreground">Loading…</div>;
   if (!estimate) return <div className="p-6 text-destructive">Estimate not found.</div>;
 
-  const lineItems: LineItem[] = localItems ?? JSON.parse(estimate.lineItems || "[]");
+  // Estimate.lineItems is stored as JSON text. A corrupt / half-written row
+  // used to crash the whole page here. Fall back to an empty array instead.
+  const lineItems: LineItem[] = (() => {
+    if (localItems) return localItems;
+    try {
+      const parsed = JSON.parse(estimate.lineItems || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  })();
   const job = jobs.find(j => j.id === estimate.jobId);
 
   // Debounced save. Immediate=true skips the timer and PATCHes now — used
@@ -1384,7 +1394,7 @@ function QuickAddPanel({ onPick }: { onPick: (t: Partial<LineItem>) => void }) {
     queryKey: ["/api/quick-add"],
   });
 
-  const norm = (s: string) => s.toLowerCase().trim();
+  const norm = (s: string | null | undefined) => String(s ?? "").toLowerCase().trim();
   const query = norm(q);
 
   // Merge on normalized description so learned rows override built-in pricing
@@ -1395,7 +1405,7 @@ function QuickAddPanel({ onPick }: { onPick: (t: Partial<LineItem>) => void }) {
     (!query || i.description.toLowerCase().includes(query) || i.category.toLowerCase().includes(query)),
   );
   const learnedVisible = learned.filter(l =>
-    !query || l.description.toLowerCase().includes(query) || (l.category || "").toLowerCase().includes(query),
+    !query || String(l.description || "").toLowerCase().includes(query) || String(l.category || "").toLowerCase().includes(query),
   );
 
   return (

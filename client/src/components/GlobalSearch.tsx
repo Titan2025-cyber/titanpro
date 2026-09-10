@@ -109,12 +109,17 @@ export default function GlobalSearch() {
   const qDigits = digitsOnly(query);
 
   // ── Per-category predicates ─────────────────────────────────────────────
-  const matchJobByNumber = (j: Job) => j.jobNumber.toLowerCase().includes(q);
-  const matchJobByAddress = (j: Job) => (j.address || "").toLowerCase().includes(q);
+  // Every field access is null-safe. A single row with a null column
+  // (contact without a name, job without a number) used to crash GlobalSearch
+  // as soon as the palette was opened, which took whatever page you were on
+  // down through the ErrorBoundary. Root-cause fix for the flake symptom.
+  const lc = (v: unknown) => String(v ?? "").toLowerCase();
+  const matchJobByNumber = (j: Job) => lc(j.jobNumber).includes(q);
+  const matchJobByAddress = (j: Job) => lc(j.address).includes(q);
   const matchJobByContactName = (j: Job) => {
     if (!j.contactId) return false;
     const c = contactById.get(j.contactId);
-    return !!c && c.name.toLowerCase().includes(q);
+    return !!c && lc(c.name).includes(q);
   };
   const matchJobByContactPhone = (j: Job) => {
     if (!qDigits || !j.contactId) return false;
@@ -126,21 +131,21 @@ export default function GlobalSearch() {
     matchJobByAddress(j) ||
     matchJobByContactName(j) ||
     matchJobByContactPhone(j) ||
-    (j.insuranceCarrier || "").toLowerCase().includes(q) ||
-    j.lossType.toLowerCase().includes(q) ||
-    (j.assignedTech || "").toLowerCase().includes(q);
+    lc(j.insuranceCarrier).includes(q) ||
+    lc(j.lossType).includes(q) ||
+    lc(j.assignedTech).includes(q);
 
-  const matchContactByName = (c: Contact) => c.name.toLowerCase().includes(q);
+  const matchContactByName = (c: Contact) => lc(c.name).includes(q);
   const matchContactByPhone = (c: Contact) => !!qDigits && digitsOnly(c.phone || "").includes(qDigits);
   const matchContactAllFields = (c: Contact) =>
     matchContactByName(c) ||
     matchContactByPhone(c) ||
-    (c.email || "").toLowerCase().includes(q) ||
-    (c.company || "").toLowerCase().includes(q);
+    lc(c.email).includes(q) ||
+    lc(c.company).includes(q);
 
   const matchInvoice = (i: Invoice) =>
-    i.invoiceNumber.toLowerCase().includes(q) || String(i.total).includes(q);
-  const matchEstimate = (e: Estimate) => e.title.toLowerCase().includes(q);
+    lc(i.invoiceNumber).includes(q) || String(i.total ?? "").includes(q);
+  const matchEstimate = (e: Estimate) => lc(e.title).includes(q);
 
   // ── Build results based on category ─────────────────────────────────────
   // Minimum: 2 chars for text, 3 digits for phone (avoids matching every job

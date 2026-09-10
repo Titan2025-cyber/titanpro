@@ -1365,7 +1365,10 @@ function DocCard({
     },
   });
 
-  const formData = doc.formData ? JSON.parse(doc.formData) : null;
+  // Legacy docs sometimes hold partial JSON — don't take the form modal down.
+  let formData: any = null;
+  try { formData = doc.formData ? JSON.parse(doc.formData) : null; }
+  catch { formData = null; }
   const hasPDF = !!(doc.fileData && doc.fileMimeType === "application/pdf");
 
   const DOC_TYPE_LABELS: Record<string, { label: string; color: string; icon: any }> = {
