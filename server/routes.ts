@@ -5601,6 +5601,57 @@ cody@titanrestorationllc.com`;
     }
   });
 
+  // Job data audit
+  // Owner/admin-only diagnostic. Reports the current child-row counts for a
+  // job so we can definitively answer "did closing lose my data?" against
+  // production. Reads the DB directly (no status filter) - if a row exists
+  // for job_id=X it is counted here regardless of the parent's status.
+  app.get("/api/jobs/:id/audit", requireRole("owner", "admin"), (req, res) => {
+    const jobId = Number(req.params.id);
+    if (!Number.isFinite(jobId)) return res.status(400).json({ error: "Invalid job id" });
+    try {
+      const job = sqlite.prepare(
+        "SELECT id, job_number, status, previous_status, closed_at, closed_by, closed_reason, reopened_at, reopened_by " +
+        "FROM jobs WHERE id = ?"
+      ).get(jobId) as any;
+      if (!job) return res.status(404).json({ error: "Job not found" });
+
+      // Count only tables that actually exist so this can't 500 on a stripped
+      // schema. Photos have a soft-delete column; count both total and live.
+      // -1 = table absent, so the caller sees it clearly.
+      const count = (sql: string): number => {
+        try { return Number((sqlite.prepare(sql).get(jobId) as any)?.c ?? 0); }
+        catch { return -1; }
+      };
+      const counts = {
+        photos_live: count("SELECT COUNT(*) c FROM photos WHERE job_id = ? AND deleted_at IS NULL"),
+        photos_total: count("SELECT COUNT(*) c FROM photos WHERE job_id = ?"),
+        notes: count("SELECT COUNT(*) c FROM job_notes WHERE job_id = ?"),
+        drying_records: count("SELECT COUNT(*) c FROM drying_records WHERE job_id = ?"),
+        estimates: count("SELECT COUNT(*) c FROM estimates WHERE job_id = ?"),
+        invoices: count("SELECT COUNT(*) c FROM invoices WHERE job_id = ?"),
+        payments: count("SELECT COUNT(*) c FROM payments WHERE job_id = ?"),
+        job_documents: count("SELECT COUNT(*) c FROM job_documents WHERE job_id = ?"),
+        supplements: count("SELECT COUNT(*) c FROM supplements WHERE job_id = ?"),
+        time_clock: count("SELECT COUNT(*) c FROM time_clock WHERE job_id = ?"),
+        claim_payments: count("SELECT COUNT(*) c FROM claim_payments WHERE job_id = ?"),
+      };
+
+      // Recent lifecycle events - lets us see whether a close/reopen/delete
+      // actually ran and when.
+      let events: any[] = [];
+      try {
+        events = sqlite.prepare(
+          "SELECT id, action, actor_name, details, created_at FROM job_events WHERE job_id = ? ORDER BY id DESC LIMIT 25"
+        ).all(jobId) as any[];
+      } catch { /* job_events table may not exist */ }
+
+      res.json({ job, counts, events });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "audit_failed" });
+    }
+  });
+
   // ── Health check ─────────────────────────────────────────────────────────
   app.get("/api/health", (_req, res) => {
     try {
