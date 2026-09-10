@@ -233,7 +233,10 @@ function JobCard({ job, contact, fin }: { job: Job; contact?: Contact; fin?: Job
   const days = daysAgo(currentDateStr);
 
   // AR alert: invoice sent > 30 days with no payment
-  const isArAlert = stage.key === "invoice_pending" && daysAgo(job.invoiceSentDate as string) !== null && (daysAgo(job.invoiceSentDate as string) ?? 0) > 30;
+  // A/R aging alert: >30 days since invoice sent while still in the A/R bucket.
+  // Under the split model, invoice_pending means 'ready to invoice but not sent',
+  // so aging only starts once the job hits accounts_receivable.
+  const isArAlert = stage.key === "accounts_receivable" && daysAgo(job.invoiceSentDate as string) !== null && (daysAgo(job.invoiceSentDate as string) ?? 0) > 30;
 
   const hasFinancials = fin && (fin.estimateTotal > 0 || fin.invoiceTotal > 0 || fin.collected > 0 || fin.totalCosts > 0);
 
@@ -490,7 +493,7 @@ function PipelineBoard({ jobs, contacts, search, locationFilter, phaseFilter, fi
                   const s = getStageForJob(job);
                   const dateStr = (job as any)[s.dateField] as string | undefined;
                   const days = daysAgo(dateStr);
-                  const isArAlert = stage.key === "invoice_pending" && (daysAgo(job.invoiceSentDate as string) ?? 0) > 30;
+                  const isArAlert = stage.key === "accounts_receivable" && (daysAgo(job.invoiceSentDate as string) ?? 0) > 30;
 
                   return (
                     <JobContextMenu key={job.id} job={job}>
@@ -653,7 +656,7 @@ function PipelineSummary({ jobs, finMap, onStageClick }: {
   }, {} as Record<string, { mitigation: number; reconstruction: number; total: number }>);
 
   const arJobs = jobs.filter(j =>
-    (j.progressStage || "pending_sale") === "invoice_pending" &&
+    (j.progressStage || "pending_sale") === "accounts_receivable" &&
     (daysAgo(j.invoiceSentDate as string) ?? 0) > 30
   );
 
@@ -946,7 +949,7 @@ export default function Jobs() {
   const customers = contacts.filter(c => c.type === "customer");
 
   const arAlertCount = jobs.filter(j =>
-    (j.progressStage || "pending_sale") === "invoice_pending" &&
+    (j.progressStage || "pending_sale") === "accounts_receivable" &&
     (daysAgo(j.invoiceSentDate as string) ?? 0) > 30
   ).length;
 

@@ -79,9 +79,9 @@ export const PROGRESS_STAGES: ProgressStage[] = [
     key: "invoice_pending",
     label: "Invoice Pending",
     shortLabel: "Invoice",
-    description: "Work complete — invoice sent, awaiting payment",
-    dateField: "invoiceSentDate",
-    dateLabel: "Invoice Sent Date",
+    description: "Work complete — ready to invoice, bill not sent yet",
+    dateField: "invoicePendingDate",
+    dateLabel: "Ready to Invoice",
     color: "bg-purple-50 dark:bg-purple-950/30",
     textColor: "text-purple-700 dark:text-purple-400",
     borderColor: "border-purple-300 dark:border-purple-700",
@@ -92,7 +92,7 @@ export const PROGRESS_STAGES: ProgressStage[] = [
     key: "accounts_receivable",
     label: "Accounts Receivable",
     shortLabel: "A/R",
-    description: "Invoice overdue or disputed — actively following up",
+    description: "Invoice sent — awaiting payment or actively collecting",
     dateField: "invoiceSentDate",
     dateLabel: "Invoice Sent Date",
     color: "bg-red-50 dark:bg-red-950/30",
@@ -253,6 +253,7 @@ export function DateManager({ job }: { job: Job }) {
     salesDate: ((j as any).salesDate as string) || "",
     preProductionDate: ((j as any).preProductionDate as string) || "",
     wipDate: ((j as any).wipDate as string) || "",
+    invoicePendingDate: ((j as any).invoicePendingDate as string) || "",
     invoiceSentDate: ((j as any).invoiceSentDate as string) || "",
     invoicePaidDate: ((j as any).invoicePaidDate as string) || "",
   });
@@ -263,7 +264,8 @@ export function DateManager({ job }: { job: Job }) {
   useEffect(() => {
     if (!open) setDates(buildDatesFromJob(job));
   }, [job.id, (job as any).updatedAt, (job as any).salesDate, (job as any).preProductionDate,
-      (job as any).wipDate, (job as any).invoiceSentDate, (job as any).invoicePaidDate, open]);
+      (job as any).wipDate, (job as any).invoicePendingDate, (job as any).invoiceSentDate,
+      (job as any).invoicePaidDate, open]);
 
   // Map each milestone date field to the pipeline stage it represents.
   // Entering a date means that milestone happened, so the job should move to
@@ -272,7 +274,8 @@ export function DateManager({ job }: { job: Job }) {
     { field: "salesDate", stageKey: "pre_production" },   // sold → pre-production
     { field: "preProductionDate", stageKey: "pre_production" },
     { field: "wipDate", stageKey: "wip" },
-    { field: "invoiceSentDate", stageKey: "invoice_pending" },
+    { field: "invoicePendingDate", stageKey: "invoice_pending" },  // work done, ready to bill
+    { field: "invoiceSentDate", stageKey: "accounts_receivable" },  // bill sent → A/R
     { field: "invoicePaidDate", stageKey: "complete" },
   ];
   const STATUS_MAP: Record<string, string> = {
@@ -309,10 +312,10 @@ export function DateManager({ job }: { job: Job }) {
       const currentStage = (job as any).progressStage || "pending_sale";
       const currentOrder = PROGRESS_STAGES.find(s => s.key === currentStage)?.order ?? 0;
       const autoOrder = autoStage ? (PROGRESS_STAGES.find(s => s.key === autoStage)?.order ?? -1) : -1;
-      // Only move the job FORWARD — never pull it back a bucket, and preserve a
-      // manual A/R placement (which shares the invoice-sent date) unless a later
-      // milestone (payment received) warrants completing it.
-      if (autoStage && autoOrder > currentOrder && !(currentStage === "accounts_receivable" && autoStage === "invoice_pending")) {
+      // Only move the job FORWARD — never pull it back a bucket. Each
+      // milestone now has its OWN date field so there's no more shared
+      // invoice-sent A/R ambiguity to preserve.
+      if (autoStage && autoOrder > currentOrder) {
         payload.progressStage = autoStage;
         if (STATUS_MAP[autoStage]) payload.status = STATUS_MAP[autoStage];
       }
@@ -340,7 +343,8 @@ export function DateManager({ job }: { job: Job }) {
     { key: "salesDate", label: "Date Received", stage: PROGRESS_STAGES[0] },
     { key: "preProductionDate", label: "Pre-Production Start", stage: PROGRESS_STAGES[1] },
     { key: "wipDate", label: "WIP Start", stage: PROGRESS_STAGES[2] },
-    { key: "invoiceSentDate", label: "Invoice Sent", stage: PROGRESS_STAGES[3] },
+    { key: "invoicePendingDate", label: "Ready to Invoice", stage: PROGRESS_STAGES[3] },
+    { key: "invoiceSentDate", label: "Invoice Sent", stage: PROGRESS_STAGES[4] },
     { key: "invoicePaidDate", label: "Payment Received", stage: PROGRESS_STAGES[5] },
   ];
 

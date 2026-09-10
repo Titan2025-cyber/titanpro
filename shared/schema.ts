@@ -47,7 +47,8 @@ export const jobs = sqliteTable("jobs", {
   salesDate: text("sales_date"),           // Date job was sold/confirmed
   preProductionDate: text("pre_production_date"), // Date pre-production work begins
   wipDate: text("wip_date"),               // Date active work in progress began
-  invoiceSentDate: text("invoice_sent_date"),  // Date final invoice was sent
+  invoicePendingDate: text("invoice_pending_date"), // Date work completed & ready to invoice (moves stage → invoice_pending)
+  invoiceSentDate: text("invoice_sent_date"),  // Date final invoice was sent (moves stage → accounts_receivable)
   invoicePaidDate: text("invoice_paid_date"),  // Date invoice was paid / AR collected
   // Partner payout tracking
   partnerPayoutApplied: real("partner_payout_applied"),

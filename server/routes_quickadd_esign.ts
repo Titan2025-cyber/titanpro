@@ -538,8 +538,10 @@ export function registerQuickAddAndESignRoutes(
     //     (customer has committed to scope, production may begin)
     //
     //   Certificate of Completion signed → progress_stage 'invoice_pending'
-    //                                 stamps invoice_sent_date if unset
-    //     (customer has confirmed the work is complete, we can now invoice)
+    //                                 stamps invoice_pending_date if unset
+    //     (customer has confirmed the work is complete, we can now invoice.
+    //     The actual invoice_sent_date is stamped later, at the moment the
+    //     invoice is created, and pushes the job into accounts_receivable.)
     //
     // A stage advance is one-way — we never move a job BACKWARDS. If a PM
     // has already dragged a Work Auth-signed job to invoice_pending or
@@ -623,17 +625,18 @@ export function registerQuickAddAndESignRoutes(
           row.doc_type === "certificate_of_completion"
           && currentRank < STAGE_RANK.invoice_pending
         ) {
-          // Preserve any pre-existing invoice_sent_date the PM back-dated;
-          // otherwise stamp real-time.
-          const invoiceSentDate = jobRow.invoice_sent_date || now;
+          // Preserve any pre-existing invoice_pending_date the PM back-dated;
+          // otherwise stamp real-time. Do NOT touch invoice_sent_date — that
+          // now only fires when the invoice is actually created.
+          const invoicePendingDate = jobRow.invoice_pending_date || now;
           sqlite
             .prepare(
               `UPDATE jobs
                  SET progress_stage = 'invoice_pending',
-                     invoice_sent_date = ?
+                     invoice_pending_date = ?
                WHERE id = ?`,
             )
-            .run(invoiceSentDate, row.job_id);
+            .run(invoicePendingDate, row.job_id);
           stageAdvanced = true;
           stageAdvancedLabel = "Invoice Pending";
         }

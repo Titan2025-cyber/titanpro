@@ -604,6 +604,12 @@ if (!jobCols.includes("pre_production_date")) {
 if (!jobCols.includes("wip_date")) {
   sqlite.exec(`ALTER TABLE jobs ADD COLUMN wip_date TEXT`);
 }
+if (!jobCols.includes("invoice_pending_date")) {
+  // Marks 'work complete, ready to invoice' — entering this date moves
+  // the job to the invoice_pending bucket. Invoice_sent_date then means
+  // 'bill has actually gone out' and pushes the job to accounts_receivable.
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN invoice_pending_date TEXT`);
+}
 if (!jobCols.includes("invoice_sent_date")) {
   sqlite.exec(`ALTER TABLE jobs ADD COLUMN invoice_sent_date TEXT`);
 }

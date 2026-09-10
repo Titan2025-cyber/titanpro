@@ -800,6 +800,7 @@ function InlineMilestoneDates({ job }: { job: any }) {
     salesDate: j.salesDate || "",
     preProductionDate: j.preProductionDate || "",
     wipDate: j.wipDate || "",
+    invoicePendingDate: j.invoicePendingDate || "",
     invoiceSentDate: j.invoiceSentDate || "",
     invoicePaidDate: j.invoicePaidDate || "",
     mitigationStart: j.mitigationStart || "",
@@ -816,7 +817,7 @@ function InlineMilestoneDates({ job }: { job: any }) {
   useEffect(() => {
     if (!dirty) setDates(buildFromJob(job));
   }, [job.id, job.updatedAt, job.salesDate, job.preProductionDate, job.wipDate,
-      job.invoiceSentDate, job.invoicePaidDate, job.mitigationStart,
+      job.invoicePendingDate, job.invoiceSentDate, job.invoicePaidDate, job.mitigationStart,
       job.dryOutComplete, job.reconstructionStart, job.jobComplete, dirty]);
 
   // Mirror DateManager (JobPipeline.tsx): editing a milestone date moves the job
@@ -826,7 +827,8 @@ function InlineMilestoneDates({ job }: { job: any }) {
     { field: "salesDate", stageKey: "pre_production" },
     { field: "preProductionDate", stageKey: "pre_production" },
     { field: "wipDate", stageKey: "wip" },
-    { field: "invoiceSentDate", stageKey: "invoice_pending" },
+    { field: "invoicePendingDate", stageKey: "invoice_pending" },  // work done, ready to bill
+    { field: "invoiceSentDate", stageKey: "accounts_receivable" },  // bill sent → A/R
     { field: "invoicePaidDate", stageKey: "complete" },
   ];
   const STATUS_MAP: Record<string, string> = {
@@ -860,9 +862,9 @@ function InlineMilestoneDates({ job }: { job: any }) {
       const currentStage = (job as any).progressStage || "pending_sale";
       const currentOrder = PROGRESS_STAGES.find(s => s.key === currentStage)?.order ?? 0;
       const autoOrder = autoStage ? (PROGRESS_STAGES.find(s => s.key === autoStage)?.order ?? -1) : -1;
-      // Forward-only bucket move; preserve manual A/R placement (which shares
-      // the invoice-sent date) unless payment received completes the job.
-      if (autoStage && autoOrder > currentOrder && !(currentStage === "accounts_receivable" && autoStage === "invoice_pending")) {
+      // Forward-only bucket move. Each milestone now has its own date field
+      // so there's no more shared invoice-sent A/R ambiguity to preserve.
+      if (autoStage && autoOrder > currentOrder) {
         payload.progressStage = autoStage;
         if (STATUS_MAP[autoStage]) payload.status = STATUS_MAP[autoStage];
       }
@@ -887,7 +889,8 @@ function InlineMilestoneDates({ job }: { job: any }) {
     { key: "salesDate", label: "Date Received", stage: PROGRESS_STAGES[0] },
     { key: "preProductionDate", label: "Pre-Production Start", stage: PROGRESS_STAGES[1] },
     { key: "wipDate", label: "WIP Start", stage: PROGRESS_STAGES[2] },
-    { key: "invoiceSentDate", label: "Invoice Sent", stage: PROGRESS_STAGES[3] },
+    { key: "invoicePendingDate", label: "Ready to Invoice", stage: PROGRESS_STAGES[3] },
+    { key: "invoiceSentDate", label: "Invoice Sent", stage: PROGRESS_STAGES[4] },
     { key: "invoicePaidDate", label: "Payment Received", stage: PROGRESS_STAGES[5] },
   ];
 
