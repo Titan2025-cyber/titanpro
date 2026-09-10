@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import titanLogo from "@/assets/titan-logo.png";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
@@ -238,29 +238,72 @@ export default function Dashboard() {
   };
 
   // ---- Bucket drill-down ----
-  const [openBucket, setOpenBucket] = useState<null | "active" | "revenue" | "ar" | "cycle" | "payouts">(null);
+  // Filters are persisted per bucket in localStorage so re-opening a panel
+  // restores the last search/status/scope/date-range the user set. Revenue
+  // still defaults to MTD on first-ever open (no saved value).
+  type BucketKind = "active" | "revenue" | "ar" | "cycle" | "payouts";
+  type BucketFilters = {
+    search: string;
+    status: string;
+    scope: "all" | "mitigation" | "reconstruction" | "both";
+    from: string;
+    to: string;
+  };
+  const DEFAULT_FILTERS: BucketFilters = { search: "", status: "all", scope: "all", from: "", to: "" };
+  const bucketFilterKey = (b: BucketKind) => `titan.dashboard.bucketFilters.${b}`;
+  const loadBucketFilters = (b: BucketKind): BucketFilters | null => {
+    try {
+      const raw = localStorage.getItem(bucketFilterKey(b));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return null;
+      return { ...DEFAULT_FILTERS, ...parsed };
+    } catch { return null; }
+  };
+  const [openBucket, setOpenBucket] = useState<null | BucketKind>(null);
   const [bucketSearch, setBucketSearch] = useState("");
   const [bucketStatus, setBucketStatus] = useState("all");
-  // Scope filter (division). Independent of workflow-phase status — lets Cody
-  // ask for "mit-scope jobs" separately from "currently in the mit phase".
   const [bucketScope, setBucketScope] = useState<"all" | "mitigation" | "reconstruction" | "both">("all");
-  const [bucketFrom, setBucketFrom] = useState(""); // date-range start (revenue/AR)
-  const [bucketTo, setBucketTo] = useState("");     // date-range end (revenue/AR)
-  const openBucketPanel = (b: "active" | "revenue" | "ar" | "cycle" | "payouts") => {
+  const [bucketFrom, setBucketFrom] = useState("");
+  const [bucketTo, setBucketTo] = useState("");
+  const openBucketPanel = (b: BucketKind) => {
+    const saved = loadBucketFilters(b);
+    if (saved) {
+      setBucketSearch(saved.search);
+      setBucketStatus(saved.status);
+      setBucketScope(saved.scope);
+      setBucketFrom(saved.from);
+      setBucketTo(saved.to);
+    } else {
+      setBucketSearch("");
+      setBucketStatus("all");
+      setBucketScope("all");
+      // Revenue drills open to the current month by default on first-ever
+      // open (no saved filter). Everything else opens with no date range.
+      if (b === "revenue") { setBucketFrom(mtdStartISO); setBucketTo(todayISO); }
+      else { setBucketFrom(""); setBucketTo(""); }
+    }
+    setOpenBucket(b);
+  };
+  // Persist current filters whenever the user changes them AND a bucket is open.
+  useEffect(() => {
+    if (!openBucket) return;
+    try {
+      localStorage.setItem(
+        bucketFilterKey(openBucket),
+        JSON.stringify({ search: bucketSearch, status: bucketStatus, scope: bucketScope, from: bucketFrom, to: bucketTo }),
+      );
+    } catch { /* localStorage disabled/full — non-fatal */ }
+  }, [openBucket, bucketSearch, bucketStatus, bucketScope, bucketFrom, bucketTo]);
+  const resetBucketFilters = () => {
     setBucketSearch("");
     setBucketStatus("all");
     setBucketScope("all");
-    // Revenue drills open to the current month by default so the panel
-    // matches the "Revenue MTD" KPI the user just clicked. User can widen
-    // to any range from the date pickers inside the panel.
-    if (b === "revenue") {
-      setBucketFrom(mtdStartISO);
-      setBucketTo(todayISO);
-    } else {
-      setBucketFrom("");
-      setBucketTo("");
+    setBucketFrom("");
+    setBucketTo("");
+    if (openBucket) {
+      try { localStorage.removeItem(bucketFilterKey(openBucket)); } catch { /* ignore */ }
     }
-    setOpenBucket(b);
   };
   const money = (n: number) => `$${(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
   // NOTE: no local fmtDate — a previous shadowing const called itself recursively
@@ -315,6 +358,9 @@ export default function Dashboard() {
     // vice-versa. Keeps stale status values out of the wrong bucket.
     if (bucketStatus === "mitigation" && div === "reconstruction") return false;
     if (bucketStatus === "reconstruction" && div === "mitigation") return false;
+    // Date-range filter runs against the job's start date (lossDate) with
+    // createdAt as fallback — so "jobs that started this week" filters correctly.
+    if (!inDateRange((j as any).lossDate || j.createdAt)) return false;
     return (bucketStatus === "all" || j.status === bucketStatus) &&
       match(j.jobNumber, j.status, j.lossType, j.address, j.assignedTech, j.insuranceCarrier);
   });
@@ -971,7 +1017,7 @@ export default function Dashboard() {
                   ))}
                 </select>
               )}
-              {/* Scope filter — only on Active Jobs. Filters on job.division so
+              {/* Phase filter — only on Active Jobs. Filters on job.division so
                   a recon-only job never leaks into the mit view even if its
                   status field is stale. */}
               {openBucket === "active" && (
@@ -979,22 +1025,38 @@ export default function Dashboard() {
                   value={bucketScope}
                   onChange={(e) => setBucketScope(e.target.value as any)}
                   data-testid="select-bucket-scope"
+                  aria-label="Phase"
                   className="h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 >
-                  <option value="all">All scopes</option>
+                  <option value="all">All phases</option>
                   <option value="mitigation">Mitigation only</option>
                   <option value="reconstruction">Reconstruction only</option>
                   <option value="both">Both (mit → recon)</option>
                 </select>
               )}
+              {/* Reset all filters — available on every bucket that has any
+                  filter surface (all except cycle, which has no controls). */}
+              {openBucket !== "cycle" && (bucketSearch || bucketStatus !== "all" || bucketScope !== "all" || bucketFrom || bucketTo) && (
+                <button
+                  onClick={resetBucketFilters}
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                  data-testid="button-reset-bucket-filters"
+                >
+                  <X className="w-3.5 h-3.5" />Reset filters
+                </button>
+              )}
             </div>
 
-            {/* Date-range filter (revenue = payment date, A/R = invoice date, payouts = request date) */}
-            {(openBucket === "revenue" || openBucket === "ar" || openBucket === "payouts") && (
+            {/* Date-range filter
+                • Active = job start (lossDate/createdAt)
+                • Revenue = payment date
+                • A/R = invoice date
+                • Payouts = request date */}
+            {(openBucket === "active" || openBucket === "revenue" || openBucket === "ar" || openBucket === "payouts") && (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="flex items-center gap-1 text-xs text-muted-foreground">
                   <CalendarRange className="w-3.5 h-3.5" />
-                  {openBucket === "revenue" ? "Payment date" : openBucket === "ar" ? "Invoice date" : "Request date"}
+                  {openBucket === "active" ? "Started" : openBucket === "revenue" ? "Payment date" : openBucket === "ar" ? "Invoice date" : "Request date"}
                 </span>
                 <Input
                   type="date"
