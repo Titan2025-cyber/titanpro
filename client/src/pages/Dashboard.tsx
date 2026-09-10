@@ -132,6 +132,15 @@ export default function Dashboard() {
     return d >= mtdStartISO && d <= todayISO;
   });
   const mtdRevenue = mtdReceivedPayments.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+  // MTD invoiced (all non-draft invoices whose issueDate/createdAt falls this
+  // month). Shown alongside collected on the Revenue MTD card so the owner
+  // can see billed-out vs. actually-collected at a glance.
+  const mtdInvoicedTotal = invoices.reduce((s: number, inv: any) => {
+    if (inv.status === "draft") return s;
+    const d = String(inv.issueDate || inv.createdAt || "").slice(0, 10);
+    if (!d || d < mtdStartISO || d > todayISO) return s;
+    return s + (inv.total || 0);
+  }, 0);
   const outstanding = invoices.filter(i => i.status !== "paid" && i.status !== "draft").reduce((s, i) => s + (i.total || 0), 0);
 
   // ── Overdue A/R (Needs You Now) ──────────────────────────────────────────────
@@ -254,10 +263,17 @@ export default function Dashboard() {
     setOpenBucket(b);
   };
   const money = (n: number) => `$${(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-  const fmtDate = (d?: string | null) => d ? fmtDate(d, { month: "short", day: "numeric", year: "numeric" }) : "—";
+  // NOTE: no local fmtDate — a previous shadowing const called itself recursively
+  // and blew the stack ("Maximum call stack size exceeded") on every Home load.
+  // Use the imported fmtDate(d, opts) from @/lib/dates. It returns "" for empty
+  // inputs; add `|| "—"` at the call site if you want the em-dash affordance.
 
   const receivedPayments = payments.filter(p => p.type === "received");
   const outstandingInvoices = invoices.filter(i => i.status !== "paid" && i.status !== "draft");
+  // Revenue MTD bucket surfaces BOTH sides of the ledger: invoices billed out
+  // in the period AND payments collected in the period. Drafts stay out (they
+  // haven't gone to the customer yet).
+  const billableInvoices = invoices.filter(i => i.status !== "draft");
   const pendingPayoutList = (payoutRequests as any[]).filter((p: any) => p.status === "pending");
   const completedWithCycle = completedJobs.map(j => ({
     job: j,
@@ -306,6 +322,12 @@ export default function Dashboard() {
     inDateRange(p.paidAt) &&
     match(p.method, p.reference, p.notes, p.jobId ? `job #${p.jobId}` : "", p.amount)
   );
+  // Invoices issued in the Revenue MTD date range. `issueDate` first, then
+  // `createdAt` as a fallback for older rows that never had issueDate set.
+  const filteredInvoicedInRange = billableInvoices.filter((inv: any) =>
+    inDateRange(inv.issueDate || inv.createdAt) &&
+    match(inv.invoiceNumber, inv.status, inv.clientName, inv.total)
+  );
   const filteredInvoices = outstandingInvoices.filter((inv: any) =>
     (bucketStatus === "all" || inv.status === bucketStatus) &&
     inDateRange(inv.createdAt || inv.dueDate) &&
@@ -320,6 +342,7 @@ export default function Dashboard() {
   );
 
   const filteredRevenueTotal = filteredPayments.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+  const filteredInvoicedTotal = filteredInvoicedInRange.reduce((s: number, inv: any) => s + (inv.total || 0), 0);
   const filteredARTotal = filteredInvoices.reduce((s: number, inv: any) => s + (inv.total || 0), 0);
   const filteredPayoutTotal = filteredPayouts.reduce((s: number, p: any) => s + (p.amount || 0), 0);
   const filteredAvgCycle = filteredCycle.length > 0
@@ -375,18 +398,38 @@ export default function Dashboard() {
 
   const stamp = () => todayLocalISO();
 
-  const exportRevenueCSV = () => exportCSV(
-    `titan-revenue-${stamp()}.csv`,
-    ["Source / Method", "Reference / Notes", "Job", "Date", "Amount"],
-    filteredPayments.map((p: any) => [
+  // Revenue CSV — both sections stacked with a Section column so the invoiced
+  // list and the collected list live in one export the accountant can filter.
+  const exportRevenueCSV = () => {
+    const invoicedRows = filteredInvoicedInRange.map((inv: any) => [
+      "Invoiced",
+      inv.invoiceNumber || `Invoice #${inv.id}`,
+      inv.status || "sent",
+      inv.clientName || (inv.jobId ? `Job #${inv.jobId}` : ""),
+      fmtDate(inv.issueDate || inv.createdAt),
+      (inv.total || 0),
+    ] as (string | number)[]);
+    const paymentRows = filteredPayments.map((p: any) => [
+      "Collected",
       p.method || p.reference || "Payment received",
-      p.notes || "",
-      p.jobId ? `Job #${p.jobId}` : "",
+      "",
+      p.notes || (p.jobId ? `Job #${p.jobId}` : ""),
       fmtDate(p.paidAt || p.createdAt),
       (p.amount || 0),
-    ]),
-    [`TOTAL (${filteredPayments.length} payments)`, "", "", "", filteredRevenueTotal],
-  );
+    ] as (string | number)[]);
+    const totalRow: (string | number)[] = [
+      "TOTAL",
+      `${filteredInvoicedInRange.length} invoices · ${filteredPayments.length} payments`,
+      "", "", "",
+      filteredInvoicedTotal + filteredRevenueTotal,
+    ];
+    exportCSV(
+      `titan-revenue-${stamp()}.csv`,
+      ["Section", "Reference / Method", "Status", "Client / Notes", "Date", "Amount"],
+      [...invoicedRows, ...paymentRows],
+      totalRow,
+    );
+  };
 
   const exportARCSV = () => exportCSV(
     `titan-outstanding-ar-${stamp()}.csv`,
@@ -546,7 +589,7 @@ export default function Dashboard() {
               <div>
                 <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Revenue MTD</p>
                 <p className="text-3xl font-bold text-foreground mt-1"><CountUp value={mtdRevenue / 1000} decimals={1} prefix="$" suffix="k" /></p>
-                <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">{completedThisMonth} jobs complete <ArrowRight className="w-3 h-3 opacity-60" /></p>
+                <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">{money(mtdInvoicedTotal)} invoiced · {completedThisMonth} complete <ArrowRight className="w-3 h-3 opacity-60" /></p>
               </div>
               <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg">
                 <DollarSign className="w-5 h-5 text-green-600 dark:text-green-400" />
@@ -1028,39 +1071,82 @@ export default function Dashboard() {
                 )
               )}
 
-              {/* Revenue received */}
+              {/* Revenue MTD — shows BOTH invoiced-in-period and collected-in-period */}
               {openBucket === "revenue" && (
-                receivedPayments.length === 0 ? (
-                  <div className="py-10 text-center text-sm text-muted-foreground">No payments received yet</div>
+                billableInvoices.length === 0 && receivedPayments.length === 0 ? (
+                  <div className="py-10 text-center text-sm text-muted-foreground">No invoices or payments yet</div>
                 ) : (
-                  <div className="border rounded-lg overflow-hidden">
-                    <div className="flex justify-end px-3 py-2 border-b bg-background">
+                  <div className="space-y-4">
+                    <div className="flex justify-end">
                       <Button variant="outline" size="sm" onClick={exportRevenueCSV} data-testid="button-export-revenue-csv" className="h-8 text-xs">
                         <Download className="w-3.5 h-3.5 mr-1.5" />Export CSV
                       </Button>
                     </div>
-                    {filteredPayments.length === 0 ? (
-                      <div className="py-10 text-center text-sm text-muted-foreground">No payments match your search</div>
-                    ) : (<>
-                    <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-3 py-2 bg-muted/50 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                      <span>Source / Method</span><span className="text-right">Date</span><span className="text-right">Amount</span>
-                    </div>
-                    <div className="divide-y">
-                      {filteredPayments.map((p: any) => (
-                        <div key={p.id} className="grid grid-cols-[1fr_auto_auto] gap-3 px-3 py-3 items-center" data-testid={`bucket-row-payment-${p.id}`}>
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium text-foreground truncate">{p.method || p.reference || "Payment received"}</p>
-                            <p className="text-xs text-muted-foreground truncate">{p.notes || (p.jobId ? `Job #${p.jobId}` : "—")}</p>
-                          </div>
-                          <span className="text-xs text-muted-foreground text-right">{fmtDate(p.paidAt || p.createdAt)}</span>
-                          <span className="text-sm font-semibold text-green-600 text-right">{money(p.amount)}</span>
+
+                    {/* Section A — Invoiced in period */}
+                    <div className="border rounded-lg overflow-hidden">
+                      <div className="px-3 py-2 bg-muted/40 border-b flex items-center justify-between">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Invoiced in period</span>
+                        <span className="text-xs text-muted-foreground">{filteredInvoicedInRange.length} {filteredInvoicedInRange.length === 1 ? "invoice" : "invoices"}</span>
+                      </div>
+                      {filteredInvoicedInRange.length === 0 ? (
+                        <div className="py-6 text-center text-sm text-muted-foreground">No invoices issued in this range</div>
+                      ) : (<>
+                        <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-3 py-2 bg-muted/30 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                          <span>Invoice / Client</span><span className="text-right">Issued</span><span className="text-right">Amount</span>
                         </div>
-                      ))}
+                        <div className="divide-y">
+                          {filteredInvoicedInRange.map((inv: any) => (
+                            <Link key={inv.id} href="/invoices" onClick={closeBucket}>
+                              <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-3 py-3 items-center hover:bg-muted/50 cursor-pointer" data-testid={`bucket-row-invoiced-${inv.id}`}>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-sm font-semibold text-foreground truncate">{inv.invoiceNumber || `Invoice #${inv.id}`}</span>
+                                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${inv.status === "paid" ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" : inv.status === "overdue" ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" : "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300"}`}>{inv.status || "sent"}</span>
+                                  </div>
+                                  <p className="text-xs text-muted-foreground truncate">{inv.clientName || (inv.jobId ? `Job #${inv.jobId}` : "—")}</p>
+                                </div>
+                                <span className="text-xs text-muted-foreground text-right">{fmtDate(inv.issueDate || inv.createdAt) || "—"}</span>
+                                <span className="text-sm font-semibold text-foreground text-right">{money(inv.total)}</span>
+                              </div>
+                            </Link>
+                          ))}
+                        </div>
+                        <div className="grid grid-cols-[1fr_auto] gap-3 px-3 py-2 bg-muted/50 text-sm font-bold">
+                          <span>Total invoiced{dateRangeActive || q ? " (filtered)" : ""}</span><span className="text-right text-foreground">{money(filteredInvoicedTotal)}</span>
+                        </div>
+                      </>)}
                     </div>
-                    <div className="grid grid-cols-[1fr_auto] gap-3 px-3 py-2 bg-muted/50 text-sm font-bold">
-                      <span>Total{q || bucketStatus !== "all" || dateRangeActive ? " (filtered)" : ""} received</span><span className="text-right text-green-600">{money(filteredRevenueTotal)}</span>
+
+                    {/* Section B — Collected in period */}
+                    <div className="border rounded-lg overflow-hidden">
+                      <div className="px-3 py-2 bg-muted/40 border-b flex items-center justify-between">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Collected in period</span>
+                        <span className="text-xs text-muted-foreground">{filteredPayments.length} {filteredPayments.length === 1 ? "payment" : "payments"}</span>
+                      </div>
+                      {filteredPayments.length === 0 ? (
+                        <div className="py-6 text-center text-sm text-muted-foreground">No payments received in this range</div>
+                      ) : (<>
+                        <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-3 py-2 bg-muted/30 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                          <span>Source / Method</span><span className="text-right">Date</span><span className="text-right">Amount</span>
+                        </div>
+                        <div className="divide-y">
+                          {filteredPayments.map((p: any) => (
+                            <div key={p.id} className="grid grid-cols-[1fr_auto_auto] gap-3 px-3 py-3 items-center" data-testid={`bucket-row-payment-${p.id}`}>
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium text-foreground truncate">{p.method || p.reference || "Payment received"}</p>
+                                <p className="text-xs text-muted-foreground truncate">{p.notes || (p.jobId ? `Job #${p.jobId}` : "—")}</p>
+                              </div>
+                              <span className="text-xs text-muted-foreground text-right">{fmtDate(p.paidAt || p.createdAt) || "—"}</span>
+                              <span className="text-sm font-semibold text-green-600 text-right">{money(p.amount)}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="grid grid-cols-[1fr_auto] gap-3 px-3 py-2 bg-muted/50 text-sm font-bold">
+                          <span>Total collected{dateRangeActive || q ? " (filtered)" : ""}</span><span className="text-right text-green-600">{money(filteredRevenueTotal)}</span>
+                        </div>
+                      </>)}
                     </div>
-                    </>)}
                   </div>
                 )
               )}
