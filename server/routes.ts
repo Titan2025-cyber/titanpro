@@ -6429,6 +6429,78 @@ cody@titanrestorationllc.com`;
     console.warn("[migration] job_notes public backfill failed:", e?.message || e);
   }
 
+  // ── Legacy jobs.notes JSON column → job_notes table (one-time backfill) ──
+  // Historically, notes were stored as a JSON array on jobs.notes. When the
+  // dedicated job_notes table was introduced, older jobs kept a stray legacy
+  // array on jobs.notes and their notes never appeared in the Notes tab —
+  // only in a hidden "Notes (legacy)" card on the Activity tab. Meanwhile,
+  // the tab badge counted them, so the user saw "1 or more notes exist" but
+  // opened the Notes tab and saw nothing.
+  //
+  // This migration walks every job whose notes column parses as a non-empty
+  // JSON array, copies each entry into job_notes with best-effort field
+  // mapping, and then clears jobs.notes to a fresh empty array so the
+  // legacy display block stays quiet going forward. Gated by an app_meta
+  // marker so it only runs once.
+  try {
+    const marker = sqlite
+      .prepare("SELECT value FROM app_meta WHERE key = 'legacy_notes_column_migration_v1'")
+      .get() as { value?: string } | undefined;
+    if (!marker) {
+      const candidateJobs = sqlite
+        .prepare("SELECT id, notes FROM jobs WHERE notes IS NOT NULL AND notes != '' AND notes != '[]'")
+        .all() as { id: number; notes: string }[];
+      let migratedNotes = 0;
+      let touchedJobs = 0;
+      const insertNote = sqlite.prepare(
+        "INSERT INTO job_notes (job_id, author, body, is_public, tag, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      );
+      const clearJobNotes = sqlite.prepare("UPDATE jobs SET notes = '[]' WHERE id = ?");
+      const tx = sqlite.transaction(() => {
+        for (const row of candidateJobs) {
+          let arr: any[] = [];
+          const raw = String(row.notes || "").trim();
+          if (!raw.startsWith("[")) continue;
+          try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) arr = parsed;
+          } catch { continue; }
+          if (arr.length === 0) continue;
+          for (const n of arr) {
+            // Old shape used `text` for the body; some rows used `body`. Try both.
+            const body = String((n?.body ?? n?.text ?? "") || "").trim();
+            if (!body) continue;
+            const author = String(n?.author || "Titan Team").trim() || "Titan Team";
+            // Preserve original createdAt when available so the audit timeline
+            // stays honest. Fall back to now only if the legacy entry had none.
+            const createdAt = String(n?.createdAt || n?.created_at || new Date().toISOString());
+            const tag = n?.tag ? String(n.tag) : null;
+            // Legacy notes were internal-only (no homeowner portal existed
+            // yet). Default to staff-only visibility to avoid retroactively
+            // exposing anything to the customer portal.
+            insertNote.run(row.id, author, body, 0, tag, createdAt);
+            migratedNotes += 1;
+          }
+          clearJobNotes.run(row.id);
+          touchedJobs += 1;
+        }
+      });
+      tx();
+      sqlite
+        .prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?)")
+        .run(
+          "legacy_notes_column_migration_v1",
+          JSON.stringify({ migratedNotes, touchedJobs, scannedJobs: candidateJobs.length }),
+          new Date().toISOString(),
+        );
+      if (migratedNotes > 0) {
+        console.log(`[migration] legacy jobs.notes → job_notes: migrated ${migratedNotes} note(s) across ${touchedJobs} job(s)`);
+      }
+    }
+  } catch (e: any) {
+    console.warn("[migration] legacy notes column migration failed:", e?.message || e);
+  }
+
   // Map a raw job_notes DB row (snake_case) to the camelCase shape the client expects
   const mapJobNote = (r: any) => r == null ? r : ({
     id: r.id,
