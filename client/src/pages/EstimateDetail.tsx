@@ -302,6 +302,24 @@ export default function EstimateDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, estimate?.lineItems]);
 
+  // Teach the Quick Add library from any "complete" rows once local items
+  // settle. Hoisted above the early-return branches so the hook count is
+  // stable between the loading and loaded renders (was causing minified
+  // React error #310 — "rendered more hooks than during the previous
+  // render" — when the estimate finished loading).
+  useEffect(() => {
+    if (!estimate) return;
+    if (pendingSaveRef.current) return;
+    const source = localItems ?? (() => {
+      try {
+        const parsed = JSON.parse(estimate.lineItems || "[]");
+        return Array.isArray(parsed) ? parsed as LineItem[] : [];
+      } catch { return [] as LineItem[]; }
+    })();
+    for (const it of source) learnItem(it);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [estimate?.id, JSON.stringify((localItems ?? []).map(i => `${i.description}|${i.unitPrice}|${i.unit}|${i.category}|${i.kind}`))]);
+
   if (isLoading) return <div className="p-6 text-muted-foreground">Loading…</div>;
   if (!estimate) return <div className="p-6 text-destructive">Estimate not found.</div>;
 
@@ -447,15 +465,8 @@ export default function EstimateDetail() {
   // Structural change — save immediately. On remove, no learning needed.
   const removeItem = (idx: number) => saveItems(lineItems.filter((_, i) => i !== idx), true);
 
-  // Whenever local items settle (debounce completed), teach any "complete"
-  // rows to the Quick Add library. This runs after every state settle, so
-  // duplicating a row and editing the copy also learns the copy — without
-  // us having to sprinkle learnItem calls through every code path.
-  useEffect(() => {
-    if (pendingSaveRef.current) return; // wait for saves to flush
-    for (const it of lineItems) learnItem(it);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(lineItems.map(i => `${i.description}|${i.unitPrice}|${i.unit}|${i.category}|${i.kind}`))]);
+  // (Quick-Add learning effect was hoisted above the early returns to keep
+  // the hook order stable — see the useEffect near the top of the function.)
 
   // Duplicate a row — handy when building a repeated set of items with only
   // the description or qty changing between them (three sizes of the same
