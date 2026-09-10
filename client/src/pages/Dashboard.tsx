@@ -115,6 +115,23 @@ export default function Dashboard() {
   const mitPct = pipelinePhase.total > 0 ? Math.round((pipelinePhase.mitigation / pipelinePhase.total) * 100) : 0;
   const reconPct = pipelinePhase.total > 0 ? 100 - mitPct : 0;
   const totalRevenue = payments.filter(p => p.type === "received").reduce((s, p) => s + (p.amount || 0), 0);
+  // Month-to-date revenue. The Revenue KPI card is labelled "Revenue MTD" so
+  // it must only sum payments received in the current calendar month.
+  // `totalRevenue` (lifetime) is still used for the bucket panel's collected
+  // total and CSV export. Prefer `paidAt` (when the money hit) and fall back
+  // to `createdAt` only when `paidAt` is blank, mirroring the same field
+  // priority the 8-week sparkline uses.
+  const now = new Date();
+  const mtdStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const mtdStartISO = `${mtdStart.getFullYear()}-${String(mtdStart.getMonth() + 1).padStart(2, "0")}-01`;
+  const todayISO = todayLocalISO();
+  const mtdReceivedPayments = payments.filter((p: any) => {
+    if (p.type !== "received") return false;
+    const d = String(p.paidAt || p.createdAt || "").slice(0, 10);
+    if (!d) return false;
+    return d >= mtdStartISO && d <= todayISO;
+  });
+  const mtdRevenue = mtdReceivedPayments.reduce((s: number, p: any) => s + (p.amount || 0), 0);
   const outstanding = invoices.filter(i => i.status !== "paid" && i.status !== "draft").reduce((s, i) => s + (i.total || 0), 0);
 
   // ── Overdue A/R (Needs You Now) ──────────────────────────────────────────────
@@ -220,7 +237,22 @@ export default function Dashboard() {
   const [bucketScope, setBucketScope] = useState<"all" | "mitigation" | "reconstruction" | "both">("all");
   const [bucketFrom, setBucketFrom] = useState(""); // date-range start (revenue/AR)
   const [bucketTo, setBucketTo] = useState("");     // date-range end (revenue/AR)
-  const openBucketPanel = (b: "active" | "revenue" | "ar" | "cycle" | "payouts") => { setBucketSearch(""); setBucketStatus("all"); setBucketScope("all"); setBucketFrom(""); setBucketTo(""); setOpenBucket(b); };
+  const openBucketPanel = (b: "active" | "revenue" | "ar" | "cycle" | "payouts") => {
+    setBucketSearch("");
+    setBucketStatus("all");
+    setBucketScope("all");
+    // Revenue drills open to the current month by default so the panel
+    // matches the "Revenue MTD" KPI the user just clicked. User can widen
+    // to any range from the date pickers inside the panel.
+    if (b === "revenue") {
+      setBucketFrom(mtdStartISO);
+      setBucketTo(todayISO);
+    } else {
+      setBucketFrom("");
+      setBucketTo("");
+    }
+    setOpenBucket(b);
+  };
   const money = (n: number) => `$${(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
   const fmtDate = (d?: string | null) => d ? fmtDate(d, { month: "short", day: "numeric", year: "numeric" }) : "—";
 
@@ -303,8 +335,8 @@ export default function Dashboard() {
       subtitle: `${activeJobs.length} job${activeJobs.length !== 1 ? "s" : ""} in progress · ${newJobs} new lead${newJobs !== 1 ? "s" : ""}`,
     },
     revenue: {
-      title: "Revenue Received",
-      subtitle: `${receivedPayments.length} payment${receivedPayments.length !== 1 ? "s" : ""} · ${money(totalRevenue)} collected`,
+      title: "Revenue Received (Month-to-Date)",
+      subtitle: `${mtdReceivedPayments.length} payment${mtdReceivedPayments.length !== 1 ? "s" : ""} MTD · ${money(mtdRevenue)} this month · ${money(totalRevenue)} all-time`,
     },
     ar: {
       title: "Outstanding A/R",
@@ -513,7 +545,7 @@ export default function Dashboard() {
             <div className="flex items-start justify-between">
               <div>
                 <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Revenue MTD</p>
-                <p className="text-3xl font-bold text-foreground mt-1"><CountUp value={totalRevenue / 1000} decimals={1} prefix="$" suffix="k" /></p>
+                <p className="text-3xl font-bold text-foreground mt-1"><CountUp value={mtdRevenue / 1000} decimals={1} prefix="$" suffix="k" /></p>
                 <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">{completedThisMonth} jobs complete <ArrowRight className="w-3 h-3 opacity-60" /></p>
               </div>
               <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg">
