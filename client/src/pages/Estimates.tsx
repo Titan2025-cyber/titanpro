@@ -1,6 +1,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { Plus, FileText, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,6 +20,7 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 export default function Estimates() {
+  const [, setLocation] = useLocation();
   // Auto-open the New Estimate dialog when we arrived from a Job page
   // (which passes ?jobId= in the URL). Saves the user a click.
   const _initialAuto = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("jobId");
@@ -44,8 +45,14 @@ export default function Estimates() {
   const canDelete = !!user && (["owner", "admin", "general_manager"] as string[]).includes(user.role);
 
   const createMutation = useMutation({
-    mutationFn: (data: any) => apiRequest("POST", "/api/estimates", data),
-    onSuccess: () => {
+    // Return the created row so onSuccess can jump straight into it. Techs
+    // never need to see the full list — they only care about the estimate
+    // they just created.
+    mutationFn: async (data: any) => {
+      const r = await apiRequest("POST", "/api/estimates", data);
+      return r.json().catch(() => ({}));
+    },
+    onSuccess: (created: any) => {
       // Refresh every consumer of estimate data:
       //   • /api/estimates              — global list on this page
       //   • /api/jobs/:id/estimates     — per-job Estimates tab on JobDetail
@@ -54,6 +61,11 @@ export default function Estimates() {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs/financials"] });
       setOpen(false);
+      // Jump into the new estimate. If the server didn't return an id (bad
+      // response, offline queue, etc.) we fall back to the list rather than
+      // navigating to /estimates/undefined.
+      const newId = created?.id ?? created?.estimate?.id;
+      if (newId) setLocation(`/estimates/${newId}`);
     },
     onError: (e: any) => toast({
       title: "Create failed",
