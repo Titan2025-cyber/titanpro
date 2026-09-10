@@ -147,9 +147,14 @@ export function StageSelector({ job }: { job: Job }) {
       queryClient.setQueryData(["/api/jobs", String(job.id)], updatedJob);
       // Invalidate the list + any sub-queries so everything re-fetches
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      const label = PROGRESS_STAGES.find(s => s.key === (updatedJob as any).progressStage)?.label || "new stage";
+      toast({ title: `Moved to ${label}` });
       setOpen(false);
     },
-    onError: () => toast({ title: "Failed to update stage", variant: "destructive" }),
+    onError: (err: any) => {
+      const msg = err?.message || err?.error || "Failed to update stage";
+      toast({ title: "Failed to update stage", description: String(msg), variant: "destructive" });
+    },
   });
 
   const handleStageSelect = (stageKey: string) => {
@@ -244,13 +249,21 @@ export function StageSelector({ job }: { job: Job }) {
 export function DateManager({ job }: { job: Job }) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
-  const [dates, setDates] = useState({
-    salesDate: ((job as any).salesDate as string) || "",
-    preProductionDate: ((job as any).preProductionDate as string) || "",
-    wipDate: ((job as any).wipDate as string) || "",
-    invoiceSentDate: ((job as any).invoiceSentDate as string) || "",
-    invoicePaidDate: ((job as any).invoicePaidDate as string) || "",
+  const buildDatesFromJob = (j: Job) => ({
+    salesDate: ((j as any).salesDate as string) || "",
+    preProductionDate: ((j as any).preProductionDate as string) || "",
+    wipDate: ((j as any).wipDate as string) || "",
+    invoiceSentDate: ((j as any).invoiceSentDate as string) || "",
+    invoicePaidDate: ((j as any).invoicePaidDate as string) || "",
   });
+  const [dates, setDates] = useState(() => buildDatesFromJob(job));
+  // Re-sync local edit state whenever we get a fresher copy of the job
+  // (job.updatedAt bumps on every server write). Without this the popover
+  // shows stale values after a save—the classic "my edit didn't stick".
+  useEffect(() => {
+    if (!open) setDates(buildDatesFromJob(job));
+  }, [job.id, (job as any).updatedAt, (job as any).salesDate, (job as any).preProductionDate,
+      (job as any).wipDate, (job as any).invoiceSentDate, (job as any).invoicePaidDate, open]);
 
   // Map each milestone date field to the pipeline stage it represents.
   // Entering a date means that milestone happened, so the job should move to
@@ -286,7 +299,12 @@ export function DateManager({ job }: { job: Job }) {
 
   const saveMutation = useMutation({
     mutationFn: () => {
-      const payload: any = { ...dates };
+      // Normalize empty strings to null so cleared dates actually clear in
+      // the DB (writing "" leaves a non-null empty string that breaks
+      // IS NULL reporting downstream).
+      const payload: any = Object.fromEntries(
+        Object.entries(dates).map(([k, v]) => [k, v === "" ? null : v])
+      );
       const autoStage = computeAutoStage(dates);
       const currentStage = (job as any).progressStage || "pending_sale";
       const currentOrder = PROGRESS_STAGES.find(s => s.key === currentStage)?.order ?? 0;
@@ -309,6 +327,12 @@ export function DateManager({ job }: { job: Job }) {
         ? `Dates saved — moved to ${PROGRESS_STAGES.find(s => s.key === (updatedJob as any).progressStage)?.label || "new stage"}`
         : "Milestone dates saved" });
       setOpen(false);
+    },
+    onError: (err: any) => {
+      // Surface the server's error message so silent failures stop
+      // getting reported as "the dates just don't save".
+      const msg = err?.message || err?.error || "Failed to save milestone dates";
+      toast({ title: "Failed to save dates", description: String(msg), variant: "destructive" });
     },
   });
 

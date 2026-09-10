@@ -796,18 +796,28 @@ function InlineMilestoneDates({ job }: { job: any }) {
   //      the Activity page. Cody: "I want to be able to manually edit
   //      dates all in that one section", so they're plain editable
   //      inputs saved through the same PATCH.
-  const [dates, setDates] = useState({
-    salesDate: job.salesDate || "",
-    preProductionDate: job.preProductionDate || "",
-    wipDate: job.wipDate || "",
-    invoiceSentDate: job.invoiceSentDate || "",
-    invoicePaidDate: job.invoicePaidDate || "",
-    mitigationStart: job.mitigationStart || "",
-    dryOutComplete: job.dryOutComplete || "",
-    reconstructionStart: job.reconstructionStart || "",
-    jobComplete: job.jobComplete || "",
+  const buildFromJob = (j: any) => ({
+    salesDate: j.salesDate || "",
+    preProductionDate: j.preProductionDate || "",
+    wipDate: j.wipDate || "",
+    invoiceSentDate: j.invoiceSentDate || "",
+    invoicePaidDate: j.invoicePaidDate || "",
+    mitigationStart: j.mitigationStart || "",
+    dryOutComplete: j.dryOutComplete || "",
+    reconstructionStart: j.reconstructionStart || "",
+    jobComplete: j.jobComplete || "",
   });
+  const [dates, setDates] = useState(() => buildFromJob(job));
   const [dirty, setDirty] = useState(false);
+  // Re-sync from the fresher job whenever the parent refetches, but only
+  // when we're not in the middle of typing (dirty). Prevents the classic
+  // "my edit didn't stick" after saving — the popover was showing stale
+  // state from the initial useState snapshot.
+  useEffect(() => {
+    if (!dirty) setDates(buildFromJob(job));
+  }, [job.id, job.updatedAt, job.salesDate, job.preProductionDate, job.wipDate,
+      job.invoiceSentDate, job.invoicePaidDate, job.mitigationStart,
+      job.dryOutComplete, job.reconstructionStart, job.jobComplete, dirty]);
 
   // Mirror DateManager (JobPipeline.tsx): editing a milestone date moves the job
   // forward through PROGRESS_STAGES (never backward, and A/R placement is
@@ -841,7 +851,11 @@ function InlineMilestoneDates({ job }: { job: any }) {
 
   const saveMutation = useMutation({
     mutationFn: () => {
-      const payload: any = { ...dates };
+      // Empty strings clear the field in the DB (writing "" leaves a
+      // non-null empty string that breaks IS NULL reporting downstream).
+      const payload: any = Object.fromEntries(
+        Object.entries(dates).map(([k, v]) => [k, v === "" ? null : v])
+      );
       const autoStage = computeAutoStage(dates);
       const currentStage = (job as any).progressStage || "pending_sale";
       const currentOrder = PROGRESS_STAGES.find(s => s.key === currentStage)?.order ?? 0;
