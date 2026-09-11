@@ -20,6 +20,7 @@ import { registerRoutePlannerRoutes } from "./routes_routeplanner";
 import { registerSuite5Routes } from "./routes_suite5";
 import { registerSuite6Routes } from "./routes_suite6";
 import { registerAIAgentRoutes } from "./routes_aiagent";
+import { registerCompanyDocsRoutes } from "./routes_company_docs";
 import { registerMarketingAIRoutes } from "./routes_marketing_ai";
 import { registerHRRoutes } from "./routes_hr";
 import { registerGmailRoutes } from "./routes_gmail";
@@ -6712,6 +6713,7 @@ cody@titanrestorationllc.com`;
   registerSuite5Routes(app, sqlite, { requireRole });
   registerSuite6Routes(app, sqlite);
   registerAIAgentRoutes(app, sqlite);
+  registerCompanyDocsRoutes(app, sqlite);
 
   // ── HR Management Module + AI HR Assistant (additive, self-contained) ───────
   registerHRRoutes(app, sqlite);

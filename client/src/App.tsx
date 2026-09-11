@@ -36,6 +36,8 @@ import { LocationTracker } from "@/lib/locationTracker";
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const MyToday = lazy(() => import("@/pages/MyToday"));
 const Settings = lazy(() => import("@/pages/Settings"));
+const CompanyDocuments = lazy(() => import("@/pages/CompanyDocuments"));
+const PublicCompanyDoc = lazy(() => import("@/pages/PublicCompanyDoc"));
 const Jobs = lazy(() => import("@/pages/Jobs"));
 const JobDetail = lazy(() => import("@/pages/JobDetail"));
 const ClosedJobs = lazy(() => import("@/pages/ClosedJobs"));
@@ -261,6 +263,11 @@ function AppRoutes() {
       <Route path="/sign/:token" component={() => (
         <Suspense fallback={<PageLoader />}><Page component={SignDocument} name="SignDocument" /></Suspense>
       )} />
+      {/* Public company-doc share link — recipients (adjusters, GCs) get
+         emailed a token; token gates access server-side, honors expiry. */}
+      <Route path="/company-doc/:token" component={() => (
+        <Suspense fallback={<PageLoader />}><Page component={PublicCompanyDoc} name="PublicCompanyDoc" /></Suspense>
+      )} />
       <Route>
         <AuthenticatedRoutes />
       </Route>
@@ -455,6 +462,7 @@ function AuthenticatedRoutes() {
             Partner Portal Setup, and Portal QR Codes. Replaces the old
             per-item sidebar rows. */}
         <Route path="/settings" component={() => <Page component={Settings} name="Settings" />} />
+        <Route path="/company-documents" component={() => <Page component={CompanyDocuments} name="CompanyDocuments" />} />
 
         {/* Portals (staff-side admin views — public customer/partner portals live
            in AppRoutes above, reachable via QR code without staff login) */}

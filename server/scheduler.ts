@@ -18,6 +18,7 @@
 
 import type Database from "better-sqlite3";
 import { sendGmailAsEmployee } from "./routes_gmail";
+import { scanCompanyDocExpirations } from "./routes_company_docs";
 
 type Sqlite = Database.Database;
 
@@ -682,6 +683,10 @@ async function runAllJobs(ctx: SchedulerContext) {
     ["cert_expiring",     () => runCertExpiring(ctx)],
     ["noaa_check",        () => runNoaaCheck(ctx)],
     ["daily_digest",      () => runDailyDigest(ctx)],
+    ["company_docs_expiring", async () => {
+      const r = await scanCompanyDocExpirations(ctx.sqlite);
+      return `checked=${r.checked}, alerts_sent=${r.alerts_sent}`;
+    }],
   ];
   for (const [name, fn] of jobs) {
     try {

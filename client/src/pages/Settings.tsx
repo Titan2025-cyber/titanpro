@@ -4,7 +4,7 @@ import {
   KeyRound, Bell, UserCog, Activity, ShieldCheck, CreditCard,
   Trash2, FileSpreadsheet, QrCode, Users as UsersIcon,
   ExternalLink, Settings as SettingsIcon,
-  RefreshCw, ListChecks, ClipboardList,
+  RefreshCw, ListChecks, ClipboardList, FolderLock,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -28,6 +28,7 @@ import PartnerPortalSetup from "@/pages/PartnerPortalSetup";
 import QBSync from "@/pages/QBSync";
 import LineItemLibrary from "@/pages/LineItemLibrary";
 import JobTemplates from "@/pages/JobTemplates";
+import CompanyDocuments from "@/pages/CompanyDocuments";
 
 /**
  * Settings hub — left-rail sub-navigation.
@@ -57,7 +58,8 @@ type SectionKey =
   | "document-builder"
   | "line-items"
   | "job-templates"
-  | "partner-portal";
+  | "partner-portal"
+  | "company-documents";
 
 type Item = {
   key: SectionKey;
@@ -160,6 +162,18 @@ const GROUPS: Group[] = [
         icon: Trash2,
         component: TrashPage,
         adminOnly: true,
+      },
+    ],
+  },
+  {
+    title: "Documents",
+    items: [
+      {
+        key: "company-documents",
+        label: "Company Documents",
+        desc: "COI, licenses, IICRC certs, W-9, and forms Titan sends out. Expiration alerts + one-click share.",
+        icon: FolderLock,
+        component: CompanyDocuments,
       },
     ],
   },
