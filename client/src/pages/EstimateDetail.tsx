@@ -18,6 +18,7 @@ import type { Estimate, Job, Contact } from "@shared/schema";
 import { SendAndSavePanel } from "@/components/SendAndSavePanel";
 import { EstimateSignaturePanel } from "@/components/EstimateSignaturePanel";
 import { generateEstimatePDF } from "@/lib/pdfEngine";
+import { evalExpr } from "@/lib/mathExpr";
 
 const IICRC_QUICK_ADD = [
   { description: "Emergency Response/Mobilization", category: "emergency", unit: "LS", unitPrice: 450 },
@@ -823,16 +824,23 @@ export default function EstimateDetail() {
                           />
                         </div>
 
-                        {/* Qty — numeric, right-aligned. */}
+                        {/* Qty — accepts arithmetic expressions like 3*4*8,
+                            12/2, (4+6)*3, or Xactimate-style 12x8. Evaluates
+                            on blur; keeps the raw text while typing. */}
                         <div>
                           <Label className="text-[10px] text-muted-foreground md:hidden">Qty</Label>
                           <Input
                             className="h-8 text-sm text-right tabular-nums"
-                            type="number"
-                            step="0.01"
-                            min="0"
+                            type="text"
+                            inputMode="decimal"
                             value={item.qty}
                             onChange={e => updateItem(idx, "qty", e.target.value)}
+                            onBlur={e => {
+                              const v = evalExpr(e.target.value);
+                              if (v !== null && v !== Number(e.target.value)) {
+                                updateItem(idx, "qty", String(v));
+                              }
+                            }}
                             onFocus={e => e.target.select()}
                             data-testid={`input-qty-${idx}`}
                           />
@@ -853,18 +861,24 @@ export default function EstimateDetail() {
                           />
                         </div>
 
-                        {/* Unit price — numeric. */}
+                        {/* Unit price — also accepts arithmetic (e.g.
+                            450+50 for a quick markup). Evaluates on blur. */}
                         <div>
                           <Label className="text-[10px] text-muted-foreground md:hidden">Unit Price</Label>
                           <div className="relative">
                             <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">$</span>
                             <Input
                               className="h-8 text-sm text-right tabular-nums pl-5"
-                              type="number"
-                              step="0.01"
-                              min="0"
+                              type="text"
+                              inputMode="decimal"
                               value={item.unitPrice}
                               onChange={e => updateItem(idx, "unitPrice", e.target.value)}
+                              onBlur={e => {
+                                const v = evalExpr(e.target.value);
+                                if (v !== null && v !== Number(e.target.value)) {
+                                  updateItem(idx, "unitPrice", String(v));
+                                }
+                              }}
                               onFocus={e => e.target.select()}
                               data-testid={`input-unitprice-${idx}`}
                             />
