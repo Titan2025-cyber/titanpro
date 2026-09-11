@@ -254,8 +254,14 @@ export function registerCompanyDocsRoutes(app: Express, sqlite: Database.Databas
     try {
       const u = getUser(req)!;
       const b = req.body || {};
-      const title = String(b.title || "").trim();
-      if (!title) return res.status(400).json({ error: "title required" });
+      let title = String(b.title || "").trim();
+      // If no title but a filename came in, use the filename (stripped of
+      // extension and normalized) as a fallback so a well-formed upload never
+      // 400s on this alone.
+      if (!title && typeof b.file_name === "string") {
+        title = b.file_name.replace(/\.[^.]+$/, "").replace(/[._-]+/g, " ").trim();
+      }
+      if (!title) return res.status(400).json({ error: "Please give this document a title." });
 
       let fileMime: string | null = b.file_mime_type || null;
       let fileName: string | null = b.file_name || null;

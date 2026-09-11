@@ -484,7 +484,16 @@ export default function CompanyDocuments() {
               <Input
                 id="file" type="file"
                 ref={fileInputRef}
-                onChange={(e) => setFile(e.target.files?.[0] || null)}
+                onChange={(e) => {
+                  const f = e.target.files?.[0] || null;
+                  setFile(f);
+                  // If Title is empty, auto-fill from the file name (without extension).
+                  // Users usually pick a file first and expect the title to be filled in.
+                  if (f && !form.title.trim()) {
+                    const base = f.name.replace(/\.[^.]+$/, "").replace(/[._-]+/g, " ").trim();
+                    if (base) setForm(prev => ({ ...prev, title: base }));
+                  }
+                }}
                 data-testid="input-file"
               />
               {file && (
