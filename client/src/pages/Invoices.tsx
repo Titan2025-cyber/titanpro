@@ -382,7 +382,7 @@ export default function Invoices() {
                       <Input className="h-8" placeholder="e.g. Water extraction & drying" value={row.description}
                         data-testid={`input-item-desc-${idx}`}
                         onChange={e => setItems(rows => rows.map((r, i) => i === idx ? { ...r, description: e.target.value } : r))} />
-                      <Input className="h-8 text-right tabular-nums" type="text" inputMode="decimal" value={row.quantity}
+                      <Input className="h-8 text-right tabular-nums" type="text" inputMode="text" value={row.quantity}
                         data-testid={`input-item-qty-${idx}`}
                         onChange={e => setItems(rows => rows.map((r, i) => i === idx ? { ...r, quantity: e.target.value } : r))}
                         onFocus={e => e.target.select()}
@@ -392,7 +392,7 @@ export default function Invoices() {
                             setItems(rows => rows.map((r, i) => i === idx ? { ...r, quantity: String(v) } : r));
                           }
                         }} />
-                      <Input className="h-8 text-right tabular-nums" type="text" inputMode="decimal" placeholder="0" value={row.unitPrice}
+                      <Input className="h-8 text-right tabular-nums" type="text" inputMode="text" placeholder="0" value={row.unitPrice}
                         data-testid={`input-item-price-${idx}`}
                         onChange={e => setItems(rows => rows.map((r, i) => i === idx ? { ...r, unitPrice: e.target.value } : r))}
                         onFocus={e => e.target.select()}
@@ -810,7 +810,7 @@ export default function Invoices() {
                           <Input className="h-8" placeholder="e.g. Water extraction & drying" value={row.description}
                             data-testid={`edit-input-item-desc-${idx}`}
                             onChange={e => setEditItems(rows => rows.map((r, i) => i === idx ? { ...r, description: e.target.value } : r))} />
-                          <Input className="h-8 text-right tabular-nums" type="text" inputMode="decimal" value={row.quantity}
+                          <Input className="h-8 text-right tabular-nums" type="text" inputMode="text" value={row.quantity}
                             data-testid={`edit-input-item-qty-${idx}`}
                             onChange={e => setEditItems(rows => rows.map((r, i) => i === idx ? { ...r, quantity: e.target.value } : r))}
                             onFocus={e => e.target.select()}
@@ -820,7 +820,7 @@ export default function Invoices() {
                                 setEditItems(rows => rows.map((r, i) => i === idx ? { ...r, quantity: String(v) } : r));
                               }
                             }} />
-                          <Input className="h-8 text-right tabular-nums" type="text" inputMode="decimal" placeholder="0" value={row.unitPrice}
+                          <Input className="h-8 text-right tabular-nums" type="text" inputMode="text" placeholder="0" value={row.unitPrice}
                             data-testid={`edit-input-item-price-${idx}`}
                             onChange={e => setEditItems(rows => rows.map((r, i) => i === idx ? { ...r, unitPrice: e.target.value } : r))}
                             onFocus={e => e.target.select()}

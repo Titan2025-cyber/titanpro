@@ -832,7 +832,7 @@ export default function EstimateDetail() {
                           <Input
                             className="h-8 text-sm text-right tabular-nums"
                             type="text"
-                            inputMode="decimal"
+                            inputMode="text"
                             value={item.qty}
                             onChange={e => updateItem(idx, "qty", e.target.value)}
                             onBlur={e => {
@@ -870,7 +870,7 @@ export default function EstimateDetail() {
                             <Input
                               className="h-8 text-sm text-right tabular-nums pl-5"
                               type="text"
-                              inputMode="decimal"
+                              inputMode="text"
                               value={item.unitPrice}
                               onChange={e => updateItem(idx, "unitPrice", e.target.value)}
                               onBlur={e => {
