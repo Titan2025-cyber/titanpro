@@ -508,6 +508,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // expiry, revocable via cancel). GET fetches the pending doc, POST
       // returns the signed PDF + signature image. No staff session required.
       "/api/public/sign/",       // prefix: GET + POST /api/public/sign/:token
+      // Company Documents public share links — adjusters/GCs open a
+      // time-limited /company-doc/:token URL from email. Token IS the auth,
+      // server enforces expiry + revocation. No staff session.
+      "/api/company-doc-public/", // prefix: GET /api/company-doc-public/:token
       // QuickBooks OAuth redirect callback (no bearer token on the redirect)
       "/api/qb/oauth/callback",
       "/api/qb/oauth/start",
