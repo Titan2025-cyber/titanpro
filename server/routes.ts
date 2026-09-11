@@ -21,6 +21,7 @@ import { registerSuite5Routes } from "./routes_suite5";
 import { registerSuite6Routes } from "./routes_suite6";
 import { registerAIAgentRoutes } from "./routes_aiagent";
 import { registerCompanyDocsRoutes } from "./routes_company_docs";
+import { registerAssistantRoutes } from "./routes_assistant";
 import { registerMarketingAIRoutes } from "./routes_marketing_ai";
 import { registerHRRoutes } from "./routes_hr";
 import { registerGmailRoutes } from "./routes_gmail";
@@ -6718,6 +6719,7 @@ cody@titanrestorationllc.com`;
   registerSuite6Routes(app, sqlite);
   registerAIAgentRoutes(app, sqlite);
   registerCompanyDocsRoutes(app, sqlite);
+  registerAssistantRoutes(app, sqlite);
 
   // ── HR Management Module + AI HR Assistant (additive, self-contained) ───────
   registerHRRoutes(app, sqlite);
@@ -7432,6 +7434,11 @@ Approve in Partner Portal → Admin View.
   try { sqlite.exec(`ALTER TABLE contacts ADD COLUMN dispatch_blocked INTEGER DEFAULT 0`); } catch(_) {}
   try { sqlite.exec(`ALTER TABLE contacts ADD COLUMN dispatch_block_reason TEXT`); } catch(_) {}
 
+  // #18: QuickBooks customer link — set on first invoice sync so subsequent
+  // invoices attach to the correct QBO customer rather than placeholder "1".
+  try { sqlite.exec(`ALTER TABLE contacts ADD COLUMN qb_customer_id TEXT`); } catch(_) {}
+  try { sqlite.exec(`ALTER TABLE contacts ADD COLUMN qb_synced_at TEXT`); } catch(_) {}
+
   // #17: e-sign hardening — IP + user-agent + signed-PDF snapshot path.
   try { sqlite.exec(`ALTER TABLE job_documents ADD COLUMN signer_ip TEXT`); } catch(_) {}
   try { sqlite.exec(`ALTER TABLE job_documents ADD COLUMN signer_user_agent TEXT`); } catch(_) {}
@@ -7628,13 +7635,99 @@ Approve in Partner Portal → Admin View.
   // QUICKBOOKS INTEGRATION — Invoice sync + payment receive
   // ══════════════════════════════════════════════════════════════════════════
 
+  // Reusable helper: create-or-link a Titan contact in QuickBooks. Search-first
+  // by email, then exact display name (case-insensitive) to avoid duplicates when
+  // the user added the customer manually in QBO. Persists the resulting QBO Id +
+  // sync timestamp back onto the contact row so future invoices attach correctly.
+  // Returns the QBO customer Id, or throws with a friendly message.
+  async function syncContactToQb(contactId: number): Promise<{ qbCustomerId: string; linked: boolean; created: boolean }> {
+    if (!contactId) throw new Error("No contact on this invoice \u2014 add a customer first.");
+    const contact: any = sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(contactId);
+    if (!contact) throw new Error("Contact not found.");
+    if (contact.qb_customer_id) return { qbCustomerId: contact.qb_customer_id, linked: false, created: false };
+
+    const auth = await qbAccessToken();
+    if (!auth) throw new Error("QuickBooks not connected. Connect it in Settings \u2192 Integrations.");
+    const baseUrl = `https://quickbooks.api.intuit.com/v3/company/${auth.realmId}`;
+    const headers = { "Authorization": `Bearer ${auth.accessToken}`, "Accept": "application/json" };
+
+    // 1) Search QBO for an existing customer. Escape single quotes for SQL-like query.
+    const esc = (s: string) => String(s || "").replace(/'/g, "\\'");
+    const queries: string[] = [];
+    if (contact.email) queries.push(`SELECT * FROM Customer WHERE PrimaryEmailAddr = '${esc(contact.email)}'`);
+    if (contact.name)  queries.push(`SELECT * FROM Customer WHERE DisplayName = '${esc(contact.name)}'`);
+
+    for (const q of queries) {
+      try {
+        const url = `${baseUrl}/query?query=${encodeURIComponent(q)}&minorversion=65`;
+        const r = await fetch(url, { headers });
+        const data = await r.json() as any;
+        const found = data?.QueryResponse?.Customer?.[0];
+        if (found?.Id) {
+          const now = new Date().toISOString();
+          sqlite.prepare("UPDATE contacts SET qb_customer_id = ?, qb_synced_at = ? WHERE id = ?").run(found.Id, now, contactId);
+          return { qbCustomerId: found.Id, linked: true, created: false };
+        }
+      } catch (_) { /* fall through to next query / create */ }
+    }
+
+    // 2) Not found in QBO \u2014 create it. Split "First Last" into given/family so QBO
+    // populates both DisplayName and the human name fields.
+    const nameParts = String(contact.name || "").trim().split(/\s+/);
+    const givenName  = nameParts.length > 1 ? nameParts.slice(0, -1).join(" ") : nameParts[0] || "Customer";
+    const familyName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : "";
+    const qbCustomer: any = {
+      DisplayName: contact.name || `Customer ${contactId}`,
+      GivenName: givenName,
+      ...(familyName && { FamilyName: familyName }),
+      ...(contact.company && { CompanyName: contact.company }),
+      ...(contact.email && { PrimaryEmailAddr: { Address: contact.email } }),
+      ...(contact.phone && { PrimaryPhone: { FreeFormNumber: contact.phone } }),
+      ...(contact.address && { BillAddr: { Line1: contact.address } }),
+      Notes: `Synced from Titan Pro contact #${contactId}`,
+    };
+    const createUrl = `${baseUrl}/customer?minorversion=65`;
+    const cResp = await fetch(createUrl, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify(qbCustomer),
+    });
+    const cData = await cResp.json() as any;
+    if (!cResp.ok) {
+      const msg = cData?.Fault?.Error?.[0]?.Message || cData?.Fault?.Error?.[0]?.Detail || `QuickBooks rejected the customer (${cResp.status})`;
+      throw new Error(`Couldn't create customer in QuickBooks: ${msg}`);
+    }
+    const qbId = cData?.Customer?.Id;
+    if (!qbId) throw new Error("QuickBooks did not return a customer Id.");
+    const now = new Date().toISOString();
+    sqlite.prepare("UPDATE contacts SET qb_customer_id = ?, qb_synced_at = ? WHERE id = ?").run(qbId, now, contactId);
+    return { qbCustomerId: qbId, linked: false, created: true };
+  }
+
+  // POST /api/qb/sync-contact \u2014 manual sync a single contact to QuickBooks (for
+  // prep work before their first invoice, or to re-link after an unlink).
+  app.post("/api/qb/sync-contact", wrapAsync(async (req, res) => {
+    try {
+      const contactId = Number(req.body.contactId);
+      const result = await syncContactToQb(contactId);
+      const c: any = sqlite.prepare("SELECT qb_customer_id, qb_synced_at, name FROM contacts WHERE id = ?").get(contactId);
+      res.json({
+        ok: true,
+        ...result,
+        contact: c,
+        message: result.created ? `Created \"${c?.name}\" in QuickBooks.` : result.linked ? `Linked to existing QuickBooks customer \"${c?.name}\".` : `Already linked to QuickBooks.`,
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }));
+
   // Reusable helper: push a Titan invoice to QuickBooks (Accounts Receivable).
   // Returns { ok, qbInvoiceId, qbLink } or throws with a friendly message.
   async function syncInvoiceToQb(invoiceId: number): Promise<{ ok: true; qbInvoiceId: string; qbLink: string; alreadySynced?: boolean }> {
-    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
-    if (!cfg) throw new Error("QuickBooks not configured. Add credentials in Settings → Integrations.");
-    const { accessToken, realmId } = JSON.parse(cfg.value || "{}");
-    if (!accessToken || !realmId) throw new Error("QuickBooks not fully connected. Please complete OAuth setup.");
+    const auth = await qbAccessToken();
+    if (!auth) throw new Error("QuickBooks not connected. Add credentials in Settings \u2192 Integrations and click Connect.");
+    const { accessToken, realmId } = auth;
 
     // Idempotent: if already synced, return the existing link.
     const existing: any = sqlite.prepare("SELECT * FROM qb_invoices WHERE invoice_id = ?").get(invoiceId);
@@ -7642,7 +7735,14 @@ Approve in Partner Portal → Admin View.
 
     const inv: any = sqlite.prepare("SELECT * FROM invoices WHERE id = ?").get(invoiceId);
     if (!inv) throw new Error("Invoice not found");
-    const contact: any = inv.contact_id ? sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(inv.contact_id) : null;
+    if (!inv.contact_id) throw new Error("This invoice has no customer attached. Add a customer to the invoice before syncing.");
+
+    // Ensure the customer exists in QuickBooks (match-first, create-if-missing).
+    // This mutates contacts.qb_customer_id so we re-read the contact right after.
+    await syncContactToQb(inv.contact_id);
+    const contact: any = sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(inv.contact_id);
+    if (!contact?.qb_customer_id) throw new Error("Couldn't establish a QuickBooks customer for this invoice.");
+
     const lineItems: any[] = JSON.parse(inv.line_items || "[]");
     const now = new Date().toISOString();
     const baseUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}`;
@@ -7660,7 +7760,7 @@ Approve in Partner Portal → Admin View.
           UnitPrice: li.unitPrice || li.total || 0,
         },
       })) : [{ Amount: inv.total || 0, DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: "1", name: "Restoration Services" }, Qty: 1, UnitPrice: inv.total || 0 } }],
-      CustomerRef: { value: contact?.qb_customer_id || "1", name: contact?.name || "Customer" },
+      CustomerRef: { value: contact.qb_customer_id, name: contact.name || "Customer" },
       DocNumber: inv.invoice_number,
       DueDate: inv.due_date,
       CustomerMemo: { value: `Titan Restoration LLC — ${inv.invoice_number}` },

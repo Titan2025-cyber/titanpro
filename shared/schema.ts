@@ -16,6 +16,8 @@ export const contacts = sqliteTable("contacts", {
   portalPin: text("portal_pin"), // 4-digit PIN for customer portal
   parentCompanyId: integer("parent_company_id"), // referral tech -> parent referral company contact
   isReferralCompany: integer("is_referral_company", { mode: "boolean" }), // 1 = a referral COMPANY that groups techs
+  qbCustomerId: text("qb_customer_id"), // QuickBooks Online customer Id (set on first invoice sync)
+  qbSyncedAt: text("qb_synced_at"), // when the contact was created/linked in QBO
 });
 export const insertContactSchema = createInsertSchema(contacts).omit({ id: true });
 export type InsertContact = z.infer<typeof insertContactSchema>;
