@@ -21,7 +21,7 @@ import { registerSuite5Routes } from "./routes_suite5";
 import { registerSuite6Routes } from "./routes_suite6";
 import { registerAIAgentRoutes } from "./routes_aiagent";
 import { registerCompanyDocsRoutes } from "./routes_company_docs";
-import { registerAssistantRoutes } from "./routes_assistant";
+// import { registerAssistantRoutes } from "./routes_assistant";  // HELD — file not in this repo
 import { registerMarketingAIRoutes } from "./routes_marketing_ai";
 import { registerHRRoutes } from "./routes_hr";
 import { registerGmailRoutes } from "./routes_gmail";
@@ -485,6 +485,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Exact paths OR path prefixes (matched against req.path) that stay public.
     const PUBLIC_API = [
       "/api/health",
+      // Public runtime config — exposes the Google Maps browser key so the
+      // dashboard map can load. Browser keys are safe to expose (locked by
+      // HTTP referrer in Google Cloud console).
+      "/api/config/public",
       // Staff auth endpoints
       "/api/auth/login",
       "/api/auth/logout",
@@ -6734,7 +6738,7 @@ cody@titanrestorationllc.com`;
   registerSuite6Routes(app, sqlite);
   registerAIAgentRoutes(app, sqlite);
   registerCompanyDocsRoutes(app, sqlite);
-  registerAssistantRoutes(app, sqlite);
+  // registerAssistantRoutes(app, sqlite);  // HELD — see import comment above
 
   // ── HR Management Module + AI HR Assistant (additive, self-contained) ───────
   registerHRRoutes(app, sqlite);
