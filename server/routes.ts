@@ -21,7 +21,7 @@ import { registerSuite5Routes } from "./routes_suite5";
 import { registerSuite6Routes } from "./routes_suite6";
 import { registerAIAgentRoutes } from "./routes_aiagent";
 import { registerCompanyDocsRoutes } from "./routes_company_docs";
-// import { registerAssistantRoutes } from "./routes_assistant";  // HELD — file not in this repo
+// import { registerAssistantRoutes } from "./routes_assistant";  // HELD — kept commented so builds don't break when the file isn't in the push repo. Uncomment when Titan Assistant ships.
 import { registerMarketingAIRoutes } from "./routes_marketing_ai";
 import { registerHRRoutes } from "./routes_hr";
 import { registerGmailRoutes } from "./routes_gmail";
@@ -37,6 +37,7 @@ import {
   hydrateImageRows,
 } from "./image_pipeline";
 import * as objectStorage from "./storage_s3";
+import { encryptField, decryptField } from "./encryption";
 
 // ── Error handler wrapper ────────────────────────────────────────────────────
 type Handler = (req: any, res: any, next?: any) => any;
@@ -7637,11 +7638,36 @@ Approve in Partner Portal → Admin View.
     if (val.apiKey) val.apiKeyMasked = "•".repeat(val.apiKey.length - 6) + val.apiKey.slice(-6);
     delete val.apiKey;
     if (val.clientSecret) { val.clientSecretMasked = "••••••" + val.clientSecret.slice(-4); delete val.clientSecret; }
+    // QuickBooks stores clientSecret encrypted as clientSecret_enc — surface a
+    // masked version so the settings UI can show "configured" state without
+    // leaking the plaintext.
+    if (val.clientSecret_enc) {
+      const dec = decryptField(val.clientSecret_enc);
+      if (dec) val.clientSecretMasked = "••••••" + dec.slice(-4);
+      delete val.clientSecret_enc;
+      delete val.accessToken_enc;   // never surface tokens even encrypted
+      delete val.refreshToken_enc;
+    }
     res.json({ configured: true, ...val, updatedAt: row.updated_at });
   }));
 
   // PATCH integration settings — save API keys
   app.patch("/api/integrations/:key", wrapAsync((req, res) => {
+    // QuickBooks writes go through the encrypted writeQbConfig helper so tokens
+    // and clientSecret never sit in plaintext on disk.
+    if (req.params.key === "quickbooks") {
+      const body = req.body || {};
+      writeQbConfig({
+        clientId: body.clientId,
+        clientSecret: body.clientSecret,
+        // accessToken / refreshToken / realmId are populated by the OAuth flow,
+        // not by direct settings edits, but pass them through if provided.
+        accessToken: body.accessToken,
+        refreshToken: body.refreshToken,
+        realmId: body.realmId,
+      });
+      return res.json({ ok: true });
+    }
     const existing: any = sqlite.prepare("SELECT value FROM integrations WHERE key = ?").get(req.params.key);
     const current = existing ? JSON.parse(existing.value || "{}") : {};
     const merged = { ...current, ...req.body };
@@ -7806,8 +7832,9 @@ Approve in Partner Portal → Admin View.
   // Reusable helper: email a synced QBO invoice to the customer via QuickBooks'
   // native send endpoint. Returns { sent, sentTo } or throws.
   async function sendQbInvoiceEmail(invoiceId: number, overrideEmail?: string): Promise<{ sent: boolean; sentTo?: string }> {
-    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
-    const { accessToken, realmId } = JSON.parse(cfg?.value || "{}");
+    const cfg = readQbConfig();
+    const accessToken = cfg?.accessToken;
+    const realmId = cfg?.realmId;
     if (!accessToken || !realmId) throw new Error("QuickBooks not connected.");
     const qbRow: any = sqlite.prepare("SELECT * FROM qb_invoices WHERE invoice_id = ?").get(invoiceId);
     if (!qbRow?.qb_invoice_id) throw new Error("Invoice not yet synced to QuickBooks.");
@@ -7986,12 +8013,114 @@ Approve in Partner Portal → Admin View.
     return true;
   }
 
+  // ── QuickBooks integration config storage ────────────────────────────────
+  //
+  // The `integrations` row for 'quickbooks' is a JSON blob containing:
+  //   { clientId, clientSecret, accessToken, refreshToken, realmId, connectedAt }
+  //
+  // Access + refresh tokens are AES-256-GCM encrypted at rest via encryptField()
+  // (same helper Gmail tokens use). Client ID / secret / realmId are NOT secrets
+  // in the OAuth sense (client secret is treated as a shared secret for the app,
+  // not per-user), but for defense-in-depth we still keep client secret encrypted.
+  //
+  // Storage format uses parallel *_enc fields so we can detect and migrate legacy
+  // plaintext rows on read:
+  //   { clientId, clientSecret_enc, accessToken_enc, refreshToken_enc, realmId,
+  //     connectedAt }
+
+  type QbConfig = {
+    clientId?: string;
+    clientSecret?: string;
+    accessToken?: string;
+    refreshToken?: string;
+    realmId?: string;
+    connectedAt?: string;
+  };
+
+  // Read + decrypt the QB integration row. Returns null if not configured.
+  // Backward-compatible: if the row still has plaintext accessToken/refreshToken/
+  // clientSecret (pre-migration), those values are returned as-is AND the row is
+  // re-written encrypted so the next read is clean.
+  function readQbConfig(): QbConfig | null {
+    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
+    if (!cfg) return null;
+    let raw: any;
+    try { raw = JSON.parse(cfg.value || "{}"); } catch { return null; }
+
+    // Detect legacy plaintext-only rows: they have accessToken but no accessToken_enc.
+    const isLegacy =
+      (raw.accessToken && !raw.accessToken_enc) ||
+      (raw.refreshToken && !raw.refreshToken_enc) ||
+      (raw.clientSecret && !raw.clientSecret_enc);
+
+    const out: QbConfig = {
+      clientId: raw.clientId,
+      realmId: raw.realmId,
+      connectedAt: raw.connectedAt,
+      clientSecret: raw.clientSecret_enc ? (decryptField(raw.clientSecret_enc) || undefined) : raw.clientSecret,
+      accessToken:  raw.accessToken_enc  ? (decryptField(raw.accessToken_enc)  || undefined) : raw.accessToken,
+      refreshToken: raw.refreshToken_enc ? (decryptField(raw.refreshToken_enc) || undefined) : raw.refreshToken,
+    };
+
+    if (isLegacy) {
+      // Migrate in place — silently upgrade the row so subsequent reads use
+      // encrypted storage. Safe to call repeatedly (idempotent).
+      try {
+        writeQbConfig(out);
+        console.log("[qb] Migrated legacy plaintext QuickBooks tokens to encrypted storage.");
+      } catch (e: any) {
+        console.error("[qb] Legacy token migration failed:", e?.message);
+      }
+    }
+    return out;
+  }
+
+  // Write the QB integration row with all secrets encrypted at rest. Merges
+  // with any existing row so callers can update partial fields.
+  function writeQbConfig(patch: QbConfig): void {
+    const existing = readQbConfigRaw();
+    const merged: QbConfig = { ...(existing || {}), ...patch };
+    const persisted: any = {
+      clientId: merged.clientId,
+      realmId: merged.realmId,
+      connectedAt: merged.connectedAt,
+      // Encrypted parallel fields. encryptField returns null for empty input,
+      // which we drop from the JSON so the row shape stays clean.
+      clientSecret_enc: merged.clientSecret ? encryptField(merged.clientSecret) : undefined,
+      accessToken_enc:  merged.accessToken  ? encryptField(merged.accessToken)  : undefined,
+      refreshToken_enc: merged.refreshToken ? encryptField(merged.refreshToken) : undefined,
+    };
+    // Strip undefined entries so the JSON blob doesn't accumulate nulls.
+    for (const k of Object.keys(persisted)) if (persisted[k] === undefined) delete persisted[k];
+    sqlite
+      .prepare("INSERT INTO integrations (key, value, updated_at) VALUES ('quickbooks', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+      .run(JSON.stringify(persisted), new Date().toISOString());
+  }
+
+  // Internal: read without triggering the migration path. Used by writeQbConfig
+  // to avoid recursive re-writes and by the health checks that just want to
+  // know if the row exists.
+  function readQbConfigRaw(): QbConfig | null {
+    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
+    if (!cfg) return null;
+    try {
+      const raw = JSON.parse(cfg.value || "{}");
+      return {
+        clientId: raw.clientId,
+        realmId: raw.realmId,
+        connectedAt: raw.connectedAt,
+        clientSecret: raw.clientSecret_enc ? (decryptField(raw.clientSecret_enc) || undefined) : raw.clientSecret,
+        accessToken:  raw.accessToken_enc  ? (decryptField(raw.accessToken_enc)  || undefined) : raw.accessToken,
+        refreshToken: raw.refreshToken_enc ? (decryptField(raw.refreshToken_enc) || undefined) : raw.refreshToken,
+      };
+    } catch { return null; }
+  }
+
   // Refresh a QuickBooks access token using the stored refresh token. Returns the
   // (possibly refreshed) access token, or null if QB isn't fully connected.
   async function qbAccessToken(): Promise<{ accessToken: string; realmId: string } | null> {
-    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
-    if (!cfg) return null;
-    const v = JSON.parse(cfg.value || "{}");
+    const v = readQbConfig();
+    if (!v) return null;
     if (!v.realmId || !v.refreshToken || !v.clientId || !v.clientSecret) {
       return v.accessToken && v.realmId ? { accessToken: v.accessToken, realmId: v.realmId } : null;
     }
@@ -8007,13 +8136,15 @@ Approve in Partner Portal → Admin View.
         body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: v.refreshToken }).toString(),
       });
       const t = await r.json() as any;
-      if (!r.ok || !t.access_token) return v.accessToken ? { accessToken: v.accessToken, realmId: v.realmId } : null;
-      const updated = { ...v, accessToken: t.access_token, refreshToken: t.refresh_token || v.refreshToken, connectedAt: new Date().toISOString() };
-      sqlite.prepare("INSERT INTO integrations (key, value, updated_at) VALUES ('quickbooks', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
-        .run(JSON.stringify(updated), new Date().toISOString());
+      if (!r.ok || !t.access_token) return v.accessToken ? { accessToken: v.accessToken, realmId: v.realmId! } : null;
+      writeQbConfig({
+        accessToken: t.access_token,
+        refreshToken: t.refresh_token || v.refreshToken,
+        connectedAt: new Date().toISOString(),
+      });
       return { accessToken: t.access_token, realmId: v.realmId };
     } catch {
-      return v.accessToken ? { accessToken: v.accessToken, realmId: v.realmId } : null;
+      return v.accessToken ? { accessToken: v.accessToken, realmId: v.realmId! } : null;
     }
   }
 
@@ -8075,10 +8206,9 @@ Approve in Partner Portal → Admin View.
   // - State is a signed single-use nonce so /oauth/callback can prove the
   //   redirect came from OUR start URL (CSRF defense).
   app.get("/api/qb/oauth/start", wrapAsync(async (req, res) => {
-    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
-    if (!cfg) return res.status(400).json({ error: "QuickBooks client ID not configured." });
-    const { clientId } = JSON.parse(cfg.value || "{}");
-    if (!clientId) return res.status(400).json({ error: "QuickBooks client ID not set." });
+    const cfg = readQbConfig();
+    if (!cfg || !cfg.clientId) return res.status(400).json({ error: "QuickBooks client ID not configured." });
+    const clientId = cfg.clientId;
 
     const endpoints = await getQbOAuthEndpoints();
     const redirectUri = `${req.protocol}://${req.get("host")}/api/qb/oauth/callback`;
@@ -8112,9 +8242,9 @@ Approve in Partner Portal → Admin View.
       return res.status(400).send("Missing code or realmId in OAuth callback.");
     }
 
-    const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
-    if (!cfg) return res.status(400).send("QuickBooks not configured");
-    const { clientId, clientSecret } = JSON.parse(cfg.value || "{}");
+    const cfg = readQbConfig();
+    if (!cfg || !cfg.clientId || !cfg.clientSecret) return res.status(400).send("QuickBooks not configured");
+    const { clientId, clientSecret } = cfg;
     const redirectUri = `${req.protocol}://${req.get("host")}/api/qb/oauth/callback`;
 
     try {
@@ -8132,11 +8262,12 @@ Approve in Partner Portal → Admin View.
       if (!tokenResp.ok || !tokens.access_token) {
         throw new Error(tokens?.error_description || tokens?.error || `Token exchange returned ${tokenResp.status}`);
       }
-      const existing: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
-      const current = existing ? JSON.parse(existing.value) : {};
-      const updated = { ...current, accessToken: tokens.access_token, refreshToken: tokens.refresh_token, realmId, connectedAt: new Date().toISOString() };
-      sqlite.prepare("INSERT INTO integrations (key, value, updated_at) VALUES ('quickbooks', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
-        .run(JSON.stringify(updated), new Date().toISOString());
+      writeQbConfig({
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+        realmId,
+        connectedAt: new Date().toISOString(),
+      });
       res.send(`<html><body><script>window.close();</script><p>QuickBooks connected! You can close this window.</p></body></html>`);
     } catch (err: any) {
       res.status(500).send("OAuth error: " + (err?.message || "unknown error"));
