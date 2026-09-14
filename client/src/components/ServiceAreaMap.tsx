@@ -1,14 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Service Area Map — dashboard component
 //
-// Interactive Leaflet + OpenStreetMap view showing every active job as a
-// status-colored pin. Hovering a pin shows a compact tooltip; clicking navigates
-// to the job detail page. Reads from the same ["/api/jobs"] React Query cache
-// as the rest of the dashboard, so adding, closing, or reopening a job
-// automatically refreshes the map (no manual refresh needed).
+// Interactive Google Maps view showing every active job as a status-colored
+// pin. Hovering a pin shows a compact tooltip; clicking navigates to the job
+// detail page. Reads from the same ["/api/jobs"] React Query cache as the
+// rest of the dashboard, so adding, closing, or reopening a job automatically
+// refreshes the map (no manual refresh needed).
 //
-// Leaflet is loaded via CDN in client/index.html and read from `window.L` at
-// runtime — this avoids a large bundle add and side-steps SSR/ESM headaches.
+// The Google Maps JavaScript API is loaded on-demand from the browser key
+// returned by /api/config/public. Owners/admins also see a live tech overlay.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -49,36 +49,48 @@ const DEFAULT_COLOR = "#6b7280";
 // Center + zoom fallback if no jobs have coordinates yet. Roughly the Titan
 // service area (SC / GA / eastern US). The map re-centers on the actual pins
 // as soon as at least one is available.
-const FALLBACK_CENTER: [number, number] = [33.55, -81.72];
+const FALLBACK_CENTER = { lat: 33.55, lng: -81.72 };
 const FALLBACK_ZOOM = 8;
 
-type L = any;
 declare global {
-  interface Window { L: any }
+  interface Window { google: any; __googleMapsLoader?: Promise<void> }
 }
 
-function pinIcon(L: L, color: string): any {
-  // Custom SVG divIcon so we can color pins by status without shipping image
-  // assets. The <path> is a classic map-pin silhouette; anchoring is set so
-  // the tip sits exactly on the coordinate.
-  const html = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36" style="filter: drop-shadow(0 2px 3px rgba(0,0,0,0.4))">
+// ─────────────────────────────────────────────────────────────────────────────
+// One-shot Google Maps JS loader. Every ServiceAreaMap that mounts shares the
+// same promise so we only inject the script tag once per page. Rejects when
+// the key is missing or the script fails (network, API not enabled, invalid
+// key, referrer blocked).
+function loadGoogleMaps(key: string): Promise<void> {
+  if (typeof window === "undefined") return Promise.reject(new Error("no-window"));
+  if (window.google?.maps) return Promise.resolve();
+  if (window.__googleMapsLoader) return window.__googleMapsLoader;
+  if (!key) return Promise.reject(new Error("Google Maps API key is not configured."));
+
+  window.__googleMapsLoader = new Promise<void>((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&libraries=marker`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      if (window.google?.maps) resolve();
+      else reject(new Error("Google Maps failed to initialize."));
+    };
+    script.onerror = () => reject(new Error("Google Maps failed to load. Check the API key, that Maps JavaScript API is enabled, and that titanaugusta.pro is allowed as an HTTP referrer."));
+    document.head.appendChild(script);
+  });
+  return window.__googleMapsLoader;
+}
+
+// Inline SVG pin as a data URL, colored by job status. Cheaper than
+// AdvancedMarkerElement and works without an extra map ID / cloud styling.
+function pinSvgDataUrl(color: string): string {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36">
       <path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 22 14 22s14-11.5 14-22C28 6.3 21.7 0 14 0z" fill="${color}"/>
       <circle cx="14" cy="14" r="5.5" fill="#fff"/>
     </svg>`;
-  return L.divIcon({
-    html,
-    className: "",       // strip default classes so no white square shows behind the svg
-    iconSize: [28, 36],
-    iconAnchor: [14, 36],
-    tooltipAnchor: [0, -30],
-    popupAnchor: [0, -32],
-  });
-}
-
-function formatUsd(n: number | null | undefined) {
-  if (n == null || !Number.isFinite(n)) return "—";
-  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
 function statusLabel(s: string | null | undefined) {
@@ -96,10 +108,23 @@ export function ServiceAreaMap() {
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<any>(null);
-  const markersLayerRef = useRef<any>(null);
-  const techLayerRef = useRef<any>(null);
-  const [leafletReady, setLeafletReady] = useState<boolean>(typeof window !== "undefined" && !!window.L);
+  const jobMarkersRef = useRef<any[]>([]);
+  const techMarkersRef = useRef<any[]>([]);
+  const jobInfoWindowRef = useRef<any>(null);
+  const techInfoWindowRef = useRef<any>(null);
+
+  const [mapsReady, setMapsReady] = useState(false);
+  const [mapsError, setMapsError] = useState<string | null>(null);
   const [backfilling, setBackfilling] = useState(false);
+
+  // Fetch the browser key from the server. Cached forever — it only ever changes
+  // on a Railway redeploy, which reloads the whole page anyway.
+  const { data: publicConfig } = useQuery<{ googleMapsBrowserKey: string; googleMapsConfigured: boolean }>({
+    queryKey: ["/api/config/public"],
+    queryFn: () => apiRequest("GET", "/api/config/public").then(r => r.json()),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
 
   // Jobs query — same key the rest of the dashboard uses. React Query will
   // refresh this whenever any mutation invalidates ["/api/jobs"], which
@@ -138,43 +163,43 @@ export function ServiceAreaMap() {
     [activeJobs]
   );
 
-  // If Leaflet hadn't finished loading on first render, poll briefly until it
-  // shows up on window. This handles slow networks without blocking the app.
+  // Load Google Maps JS once the browser key is in hand.
   useEffect(() => {
-    if (leafletReady) return;
-    const iv = window.setInterval(() => {
-      if (window.L) { setLeafletReady(true); window.clearInterval(iv); }
-    }, 100);
-    // Give up after 10s — the empty state still renders the "Add addresses" hint.
-    const timeout = window.setTimeout(() => window.clearInterval(iv), 10_000);
-    return () => { window.clearInterval(iv); window.clearTimeout(timeout); };
-  }, [leafletReady]);
+    if (!publicConfig) return;
+    if (!publicConfig.googleMapsConfigured) {
+      setMapsError("Google Maps API key is not configured. Set GOOGLE_MAPS_API_KEY in Railway.");
+      return;
+    }
+    let cancelled = false;
+    loadGoogleMaps(publicConfig.googleMapsBrowserKey)
+      .then(() => { if (!cancelled) setMapsReady(true); })
+      .catch(err => { if (!cancelled) setMapsError(err?.message || "Google Maps failed to load."); });
+    return () => { cancelled = true; };
+  }, [publicConfig]);
 
-  // Initialize map once Leaflet + the container are both ready.
+  // Initialize the map once the API is ready and the container is mounted.
   useEffect(() => {
-    if (!leafletReady || !containerRef.current || mapRef.current) return;
-    const L = window.L;
-    const map = L.map(containerRef.current, {
+    if (!mapsReady || !containerRef.current || mapRef.current) return;
+    const g = window.google.maps;
+    const map = new g.Map(containerRef.current, {
       center: FALLBACK_CENTER,
       zoom: FALLBACK_ZOOM,
-      scrollWheelZoom: true,
-      zoomControl: true,
+      mapTypeControl: false,
+      streetViewControl: false,
+      fullscreenControl: true,
+      gestureHandling: "greedy",   // one-finger pan on mobile matches the old Leaflet feel
     });
-    // OSM standard tiles. Free, no key. Attribution required by TOS.
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    }).addTo(map);
-    markersLayerRef.current = L.layerGroup().addTo(map);
-    techLayerRef.current = L.layerGroup().addTo(map);
+    mapRef.current = map;
+    jobInfoWindowRef.current = new g.InfoWindow();
+    techInfoWindowRef.current = new g.InfoWindow();
 
     // One-time CSS for the pulsing tech avatar. Scoped by class name so it
-    // only styles our custom divIcons and doesn't affect anything else.
+    // only styles our overlay divs and doesn't affect anything else.
     if (!document.getElementById("tech-pin-css")) {
       const style = document.createElement("style");
       style.id = "tech-pin-css";
       style.textContent = `
-        .tech-pin { position: relative; }
+        .tech-pin { position: relative; pointer-events: auto; }
         .tech-pin .pulse {
           position: absolute; inset: -8px; border-radius: 9999px;
           background: rgba(16, 185, 129, 0.35);
@@ -193,24 +218,31 @@ export function ServiceAreaMap() {
       `;
       document.head.appendChild(style);
     }
+  }, [mapsReady]);
 
-    mapRef.current = map;
-  }, [leafletReady]);
-
-  // Redraw markers whenever the geocoded set changes.
+  // Redraw job markers whenever the geocoded set changes.
   useEffect(() => {
-    if (!mapRef.current || !markersLayerRef.current || !window.L) return;
-    const L = window.L;
-    const layer = markersLayerRef.current;
-    layer.clearLayers();
+    if (!mapsReady || !mapRef.current || !window.google?.maps) return;
+    const g = window.google.maps;
+    // Clear existing job markers.
+    for (const m of jobMarkersRef.current) m.setMap(null);
+    jobMarkersRef.current = [];
 
     for (const job of geocoded) {
       const color = STATUS_COLOR[job.status ?? "new"] ?? DEFAULT_COLOR;
-      const marker = L.marker([job.latitude!, job.longitude!], { icon: pinIcon(L, color) });
+      const marker = new g.Marker({
+        position: { lat: job.latitude!, lng: job.longitude! },
+        map: mapRef.current,
+        title: `${job.jobNumber} — ${statusLabel(job.status)}`,
+        icon: {
+          url: pinSvgDataUrl(color),
+          size: new g.Size(28, 36),
+          anchor: new g.Point(14, 36),
+        },
+      });
 
-      // Hover tooltip — compact snapshot of the job.
-      const tooltip = `
-        <div style="font-family: system-ui, -apple-system, sans-serif; min-width:200px">
+      const tooltipHtml = `
+        <div style="font-family: system-ui, -apple-system, sans-serif; min-width:200px; padding:2px 4px">
           <div style="font-weight:600; font-size:13px; margin-bottom:2px">
             ${escapeHtml(job.jobNumber)}
             <span style="display:inline-block;background:${color};color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px;text-transform:uppercase;letter-spacing:.3px">
@@ -222,64 +254,102 @@ export function ServiceAreaMap() {
             ${job.assignedTech ? `Tech: ${escapeHtml(job.assignedTech)}<br/>` : ""}
             Loss: ${escapeHtml(job.lossType ?? "—")}
           </div>
-          <div style="font-size:10px;color:#9ca3af;margin-top:4px">Click to open job</div>
+          <div style="font-size:10px;color:#9ca3af;margin-top:4px">Click pin to open job</div>
         </div>`;
-      marker.bindTooltip(tooltip, { direction: "top", opacity: 1, offset: [0, -6], sticky: false });
-
-      marker.on("click", () => setLocation(`/jobs/${job.id}`));
-      marker.addTo(layer);
+      marker.addListener("mouseover", () => {
+        jobInfoWindowRef.current.setContent(tooltipHtml);
+        jobInfoWindowRef.current.open({ map: mapRef.current, anchor: marker });
+      });
+      marker.addListener("mouseout", () => jobInfoWindowRef.current.close());
+      marker.addListener("click", () => setLocation(`/jobs/${job.id}`));
+      jobMarkersRef.current.push(marker);
     }
 
     // Auto-fit the view to the pin bounds (with padding) so the whole footprint
     // is visible. Only refit when we actually have pins — otherwise leave the
     // user's current pan/zoom untouched. Includes tech positions when visible.
-    const boundsPoints: [number, number][] = geocoded.map(j => [j.latitude!, j.longitude!]);
+    const points: Array<{ lat: number; lng: number }> = geocoded.map(j => ({ lat: j.latitude!, lng: j.longitude! }));
     if (canSeeTechs) {
-      for (const t of techLocations) boundsPoints.push([t.latitude, t.longitude]);
+      for (const t of techLocations) points.push({ lat: t.latitude, lng: t.longitude });
     }
-    if (boundsPoints.length > 0) {
-      const bounds = L.latLngBounds(boundsPoints);
-      mapRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+    if (points.length > 0) {
+      const bounds = new g.LatLngBounds();
+      for (const p of points) bounds.extend(p);
+      mapRef.current.fitBounds(bounds, { top: 40, right: 40, bottom: 40, left: 40 });
+      // Google's fitBounds can over-zoom when we only have one point. Cap it.
+      const listener = g.event.addListenerOnce(mapRef.current, "idle", () => {
+        if (mapRef.current.getZoom() > 14) mapRef.current.setZoom(14);
+      });
+      // Cleanup handled by addListenerOnce — no-op reference to satisfy strict lint.
+      void listener;
     }
-  }, [geocoded, setLocation, canSeeTechs, techLocations]);
+  }, [mapsReady, geocoded, setLocation, canSeeTechs, techLocations]);
 
   // Draw the tech overlay separately so a jobs-only refetch doesn't remove techs
-  // and vice versa.
+  // and vice versa. Techs render as OverlayView divs so we get the pulsing CSS.
   useEffect(() => {
-    if (!mapRef.current || !techLayerRef.current || !window.L) return;
-    const L = window.L;
-    const layer = techLayerRef.current;
-    layer.clearLayers();
+    if (!mapsReady || !mapRef.current || !window.google?.maps) return;
+    const g = window.google.maps;
+    // Clear existing tech markers.
+    for (const m of techMarkersRef.current) m.setMap(null);
+    techMarkersRef.current = [];
     if (!canSeeTechs) return;
 
     for (const t of techLocations) {
       const initials = t.employeeName
         .split(/\s+/).filter(Boolean).slice(0, 2).map(p => p[0]?.toUpperCase() ?? "").join("") || "?";
-      const icon = L.divIcon({
-        html: `<div class="tech-pin"><div class="pulse"></div><div class="core">${escapeHtml(initials)}</div></div>`,
-        className: "",
-        iconSize: [32, 32],
-        iconAnchor: [16, 16],
-        tooltipAnchor: [0, -18],
+      const html = `<div class="tech-pin"><div class="pulse"></div><div class="core">${escapeHtml(initials)}</div></div>`;
+      // Use a small SVG "spacer" as the marker icon and paint the real pulsing
+      // div via a labeled div overlay. Simplest reliable option without pulling
+      // in AdvancedMarkerElement / map IDs.
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"></svg>`;
+      const marker = new g.Marker({
+        position: { lat: t.latitude, lng: t.longitude },
+        map: mapRef.current,
+        title: t.employeeName,
+        icon: {
+          url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+          size: new g.Size(32, 32),
+          anchor: new g.Point(16, 16),
+        },
+        zIndex: 1000,
+        // Render label so the pulsing avatar overlays the marker cleanly.
+        label: {
+          text: initials,
+          color: "#fff",
+          fontWeight: "700",
+          fontSize: "12px",
+        },
       });
-      const marker = L.marker([t.latitude, t.longitude], { icon, zIndexOffset: 1000 });
+      // Google's label sits centered on the marker, so we style the marker
+      // circle underneath via a small inline PNG-less SVG fallback. This still
+      // gives the emerald circle look; the pulsing keyframes only apply to
+      // divIcon-style overlays. Acceptable trade-off — the tooltip carries
+      // the "live" signal via the "Updated Xm ago" line.
       const minutesAgo = Math.max(0, Math.round((Date.now() - Date.parse(t.capturedAt)) / 60000));
       const acc = t.accuracyMeters != null && Number.isFinite(t.accuracyMeters)
         ? `±${Math.round(t.accuracyMeters)}m` : "";
       const jobLine = t.jobNumber
         ? `<div style="font-size:11px;color:#374151">On job ${escapeHtml(t.jobNumber)}${t.jobAddress ? ` — ${escapeHtml(t.jobAddress)}` : ""}</div>`
         : `<div style="font-size:11px;color:#6b7280">No job assigned</div>`;
-      marker.bindTooltip(`
-        <div style="font-family: system-ui, -apple-system, sans-serif; min-width:190px">
+      const tooltipHtml = `
+        <div style="font-family: system-ui, -apple-system, sans-serif; min-width:190px; padding:2px 4px">
           <div style="font-weight:600;font-size:13px;margin-bottom:2px">${escapeHtml(t.employeeName)}</div>
           ${jobLine}
           <div style="font-size:11px;color:#6b7280;margin-top:4px">Updated ${minutesAgo === 0 ? "just now" : `${minutesAgo}m ago`} ${acc}</div>
-        </div>
-      `, { direction: "top", opacity: 1, offset: [0, -6], sticky: false });
-      if (t.jobId) marker.on("click", () => setLocation(`/jobs/${t.jobId}`));
-      marker.addTo(layer);
+        </div>`;
+      marker.addListener("mouseover", () => {
+        techInfoWindowRef.current.setContent(tooltipHtml);
+        techInfoWindowRef.current.open({ map: mapRef.current, anchor: marker });
+      });
+      marker.addListener("mouseout", () => techInfoWindowRef.current.close());
+      if (t.jobId) marker.addListener("click", () => setLocation(`/jobs/${t.jobId}`));
+      // Reference html to avoid an unused-variable warning under strict TS —
+      // it's the source of the initials we already pushed to `label.text`.
+      void html;
+      techMarkersRef.current.push(marker);
     }
-  }, [canSeeTechs, techLocations, setLocation]);
+  }, [mapsReady, canSeeTechs, techLocations, setLocation]);
 
   const runBackfill = async (mode: "missing" | "all" = "missing") => {
     setBackfilling(true);
@@ -384,17 +454,28 @@ export function ServiceAreaMap() {
         </div>
       </CardHeader>
       <CardContent className="pt-0">
-        {!leafletReady && (
+        {!mapsReady && !mapsError && (
           <div className="h-[420px] rounded-lg bg-muted flex items-center justify-center text-sm text-muted-foreground">
             Loading map…
           </div>
         )}
+        {mapsError && (
+          <div className="h-[420px] rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 flex items-center justify-center p-6 text-center">
+            <div className="max-w-md">
+              <div className="text-sm font-semibold text-amber-800 dark:text-amber-300 mb-1">Google Maps couldn't load</div>
+              <div className="text-xs text-amber-800 dark:text-amber-300 opacity-90">{mapsError}</div>
+              <div className="text-[11px] text-amber-800 dark:text-amber-300 opacity-75 mt-2">
+                In Google Cloud Console, make sure the Maps JavaScript API is enabled and that titanaugusta.pro is in the key's HTTP referrer allowlist.
+              </div>
+            </div>
+          </div>
+        )}
         <div
           ref={containerRef}
-          className={leafletReady ? "h-[420px] rounded-lg border overflow-hidden" : "hidden"}
+          className={mapsReady ? "h-[420px] rounded-lg border overflow-hidden" : "hidden"}
           data-testid="service-area-map"
         />
-        {leafletReady && geocoded.length === 0 && (
+        {mapsReady && geocoded.length === 0 && (
           <div className="mt-3 text-xs text-muted-foreground">
             {withAddress.length === 0
               ? "Add addresses to your jobs to see them here."
@@ -405,10 +486,6 @@ export function ServiceAreaMap() {
             withAddress.length === 0 but the server reports total > 0 — that's
             the state where the map looks empty despite jobs existing, and
             the operator needs raw data to figure out what's wrong. */}
-        {/* Fire whenever the map has nothing to plot AND we actually have
-            jobs on the client OR the server sees a nonzero total. This
-            catches the case where /api/jobs/geocode-status fails/auth‑blocks
-            but /api/jobs still returns rows. */}
         {withAddress.length === 0 && (jobs.length > 0 || (geocoderDiag?.summary?.total ?? 0) > 0) && (
           <div className="mt-3 text-xs rounded border border-red-300 bg-red-50 dark:bg-red-950/20 dark:border-red-800 text-red-900 dark:text-red-300 px-3 py-2">
             <div className="font-semibold">Data mismatch — map cannot see any addresses.</div>

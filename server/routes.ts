@@ -5659,6 +5659,21 @@ cody@titanrestorationllc.com`;
     }
   });
 
+  // ── Public config ─────────────────────────────────────────────────────────
+  // Exposes non-secret runtime settings the browser needs. Currently just the
+  // Google Maps JavaScript API browser key used by the dashboard Service Area
+  // map. Browser keys are safe to expose — they're restricted to titanaugusta.pro
+  // by HTTP referrer in the Google Cloud console. GOOGLE_MAPS_BROWSER_KEY takes
+  // precedence when set; otherwise we reuse GOOGLE_MAPS_API_KEY so a single-key
+  // setup still works.
+  app.get("/api/config/public", (_req, res) => {
+    const key = process.env.GOOGLE_MAPS_BROWSER_KEY || process.env.GOOGLE_MAPS_API_KEY || "";
+    res.json({
+      googleMapsBrowserKey: key,
+      googleMapsConfigured: !!key,
+    });
+  });
+
   // Deploy-verification endpoint. Reads the commit SHA from build time so we
   // can confirm Railway actually shipped the newest push instead of guessing
   // from cached chunk hashes.
