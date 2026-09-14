@@ -21,7 +21,7 @@ import { registerSuite5Routes } from "./routes_suite5";
 import { registerSuite6Routes } from "./routes_suite6";
 import { registerAIAgentRoutes } from "./routes_aiagent";
 import { registerCompanyDocsRoutes } from "./routes_company_docs";
-// import { registerAssistantRoutes } from "./routes_assistant";  // HELD — file not in this repo
+import { registerAssistantRoutes } from "./routes_assistant";
 import { registerMarketingAIRoutes } from "./routes_marketing_ai";
 import { registerHRRoutes } from "./routes_hr";
 import { registerGmailRoutes } from "./routes_gmail";
@@ -6738,7 +6738,7 @@ cody@titanrestorationllc.com`;
   registerSuite6Routes(app, sqlite);
   registerAIAgentRoutes(app, sqlite);
   registerCompanyDocsRoutes(app, sqlite);
-  // registerAssistantRoutes(app, sqlite);  // HELD — see import comment above
+  registerAssistantRoutes(app, sqlite);
 
   // ── HR Management Module + AI HR Assistant (additive, self-contained) ───────
   registerHRRoutes(app, sqlite);
@@ -7908,6 +7908,84 @@ Approve in Partner Portal → Admin View.
     res.json(map);
   }));
 
+  // ── QuickBooks OAuth: discovery + CSRF state helpers ─────────────────────────
+  // Discovery document — the officially recommended way to look up the current
+  // OAuth endpoints instead of hardcoding them. Cached in-process for 24h. If
+  // the fetch fails we fall back to the known production URLs so a discovery
+  // outage never breaks Connect / Refresh. Intuit's doc:
+  //   https://developer.api.intuit.com/.well-known/openid_configuration
+  type QbOAuthEndpoints = { authorization_endpoint: string; token_endpoint: string; revocation_endpoint?: string };
+  const QB_DISCOVERY_URL = "https://developer.api.intuit.com/.well-known/openid_configuration";
+  const QB_FALLBACK_ENDPOINTS: QbOAuthEndpoints = {
+    authorization_endpoint: "https://appcenter.intuit.com/connect/oauth2",
+    token_endpoint: "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+    revocation_endpoint: "https://developer.api.intuit.com/v2/oauth2/tokens/revoke",
+  };
+  let qbDiscoveryCache: { at: number; endpoints: QbOAuthEndpoints } | null = null;
+  const QB_DISCOVERY_TTL_MS = 24 * 60 * 60 * 1000;
+  async function getQbOAuthEndpoints(): Promise<QbOAuthEndpoints> {
+    const now = Date.now();
+    if (qbDiscoveryCache && (now - qbDiscoveryCache.at) < QB_DISCOVERY_TTL_MS) {
+      return qbDiscoveryCache.endpoints;
+    }
+    try {
+      const r = await fetch(QB_DISCOVERY_URL, { headers: { Accept: "application/json" } });
+      if (r.ok) {
+        const d = await r.json() as any;
+        if (d?.authorization_endpoint && d?.token_endpoint) {
+          const endpoints: QbOAuthEndpoints = {
+            authorization_endpoint: d.authorization_endpoint,
+            token_endpoint: d.token_endpoint,
+            revocation_endpoint: d.revocation_endpoint || QB_FALLBACK_ENDPOINTS.revocation_endpoint,
+          };
+          qbDiscoveryCache = { at: now, endpoints };
+          return endpoints;
+        }
+      }
+    } catch (_) { /* fall through to fallback */ }
+    return QB_FALLBACK_ENDPOINTS;
+  }
+
+  // CSRF state: sign a random nonce + timestamp with the app's session secret so
+  // the callback can verify the request originated from OUR /oauth/start (not a
+  // rogue site's forged URL). State is single-use — the nonce is consumed on
+  // successful verification. 10-minute TTL keeps stale flows from being replayed.
+  const QB_STATE_TTL_MS = 10 * 60 * 1000;
+  const qbStateNonces = new Map<string, number>();
+  function qbStateSecret(): string {
+    return process.env.SESSION_SECRET || process.env.JWT_SECRET || "titan-pro-qb-state-fallback-do-not-use-in-production";
+  }
+  function makeQbState(): string {
+    const nonce = crypto.randomBytes(16).toString("hex");
+    const issued = Date.now();
+    const payload = `${nonce}.${issued}`;
+    const sig = crypto.createHmac("sha256", qbStateSecret()).update(payload).digest("hex").slice(0, 32);
+    qbStateNonces.set(nonce, issued);
+    // Trim stale nonces on write — no cron needed.
+    const cutoff = issued - QB_STATE_TTL_MS;
+    for (const [k, v] of qbStateNonces) if (v < cutoff) qbStateNonces.delete(k);
+    return `${payload}.${sig}`;
+  }
+  function verifyQbState(state: string | undefined | null): boolean {
+    if (!state || typeof state !== "string") return false;
+    const parts = state.split(".");
+    if (parts.length !== 3) return false;
+    const [nonce, issuedStr, sig] = parts;
+    const issued = Number(issuedStr);
+    if (!nonce || !Number.isFinite(issued) || !sig) return false;
+    // Timing-safe HMAC compare.
+    const expected = crypto.createHmac("sha256", qbStateSecret()).update(`${nonce}.${issuedStr}`).digest("hex").slice(0, 32);
+    const a = Buffer.from(sig, "hex");
+    const b = Buffer.from(expected, "hex");
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
+    // TTL.
+    if (Date.now() - issued > QB_STATE_TTL_MS) return false;
+    // Single-use — nonce must exist in our map, then we consume it.
+    if (!qbStateNonces.has(nonce)) return false;
+    qbStateNonces.delete(nonce);
+    return true;
+  }
+
   // Refresh a QuickBooks access token using the stored refresh token. Returns the
   // (possibly refreshed) access token, or null if QB isn't fully connected.
   async function qbAccessToken(): Promise<{ accessToken: string; realmId: string } | null> {
@@ -7918,7 +7996,8 @@ Approve in Partner Portal → Admin View.
       return v.accessToken && v.realmId ? { accessToken: v.accessToken, realmId: v.realmId } : null;
     }
     try {
-      const r = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", {
+      const endpoints = await getQbOAuthEndpoints();
+      const r = await fetch(endpoints.token_endpoint, {
         method: "POST",
         headers: {
           "Authorization": "Basic " + Buffer.from(`${v.clientId}:${v.clientSecret}`).toString("base64"),
@@ -7991,29 +8070,56 @@ Approve in Partner Portal → Admin View.
     }
   }));
 
-  // POST /api/qb/oauth/start — initiate QuickBooks OAuth flow
-  app.get("/api/qb/oauth/start", (req, res) => {
+  // GET /api/qb/oauth/start — initiate QuickBooks OAuth flow.
+  // - Endpoint URL comes from Intuit's discovery document (with fallback).
+  // - State is a signed single-use nonce so /oauth/callback can prove the
+  //   redirect came from OUR start URL (CSRF defense).
+  app.get("/api/qb/oauth/start", wrapAsync(async (req, res) => {
     const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
     if (!cfg) return res.status(400).json({ error: "QuickBooks client ID not configured." });
     const { clientId } = JSON.parse(cfg.value || "{}");
     if (!clientId) return res.status(400).json({ error: "QuickBooks client ID not set." });
-    const redirectUri = encodeURIComponent(`${req.protocol}://${req.get("host")}/api/qb/oauth/callback`);
-    const scope = encodeURIComponent("com.intuit.quickbooks.accounting");
-    const state = "titan_pro_qb";
-    const authUrl = `https://appcenter.intuit.com/connect/oauth2?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}&state=${state}`;
-    res.json({ authUrl });
-  });
 
-  // GET /api/qb/oauth/callback
+    const endpoints = await getQbOAuthEndpoints();
+    const redirectUri = `${req.protocol}://${req.get("host")}/api/qb/oauth/callback`;
+    const state = makeQbState();
+    const authUrl = `${endpoints.authorization_endpoint}?${new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      scope: "com.intuit.quickbooks.accounting",
+      state,
+    }).toString()}`;
+    res.json({ authUrl });
+  }));
+
+  // GET /api/qb/oauth/callback — Intuit redirects here with ?code, ?state,
+  // and ?realmId. We verify state (CSRF), then exchange the code for tokens
+  // via the discovered token endpoint.
   app.get("/api/qb/oauth/callback", wrapAsync(async (req, res) => {
-    const { code, realmId } = req.query as any;
+    const { code, realmId, state, error, error_description } = req.query as any;
+
+    // Surface user-facing OAuth errors (denied consent, etc.) without leaking
+    // internal details.
+    if (error) {
+      return res.status(400).send(`<html><body style="font-family:sans-serif;padding:2rem"><h2>QuickBooks authorization was cancelled.</h2><p>${String(error_description || error).slice(0, 200)}</p></body></html>`);
+    }
+
+    if (!verifyQbState(state)) {
+      return res.status(400).send(`<html><body style="font-family:sans-serif;padding:2rem"><h2>QuickBooks authorization failed a security check.</h2><p>The state token was missing, expired, or forged. Please close this window and start the connection again from Settings → Integrations.</p></body></html>`);
+    }
+    if (!code || !realmId) {
+      return res.status(400).send("Missing code or realmId in OAuth callback.");
+    }
+
     const cfg: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
     if (!cfg) return res.status(400).send("QuickBooks not configured");
     const { clientId, clientSecret } = JSON.parse(cfg.value || "{}");
     const redirectUri = `${req.protocol}://${req.get("host")}/api/qb/oauth/callback`;
 
     try {
-      const tokenResp = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", {
+      const endpoints = await getQbOAuthEndpoints();
+      const tokenResp = await fetch(endpoints.token_endpoint, {
         method: "POST",
         headers: {
           "Authorization": "Basic " + Buffer.from(`${clientId}:${clientSecret}`).toString("base64"),
@@ -8023,6 +8129,9 @@ Approve in Partner Portal → Admin View.
         body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: redirectUri }).toString(),
       });
       const tokens = await tokenResp.json() as any;
+      if (!tokenResp.ok || !tokens.access_token) {
+        throw new Error(tokens?.error_description || tokens?.error || `Token exchange returned ${tokenResp.status}`);
+      }
       const existing: any = sqlite.prepare("SELECT value FROM integrations WHERE key = 'quickbooks'").get();
       const current = existing ? JSON.parse(existing.value) : {};
       const updated = { ...current, accessToken: tokens.access_token, refreshToken: tokens.refresh_token, realmId, connectedAt: new Date().toISOString() };
@@ -8030,7 +8139,7 @@ Approve in Partner Portal → Admin View.
         .run(JSON.stringify(updated), new Date().toISOString());
       res.send(`<html><body><script>window.close();</script><p>QuickBooks connected! You can close this window.</p></body></html>`);
     } catch (err: any) {
-      res.status(500).send("OAuth error: " + err.message);
+      res.status(500).send("OAuth error: " + (err?.message || "unknown error"));
     }
   }));
 
