@@ -19,7 +19,7 @@ import {
   Mic, FileSearch, UserRound, Trophy, UserCog, KeyRound,
   FileSpreadsheet, QrCode, Handshake, ArrowLeft, LayoutDashboard as DashIcon,
   Package, Lock, Inbox,
-  Trash2, Settings as SettingsIcon, Wallet,
+  Trash2, Settings as SettingsIcon, Wallet, LifeBuoy,
 } from "lucide-react";
 import { useState, useEffect, type ReactNode } from "react";
 import GlobalSearch from "@/components/GlobalSearch";
@@ -240,6 +240,9 @@ const navGroups: NavGroup[] = [
     description: "Users, security, integrations & admin tools",
     items: [
       { href: "/settings", label: "Settings", icon: SettingsIcon },
+      // Support — in-app contact + ticket submission. Every user can reach
+      // Titan support from inside the app (required by Intuit app-review).
+      { href: "/support", label: "Support", icon: LifeBuoy },
     ],
   },
 

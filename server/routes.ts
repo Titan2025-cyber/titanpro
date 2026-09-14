@@ -7705,15 +7705,14 @@ Approve in Partner Portal → Admin View.
     for (const q of queries) {
       try {
         const url = `${baseUrl}/query?query=${encodeURIComponent(q)}&minorversion=65`;
-        const r = await fetch(url, { headers });
-        const data = await r.json() as any;
+        const { data } = await qbFetch(url, { headers }, { realmId: auth.realmId });
         const found = data?.QueryResponse?.Customer?.[0];
         if (found?.Id) {
           const now = new Date().toISOString();
           sqlite.prepare("UPDATE contacts SET qb_customer_id = ?, qb_synced_at = ? WHERE id = ?").run(found.Id, now, contactId);
           return { qbCustomerId: found.Id, linked: true, created: false };
         }
-      } catch (_) { /* fall through to next query / create */ }
+      } catch (_) { /* fall through to next query / create — qbFetch has already logged the failure */ }
     }
 
     // 2) Not found in QBO \u2014 create it. Split "First Last" into given/family so QBO
@@ -7732,15 +7731,17 @@ Approve in Partner Portal → Admin View.
       Notes: `Synced from Titan Pro contact #${contactId}`,
     };
     const createUrl = `${baseUrl}/customer?minorversion=65`;
-    const cResp = await fetch(createUrl, {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify(qbCustomer),
-    });
-    const cData = await cResp.json() as any;
-    if (!cResp.ok) {
-      const msg = cData?.Fault?.Error?.[0]?.Message || cData?.Fault?.Error?.[0]?.Detail || `QuickBooks rejected the customer (${cResp.status})`;
-      throw new Error(`Couldn't create customer in QuickBooks: ${msg}`);
+    let cData: any;
+    try {
+      const r = await qbFetch(createUrl, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(qbCustomer),
+      }, { realmId: auth.realmId });
+      cData = r.data;
+    } catch (err: any) {
+      // qbFetch has already logged the failure with intuit_tid. Surface a friendly error.
+      throw new Error(`Couldn't create customer in QuickBooks: ${err.message}`);
     }
     const qbId = cData?.Customer?.Id;
     if (!qbId) throw new Error("QuickBooks did not return a customer Id.");
@@ -7814,13 +7815,11 @@ Approve in Partner Portal → Admin View.
     };
     if (contact?.email) qbInvoice.BillEmail = { Address: contact.email };
 
-    const resp = await fetch(`${baseUrl}/invoice?minorversion=65`, {
+    const { data } = await qbFetch(`${baseUrl}/invoice?minorversion=65`, {
       method: "POST",
       headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(qbInvoice),
-    });
-    const data = await resp.json() as any;
-    if (!resp.ok) throw new Error(data?.Fault?.Error?.[0]?.Message || JSON.stringify(data));
+    }, { realmId });
 
     const qbInvId = data?.Invoice?.Id;
     const qbLink = `https://app.qbo.intuit.com/app/invoice?txnId=${qbInvId}`;
@@ -7843,12 +7842,10 @@ Approve in Partner Portal → Admin View.
     const email = overrideEmail || contact?.email;
     if (!email) return { sent: false }; // no email on file — nothing to send to
     const baseUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}`;
-    const resp = await fetch(`${baseUrl}/invoice/${qbRow.qb_invoice_id}/send?sendTo=${encodeURIComponent(email)}&minorversion=65`, {
+    await qbFetch(`${baseUrl}/invoice/${qbRow.qb_invoice_id}/send?sendTo=${encodeURIComponent(email)}&minorversion=65`, {
       method: "POST",
       headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/octet-stream", "Accept": "application/json" },
-    });
-    const data = await resp.json() as any;
-    if (!resp.ok) throw new Error(data?.Fault?.Error?.[0]?.Message || "QuickBooks send failed");
+    }, { realmId });
     sqlite.prepare("UPDATE qb_invoices SET status = 'sent' WHERE invoice_id = ?").run(invoiceId);
     return { sent: true, sentTo: email };
   }
@@ -8148,6 +8145,207 @@ Approve in Partner Portal → Admin View.
     }
   }
 
+  // ── QuickBooks API call logging ────────────────────────────────────────
+  //
+  // Every QuickBooks API call goes through qbFetch(). It:
+  //   • captures the `intuit_tid` response header (Intuit support asks for this
+  //     first when troubleshooting) and threads it into any thrown error and
+  //     into the qb_error_log table
+  //   • records failures to qb_error_log so we have a persistent audit trail
+  //     with intuit_tid, endpoint, HTTP status, Intuit's Fault.Error message,
+  //     and a timestamp — shareable with Intuit support without piping logs
+  //   • throws with a friendly message that includes intuit_tid
+
+  try {
+    sqlite.exec(`CREATE TABLE IF NOT EXISTS qb_error_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT NOT NULL,
+      method TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      http_status INTEGER,
+      intuit_tid TEXT,
+      error_code TEXT,
+      error_message TEXT,
+      user_id INTEGER,
+      realm_id TEXT
+    )`);
+    sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_qb_error_log_created_at ON qb_error_log(created_at DESC)`);
+  } catch (_) {}
+
+  type QbFetchResult<T = any> = { ok: true; data: T; intuit_tid: string | null };
+  class QbApiError extends Error {
+    status: number;
+    intuit_tid: string | null;
+    code?: string;
+    constructor(msg: string, status: number, intuit_tid: string | null, code?: string) {
+      super(msg);
+      this.status = status;
+      this.intuit_tid = intuit_tid;
+      this.code = code;
+    }
+  }
+
+  async function qbFetch<T = any>(
+    url: string,
+    init: RequestInit & { method?: string } = {},
+    ctx: { userId?: number; realmId?: string } = {},
+  ): Promise<QbFetchResult<T>> {
+    const method = (init.method || "GET").toUpperCase();
+    // Truncate endpoint for logging (strip query args longer than 200 chars).
+    const endpoint = url.replace(/^https:\/\/[^/]+/, "").slice(0, 500);
+    let r: Response;
+    try {
+      r = await fetch(url, init);
+    } catch (netErr: any) {
+      // Network-level failure (DNS, timeout, connection reset). No intuit_tid available.
+      try {
+        sqlite.prepare(
+          `INSERT INTO qb_error_log (created_at, method, endpoint, http_status, intuit_tid, error_code, error_message, user_id, realm_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(new Date().toISOString(), method, endpoint, 0, null, "NETWORK", String(netErr?.message || netErr).slice(0, 500), ctx.userId || null, ctx.realmId || null);
+      } catch (_) {}
+      console.error(`[qb] ${method} ${endpoint} network error:`, netErr?.message);
+      throw new QbApiError("QuickBooks network error: " + (netErr?.message || "unknown"), 0, null, "NETWORK");
+    }
+
+    const intuit_tid = r.headers.get("intuit_tid") || r.headers.get("intuit-tid") || null;
+    let data: any = null;
+    try { data = await r.json(); } catch (_) { data = null; }
+
+    if (!r.ok) {
+      // Intuit returns errors as { Fault: { Error: [ { Message, Detail, code } ] } }
+      const fault = data?.Fault?.Error?.[0];
+      const message = fault?.Message || fault?.Detail || data?.error_description || data?.error || `QuickBooks returned ${r.status}`;
+      const code = fault?.code || null;
+      try {
+        sqlite.prepare(
+          `INSERT INTO qb_error_log (created_at, method, endpoint, http_status, intuit_tid, error_code, error_message, user_id, realm_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(new Date().toISOString(), method, endpoint, r.status, intuit_tid, code, String(message).slice(0, 500), ctx.userId || null, ctx.realmId || null);
+      } catch (_) {}
+      console.error(`[qb] ${method} ${endpoint} ${r.status} intuit_tid=${intuit_tid || "n/a"} — ${message}`);
+      throw new QbApiError(
+        `${message}${intuit_tid ? ` (intuit_tid: ${intuit_tid})` : ""}`,
+        r.status,
+        intuit_tid,
+        code,
+      );
+    }
+
+    return { ok: true, data, intuit_tid };
+  }
+
+  // ── In-app support tickets ──────────────────────────────────────────
+  //
+  // POST /api/support/ticket — authenticated Titan Pro user submits a support
+  // request from the Support page. We persist the ticket, email Cody, and
+  // return a ticket number the UI can show. Every ticket carries the user's
+  // identity + email + recent QB context so we can find their session.
+
+  try {
+    sqlite.exec(`CREATE TABLE IF NOT EXISTS support_tickets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT NOT NULL,
+      user_id INTEGER,
+      user_email TEXT,
+      user_name TEXT,
+      category TEXT,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      status TEXT DEFAULT 'open',
+      resolved_at TEXT
+    )`);
+    sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at ON support_tickets(created_at DESC)`);
+  } catch (_) {}
+
+  app.post("/api/support/ticket", wrapAsync(async (req: any, res) => {
+    const body = req.body || {};
+    const subject = String(body.subject || "").trim();
+    const message = String(body.body || "").trim();
+    const category = String(body.category || "general").trim().slice(0, 50);
+    if (!subject || !message) {
+      return res.status(400).json({ error: "Subject and description are required." });
+    }
+    if (subject.length > 200) return res.status(400).json({ error: "Subject is too long." });
+    if (message.length > 5000) return res.status(400).json({ error: "Description is too long." });
+
+    // Look up the authenticated employee. req.user is set by the auth gate.
+    const emp: any = req.user?.id
+      ? sqlite.prepare("SELECT id, name, email FROM employees WHERE id = ?").get(req.user.id)
+      : null;
+    const userEmail = emp?.email || req.user?.email || null;
+    const userName  = emp?.name  || req.user?.name  || null;
+
+    const created_at = new Date().toISOString();
+    const info = sqlite
+      .prepare(
+        `INSERT INTO support_tickets (created_at, user_id, user_email, user_name, category, subject, body)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(created_at, req.user?.id || null, userEmail, userName, category, subject, message);
+    const ticketId = info.lastInsertRowid;
+
+    // Fire-and-forget email to Cody. We don't fail the request if email delivery
+    // fails — the ticket is already saved and visible in /admin/support.
+    try {
+      const emailBody = [
+        `A new support ticket has been submitted from Titan Pro.`,
+        ``,
+        `Ticket:    #${ticketId}`,
+        `Category:  ${category}`,
+        `From:      ${userName || "(unknown)"} <${userEmail || "unknown"}>`,
+        `User ID:   ${req.user?.id || "n/a"}`,
+        `Submitted: ${created_at}`,
+        ``,
+        `Subject: ${subject}`,
+        ``,
+        `${message}`,
+        ``,
+        `——`,
+        `Reply directly to this email to respond to the user.`,
+      ].join("\n");
+      await sendEmail({
+        to: "cody@titanaugusta.com",
+        subject: `[Titan Pro Support #${ticketId}] ${subject}`,
+        text: emailBody,
+        replyTo: userEmail || undefined,
+      });
+    } catch (e: any) {
+      console.error("[support] ticket email delivery failed:", e?.message);
+    }
+
+    res.json({ ok: true, ticketId, message: "Support request received." });
+  }));
+
+  // GET /api/support/tickets — admin view of submitted support tickets.
+  app.get("/api/support/tickets", wrapAsync((req, res) => {
+    const rows = sqlite
+      .prepare(
+        `SELECT id, created_at, user_id, user_email, user_name, category, subject, body, status, resolved_at
+         FROM support_tickets
+         ORDER BY id DESC
+         LIMIT 200`,
+      )
+      .all();
+    res.json({ rows });
+  }));
+
+  // GET /api/qb/error-log — last 200 QuickBooks API errors with intuit_tid,
+  // for admin troubleshooting and Intuit support requests. Requires the
+  // `integrations` permission (owner/admin only).
+  app.get("/api/qb/error-log", wrapAsync((req, res) => {
+    const rows = sqlite
+      .prepare(
+        `SELECT id, created_at, method, endpoint, http_status, intuit_tid,
+                error_code, error_message, user_id, realm_id
+         FROM qb_error_log
+         ORDER BY id DESC
+         LIMIT 200`,
+      )
+      .all();
+    res.json({ rows });
+  }));
+
   // POST /api/qb/receive-payment — pull payment status from QuickBooks for a synced
   // invoice. If QB shows it paid (balance 0), record a `received` payment in Titan
   // and mark the invoice paid. This is how customer payments made in QuickBooks
@@ -8166,9 +8364,11 @@ Approve in Partner Portal → Admin View.
     try {
       // Read the invoice back from QBO to check its outstanding Balance.
       const url = `https://quickbooks.api.intuit.com/v3/company/${auth.realmId}/invoice/${qbRow.qb_invoice_id}?minorversion=65`;
-      const r = await fetch(url, { headers: { "Authorization": `Bearer ${auth.accessToken}`, "Accept": "application/json" } });
-      const data = await r.json() as any;
-      if (!r.ok) throw new Error(data?.Fault?.Error?.[0]?.Message || `QuickBooks returned ${r.status}`);
+      const { data } = await qbFetch(
+        url,
+        { headers: { "Authorization": `Bearer ${auth.accessToken}`, "Accept": "application/json" } },
+        { realmId: auth.realmId },
+      );
 
       const qbInv = data?.Invoice || {};
       const totalAmt = Number(qbInv.TotalAmt ?? inv.total ?? 0);

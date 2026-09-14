@@ -182,6 +182,7 @@ const Security = lazy(() => import("@/pages/Security"));
 const NotificationSettings = lazy(() => import("@/pages/NotificationSettings"));
 const Terms = lazy(() => import("@/pages/Terms"));
 const Privacy = lazy(() => import("@/pages/Privacy"));
+const Support = lazy(() => import("@/pages/Support"));
 
 // Route matching must ignore any "?query" that lives inside the hash so that
 // deep links like #/reports?report=weekly-billing&print=1 still match the
@@ -462,6 +463,7 @@ function AuthenticatedRoutes() {
             Partner Portal Setup, and Portal QR Codes. Replaces the old
             per-item sidebar rows. */}
         <Route path="/settings" component={() => <Page component={Settings} name="Settings" />} />
+        <Route path="/support" component={() => <Page component={Support} name="Support" />} />
         <Route path="/company-documents" component={() => <Page component={CompanyDocuments} name="CompanyDocuments" />} />
 
         {/* Portals (staff-side admin views — public customer/partner portals live
