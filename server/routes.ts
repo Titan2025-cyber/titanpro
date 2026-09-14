@@ -8401,6 +8401,59 @@ Approve in Partner Portal → Admin View.
     }
   }));
 
+  // GET /api/qb/oauth/diag — TEMPORARY diagnostic endpoint (owner-only).
+  // Dumps the shape of the stored QuickBooks integration row — which fields
+  // are present, which are encrypted, whether decrypt succeeds — WITHOUT
+  // exposing any secret values. Used to diagnose why the row appears empty
+  // after OAuth. Remove once the bug is found.
+  app.get("/api/qb/oauth/diag", wrapAsync((req: any, res) => {
+    const role = req.employee?.role;
+    if (role !== "owner" && role !== "admin") {
+      return res.status(403).json({ error: "Owner only." });
+    }
+    const row: any = sqlite.prepare("SELECT value, updated_at FROM integrations WHERE key = 'quickbooks'").get();
+    if (!row) return res.json({ rowExists: false });
+    let raw: any = {};
+    let parseError: string | null = null;
+    try { raw = JSON.parse(row.value || "{}"); } catch (e: any) { parseError = e.message; }
+
+    const tryDecrypt = (label: string, v: string | undefined) => {
+      if (!v) return { present: false };
+      try {
+        const out = decryptField(v);
+        return {
+          present: true,
+          decryptOk: !!out,
+          length: out ? out.length : 0,
+          format: v.includes(":") ? "encrypted" : "plaintext_or_legacy",
+        };
+      } catch (e: any) {
+        return { present: true, decryptOk: false, error: e.message };
+      }
+    };
+
+    res.json({
+      rowExists: true,
+      updated_at: row.updated_at,
+      parseError,
+      keys: Object.keys(raw),
+      clientId_present: !!raw.clientId,
+      clientId_length: raw.clientId ? String(raw.clientId).length : 0,
+      realmId_present: !!raw.realmId,
+      connectedAt: raw.connectedAt || null,
+      clientSecret_plaintext_present: !!raw.clientSecret,
+      clientSecret_enc: tryDecrypt("clientSecret", raw.clientSecret_enc),
+      accessToken_plaintext_present: !!raw.accessToken,
+      accessToken_enc: tryDecrypt("accessToken", raw.accessToken_enc),
+      refreshToken_plaintext_present: !!raw.refreshToken,
+      refreshToken_enc: tryDecrypt("refreshToken", raw.refreshToken_enc),
+      // Environment signals
+      env_has_TITAN_ENCRYPT_KEY: !!process.env.TITAN_ENCRYPT_KEY,
+      env_TITAN_ENCRYPT_KEY_length: (process.env.TITAN_ENCRYPT_KEY || "").length,
+      env_NODE_ENV: process.env.NODE_ENV || null,
+    });
+  }));
+
   // GET /api/qb/oauth/start — initiate QuickBooks OAuth flow.
   // - Endpoint URL comes from Intuit's discovery document (with fallback).
   // - State is a signed single-use nonce so /oauth/callback can prove the
@@ -8411,7 +8464,10 @@ Approve in Partner Portal → Admin View.
     const clientId = cfg.clientId;
 
     const endpoints = await getQbOAuthEndpoints();
-    const redirectUri = `${req.protocol}://${req.get("host")}/api/qb/oauth/callback`;
+    // Behind Railway's edge, req.protocol reports "http" (the internal hop is
+    // unencrypted). Trust the x-forwarded-proto header set by the reverse proxy.
+    const proto = (req.get("x-forwarded-proto") || req.protocol || "https").split(",")[0].trim();
+    const redirectUri = `${proto}://${req.get("host")}/api/qb/oauth/callback`;
     const state = makeQbState();
     const authUrl = `${endpoints.authorization_endpoint}?${new URLSearchParams({
       client_id: clientId,
@@ -8420,6 +8476,7 @@ Approve in Partner Portal → Admin View.
       scope: "com.intuit.quickbooks.accounting",
       state,
     }).toString()}`;
+    console.log("[qb-oauth-start]", { redirectUri, host: req.get("host") });
     res.json({ authUrl });
   }));
 
@@ -8428,24 +8485,48 @@ Approve in Partner Portal → Admin View.
   // via the discovered token endpoint.
   app.get("/api/qb/oauth/callback", wrapAsync(async (req, res) => {
     const { code, realmId, state, error, error_description } = req.query as any;
+    console.log("[qb-oauth-callback] entered", {
+      hasCode: !!code,
+      hasRealmId: !!realmId,
+      hasState: !!state,
+      hasError: !!error,
+      host: req.get("host"),
+      xfProto: req.get("x-forwarded-proto"),
+    });
 
     // Surface user-facing OAuth errors (denied consent, etc.) without leaking
     // internal details.
     if (error) {
-      return res.status(400).send(`<html><body style="font-family:sans-serif;padding:2rem"><h2>QuickBooks authorization was cancelled.</h2><p>${String(error_description || error).slice(0, 200)}</p></body></html>`);
+      console.error("[qb-oauth-callback] Intuit returned error", error, error_description);
+      return res.status(400).send(`<html><body style="font-family:sans-serif;padding:2rem"><h2>QuickBooks authorization was cancelled.</h2><p>${String(error_description || error).slice(0, 200)}</p><button onclick="window.close()">Close</button></body></html>`);
     }
 
     if (!verifyQbState(state)) {
-      return res.status(400).send(`<html><body style="font-family:sans-serif;padding:2rem"><h2>QuickBooks authorization failed a security check.</h2><p>The state token was missing, expired, or forged. Please close this window and start the connection again from Settings → Integrations.</p></body></html>`);
+      console.error("[qb-oauth-callback] state verification failed", { state });
+      return res.status(400).send(`<html><body style="font-family:sans-serif;padding:2rem"><h2>QuickBooks authorization failed a security check.</h2><p>The state token was missing, expired, or forged. Please close this window and start the connection again from Settings → Integrations.</p><button onclick="window.close()">Close</button></body></html>`);
     }
     if (!code || !realmId) {
-      return res.status(400).send("Missing code or realmId in OAuth callback.");
+      console.error("[qb-oauth-callback] missing code or realmId");
+      return res.status(400).send(`<html><body style="font-family:sans-serif;padding:2rem"><h2>QuickBooks authorization failed.</h2><p>Missing code or realmId in the OAuth callback.</p><button onclick="window.close()">Close</button></body></html>`);
     }
 
     const cfg = readQbConfig();
-    if (!cfg || !cfg.clientId || !cfg.clientSecret) return res.status(400).send("QuickBooks not configured");
+    if (!cfg || !cfg.clientId || !cfg.clientSecret) {
+      console.error("[qb-oauth-callback] QB not configured in DB", {
+        cfgExists: !!cfg,
+        clientId: !!cfg?.clientId,
+        clientSecret: !!cfg?.clientSecret,
+      });
+      return res.status(400).send(`<html><body style="font-family:sans-serif;padding:2rem"><h2>QuickBooks credentials are missing.</h2><p>The Client ID or Client Secret is not saved on the server. Please go back to Settings → Integrations, re-enter them, click Save, then click Connect again.</p><button onclick="window.close()">Close</button></body></html>`);
+    }
     const { clientId, clientSecret } = cfg;
-    const redirectUri = `${req.protocol}://${req.get("host")}/api/qb/oauth/callback`;
+    // Prefer x-forwarded-proto (Railway edge) over req.protocol (which reports
+    // "http" because the internal hop is unencrypted). The redirect_uri sent
+    // here MUST match what /api/qb/oauth/start sent AND what is registered on
+    // Intuit's developer portal.
+    const proto = (req.get("x-forwarded-proto") || req.protocol || "https").split(",")[0].trim();
+    const redirectUri = `${proto}://${req.get("host")}/api/qb/oauth/callback`;
+    console.log("[qb-oauth-callback] token exchange starting", { redirectUri });
 
     try {
       const endpoints = await getQbOAuthEndpoints();
@@ -8460,6 +8541,11 @@ Approve in Partner Portal → Admin View.
       });
       const tokens = await tokenResp.json() as any;
       if (!tokenResp.ok || !tokens.access_token) {
+        console.error("[qb-oauth-callback] token exchange failed", {
+          status: tokenResp.status,
+          error: tokens?.error,
+          description: tokens?.error_description,
+        });
         throw new Error(tokens?.error_description || tokens?.error || `Token exchange returned ${tokenResp.status}`);
       }
       writeQbConfig({
@@ -8468,9 +8554,11 @@ Approve in Partner Portal → Admin View.
         realmId,
         connectedAt: new Date().toISOString(),
       });
-      res.send(`<html><body><script>window.close();</script><p>QuickBooks connected! You can close this window.</p></body></html>`);
+      console.log("[qb-oauth-callback] SUCCESS — tokens saved, realmId:", realmId);
+      res.send(`<html><body style="font-family:sans-serif;padding:2rem"><h2>✅ QuickBooks connected.</h2><p>You can close this window and return to Titan Pro.</p><script>setTimeout(function(){window.close();},2000);</script></body></html>`);
     } catch (err: any) {
-      res.status(500).send("OAuth error: " + (err?.message || "unknown error"));
+      console.error("[qb-oauth-callback] token exchange threw", err?.message);
+      res.status(500).send(`<html><body style="font-family:sans-serif;padding:2rem"><h2>QuickBooks authorization failed.</h2><p>${(err?.message || "unknown error").replace(/</g, "&lt;")}</p><button onclick="window.close()">Close</button></body></html>`);
     }
   }));
 
