@@ -53,7 +53,12 @@ const FALLBACK_CENTER = { lat: 33.55, lng: -81.72 };
 const FALLBACK_ZOOM = 8;
 
 declare global {
-  interface Window { google: any; __googleMapsLoader?: Promise<void> }
+  interface Window {
+    google: any;
+    __googleMapsLoader?: Promise<void>;
+    __googleMapsError?: string;
+    gm_authFailure?: () => void;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -61,6 +66,12 @@ declare global {
 // same promise so we only inject the script tag once per page. Rejects when
 // the key is missing or the script fails (network, API not enabled, invalid
 // key, referrer blocked).
+//
+// Google reports auth failures (bad key, referrer blocked, billing off, API
+// not enabled) two ways: window.gm_authFailure and a console.error like
+// "Google Maps JavaScript API error: RefererNotAllowedMapError". Neither
+// triggers script.onerror — the script loads fine, Google just refuses to
+// render. We capture both so the amber panel shows the actual reason.
 function loadGoogleMaps(key: string): Promise<void> {
   if (typeof window === "undefined") return Promise.reject(new Error("no-window"));
   if (window.google?.maps) return Promise.resolve();
@@ -68,15 +79,51 @@ function loadGoogleMaps(key: string): Promise<void> {
   if (!key) return Promise.reject(new Error("Google Maps API key is not configured."));
 
   window.__googleMapsLoader = new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (err: Error | null) => {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err);
+      else resolve();
+    };
+
+    // Google calls this global if auth fails after the script loads.
+    window.gm_authFailure = () => {
+      const msg = window.__googleMapsError
+        || "Google Maps authentication failed. In Google Cloud Console: enable \"Maps JavaScript API\", add https://titanaugusta.pro/* to the key's HTTP-referrer allowlist, and confirm billing is active on the project.";
+      finish(new Error(msg));
+    };
+
+    // Google's specific error text (RefererNotAllowedMapError,
+    // ApiNotActivatedMapError, BillingNotEnabledMapError, InvalidKeyMapError,
+    // etc.) is emitted via console.error. Wrap console.error to catch it.
+    const origErr = console.error.bind(console);
+    console.error = (...args: any[]) => {
+      try {
+        const text = args.map(a => (typeof a === "string" ? a : "")).join(" ");
+        if (text.includes("Google Maps JavaScript API")) {
+          window.__googleMapsError = text.replace(/^Google Maps JavaScript API (error|warning):\s*/i, "").trim();
+          // Give gm_authFailure a moment to fire; if not, reject on our own.
+          setTimeout(() => finish(new Error(window.__googleMapsError!)), 250);
+        }
+      } catch { /* swallow */ }
+      return origErr(...args);
+    };
+
     const script = document.createElement("script");
     script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&libraries=marker`;
     script.async = true;
     script.defer = true;
     script.onload = () => {
-      if (window.google?.maps) resolve();
-      else reject(new Error("Google Maps failed to initialize."));
+      // Give Google ~1s to throw an auth error; if it stays quiet and
+      // window.google.maps is present, we're good.
+      setTimeout(() => {
+        if (settled) return;
+        if (window.google?.maps) finish(null);
+        else finish(new Error(window.__googleMapsError || "Google Maps failed to initialize."));
+      }, 800);
     };
-    script.onerror = () => reject(new Error("Google Maps failed to load. Check the API key, that Maps JavaScript API is enabled, and that titanaugusta.pro is allowed as an HTTP referrer."));
+    script.onerror = () => finish(new Error("Google Maps script failed to load (network error or CDN blocked)."));
     document.head.appendChild(script);
   });
   return window.__googleMapsLoader;
