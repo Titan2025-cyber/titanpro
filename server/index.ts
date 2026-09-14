@@ -27,15 +27,33 @@ app.use(
         defaultSrc: ["'self'"],
         // Vite emits a tiny inline module-preload bootstrap; allow inline + eval
         // for the bundled runtime. Scripts are otherwise same-origin only.
-        // Leaflet (used by ServiceAreaMap / StormMap / RoutePlanner) is loaded from
-        // unpkg.com as a global <script>; without allowing that origin the map fails
-        // to initialize because window.L never appears.
-        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://unpkg.com"],
-        // Leaflet's CSS + Google Fonts + our own inline style attributes.
-        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://unpkg.com"],
+        // Google Maps JS is loaded from maps.googleapis.com; it internally fetches
+        // tile helpers from maps.gstatic.com. StormMap / RoutePlanner still use
+        // Leaflet from unpkg until migrated — leave unpkg allowed for now.
+        scriptSrc: [
+          "'self'", "'unsafe-inline'", "'unsafe-eval'",
+          "https://unpkg.com",
+          "https://maps.googleapis.com",
+          "https://maps.gstatic.com",
+        ],
+        // Google Fonts, Leaflet CSS, our own inline style attributes, and any
+        // inline style Google Maps injects.
+        styleSrc: [
+          "'self'", "'unsafe-inline'",
+          "https://fonts.googleapis.com",
+          "https://unpkg.com",
+          "https://fonts.gstatic.com",
+        ],
         fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+        // Google Maps pulls raster + vector tiles from maps.gstatic.com and a
+        // handful of dynamic hosts — the wide 'https:' rule already covers them.
         imgSrc: ["'self'", "data:", "blob:", "https:"],
-        connectSrc: ["'self'", "https:", "wss:"],
+        // XHR/fetch/websocket destinations. Google Maps calls maps.googleapis.com;
+        // 'https:' already permits it, kept explicit for clarity.
+        connectSrc: [
+          "'self'", "https:", "wss:",
+          "https://maps.googleapis.com",
+        ],
         workerSrc: ["'self'", "blob:"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
