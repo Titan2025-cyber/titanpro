@@ -253,12 +253,13 @@ export default function Assistant() {
                 <button
                   type="button"
                   onClick={(e) => deleteConversation(c.id, e)}
-                  className="p-1 rounded hover:bg-destructive/10 transition shrink-0"
+                  className="ml-auto flex items-center justify-center w-7 h-7 rounded border border-border/60 bg-background text-destructive hover:bg-destructive hover:text-destructive-foreground hover:border-destructive shrink-0 transition"
+                  style={{ zIndex: 5 }}
                   aria-label="Delete conversation"
                   title="Delete conversation"
                   data-testid={`button-delete-conv-${c.id}`}
                 >
-                  <Trash2 className="w-3.5 h-3.5 text-muted-foreground hover:text-destructive" />
+                  <Trash2 className="w-4 h-4" />
                 </button>
               </div>
             ))}
