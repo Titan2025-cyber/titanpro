@@ -52,6 +52,19 @@ const navGroups: NavGroup[] = [
   // "Lead & Asbestos" tab (client/src/components/JobHazmatPanel.tsx).
   // Route + page file left in place so PRs stay bisectable. ─────────────────
 
+  // ─── 0. TITAN ASSISTANT ───────────────────────────────────────────────────
+  // Standalone module above Core so it reads as a first-class surface, not
+  // buried inside daily-ops navigation.
+  {
+    label: "Titan Assistant",
+    icon: Sparkles,
+    description: "AI helper for the whole platform",
+    defaultOpen: true,
+    items: [
+      { href: "/assistant", label: "Open Assistant", icon: Sparkles },
+    ],
+  },
+
   // ─── 1. CORE ──────────────────────────────────────────────────────────────
   {
     label: "Core",
@@ -60,7 +73,6 @@ const navGroups: NavGroup[] = [
     defaultOpen: true,
     items: [
       { href: "/", label: "Dashboard", icon: LayoutDashboard, permission: "dashboard" },
-      { href: "/assistant", label: "Titan Assistant", icon: Sparkles },
       { href: "/jobs", label: "Jobs", icon: Briefcase, permission: "jobs" },
       { href: "/jobs/closed", label: "Closed Jobs", icon: Lock, permission: "jobs", adminOnly: true },
       // Schedule Calendar promoted to a standalone Core entry (was previously
