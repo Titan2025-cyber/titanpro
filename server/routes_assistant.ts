@@ -308,7 +308,46 @@ export function registerAssistantRoutes(app: Express, sqlite: Database.Database)
 
   // ── Status ────────────────────────────────────────────────────────────────
   app.get("/api/assistant/status", auth, (_req, res) => {
-    res.json({ available: llmAvailable(), model: MODEL });
+    const key = process.env.ANTHROPIC_API_KEY || "";
+    res.json({
+      available: llmAvailable(),
+      model: MODEL,
+      keyPresent: !!key,
+      keyLength: key.length,
+      keyPrefix: key.slice(0, 8),
+      keyTrimmedLength: key.trim().length,
+      hasWhitespace: key !== key.trim(),
+    });
+  });
+
+  // Live smoke test — makes an actual (tiny) Anthropic call and returns the
+  // raw error if it fails. This is the fastest way to distinguish 'key bad'
+  // from 'model bad' from 'network bad'.
+  app.get("/api/assistant/smoke", auth, async (_req, res) => {
+    try {
+      const client = new Anthropic();
+      const r = await client.messages.create({
+        model: MODEL,
+        max_tokens: 32,
+        messages: [{ role: "user", content: "Reply with the single word: pong" }],
+      });
+      res.json({
+        ok: true,
+        model: MODEL,
+        stop_reason: r.stop_reason,
+        content: r.content,
+        usage: r.usage,
+      });
+    } catch (e: any) {
+      res.status(500).json({
+        ok: false,
+        model: MODEL,
+        error_name: e?.name,
+        error_status: e?.status,
+        error_message: e?.message,
+        error_body: e?.error || e?.response?.data || null,
+      });
+    }
   });
 
   // ── List conversations ────────────────────────────────────────────────────
@@ -428,7 +467,12 @@ export function registerAssistantRoutes(app: Express, sqlite: Database.Database)
     req.on("close", () => { aborted = true; clearInterval(heartbeat); });
 
     try {
-      const client = new Anthropic();
+      const rawKey = process.env.ANTHROPIC_API_KEY || "";
+      const trimmedKey = rawKey.trim();
+      if (trimmedKey !== rawKey) {
+        console.warn("[assistant] ANTHROPIC_API_KEY had leading/trailing whitespace — trimming for this request");
+      }
+      const client = new Anthropic({ apiKey: trimmedKey || undefined });
       // Convert stored history into the API's message shape
       const messages = history.map(h => ({
         role: h.role === "tool" ? ("user" as const) : (h.role as "user" | "assistant"),
@@ -446,16 +490,32 @@ export function registerAssistantRoutes(app: Express, sqlite: Database.Database)
         // Non-streaming call — the heartbeat above keeps Railway's edge from
         // killing the connection during long turns. Once the call resolves,
         // we emit the full text as a single delta so the client renders it.
-        console.log("[assistant] turn", turn, "messages=", messages.length);
-        const response = await client.messages.create({
-          model: MODEL,
-          max_tokens: 4096,
-          system: SYSTEM_PROMPT,
-          tools: TOOLS,
-          messages,
-        });
+        console.log("[assistant] turn", turn, "messages=", messages.length, "model=", MODEL);
+        let response;
+        try {
+          response = await client.messages.create({
+            model: MODEL,
+            max_tokens: 4096,
+            system: SYSTEM_PROMPT,
+            tools: TOOLS,
+            messages,
+          });
+        } catch (createErr: any) {
+          console.error("[assistant] messages.create THREW on turn", turn, "—",
+            "name=", createErr?.name,
+            "status=", createErr?.status,
+            "message=", createErr?.message,
+            "body=", JSON.stringify(createErr?.error || createErr?.response?.data || null),
+          );
+          throw createErr;
+        }
         if (aborted) break;
-        console.log("[assistant] turn", turn, "stop_reason=", response.stop_reason);
+        console.log("[assistant] turn", turn,
+          "stop_reason=", response.stop_reason,
+          "content_blocks=", (response.content || []).length,
+          "types=", (response.content || []).map((b: any) => b.type).join(","),
+          "usage=", JSON.stringify(response.usage),
+        );
 
         const contentBlocks = response.content;
         const textBlocks = contentBlocks.filter((b: any) => b.type === "text");
