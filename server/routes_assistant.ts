@@ -53,6 +53,8 @@ When asked about a specific job, drying record, estimate, invoice, or piece of T
 
 When asked to write something (a note, an estimate line, an email, a stage change), use the draft tools. Drafts appear as review cards for the user to approve. NEVER assume something was saved just because you drafted it.
 
+**CRITICAL: After you call any tool and receive its result, you MUST write a natural-language response to the user that answers their question using the tool's data. NEVER end a turn with only a tool call and no explanation — the user cannot see raw tool results, only the text you write. If a lookup returns nothing useful, say so in plain English.**
+
 # How you write
 - Concise. This is a work tool, not a chat toy. Bullet points and short paragraphs.
 - Cite your sources — IICRC section, job number, note date. If you don't have a source, say so.
@@ -507,13 +509,53 @@ export function registerAssistantRoutes(app: Express, sqlite: Database.Database)
         if (response.stop_reason !== "tool_use") break;
       }
 
+      // Safety net: if we exited the tool loop with no user-facing text (Claude
+      // called tools but never narrated the result), do one more forced turn
+      // asking explicitly for a summary. Prevents the 'question posted but no
+      // answer shows' failure mode.
+      if (!assembledText.trim() && toolUses.length > 0 && !aborted) {
+        console.warn("[assistant] tool loop ended without text — forcing summary turn");
+        try {
+          messages.push({
+            role: "user",
+            content: [{ type: "text", text: "Please summarize the results of the tools you just called in a short, plain-English answer for the user." }],
+          });
+          const summary = await client.messages.create({
+            model: MODEL,
+            max_tokens: 2048,
+            system: SYSTEM_PROMPT,
+            messages, // no tools this turn — force a text response
+          });
+          const summaryText = (summary.content || [])
+            .filter((b: any) => b.type === "text")
+            .map((b: any) => b.text || "")
+            .join("\n")
+            .trim();
+          if (summaryText) {
+            assembledText = summaryText;
+            try { write("delta", { text: summaryText }); } catch {}
+          }
+        } catch (fallbackErr: any) {
+          console.error("[assistant] forced-summary turn failed:", fallbackErr?.message);
+        }
+      }
+
       // Persist assistant message (final text + all tool uses inline)
       const finalContent: any[] = [];
-      if (assembledText) finalContent.push({ type: "text", text: assembledText });
+      if (assembledText) {
+        finalContent.push({ type: "text", text: assembledText });
+      } else if (toolUses.length === 0) {
+        // Absolute fallback: no text and no tools — something went sideways.
+        finalContent.push({
+          type: "text",
+          text: "I ran into a problem generating a response. Try rephrasing your question.",
+        });
+      }
       for (const tu of toolUses) {
         finalContent.push({ type: "tool_use", id: tu.id, name: tu.name, input: tu.input });
         finalContent.push({ type: "tool_result", tool_use_id: tu.id, result: tu.result });
       }
+      console.log("[assistant] persisting assistant msg. textLen=", assembledText.length, "toolUses=", toolUses.length);
       sqlite.prepare(`
         INSERT INTO assistant_messages(conversation_id, role, content, created_at)
         VALUES(?, 'assistant', ?, ?)
