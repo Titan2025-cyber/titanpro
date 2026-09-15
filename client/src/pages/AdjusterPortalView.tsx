@@ -102,18 +102,18 @@ function PhotoBrowser({ photos }: { photos: any[] }) {
           </div>
         );
       })}
-      {/* Lightbox. Scrolls the whole backdrop so tall portrait shots and
-          the caption underneath are fully reachable — no 75vh cap. Nav
-          arrows + close pin to the top via a sticky bar so they don't
-          fly off-screen when the user scrolls down the image. */}
+      {/* Lightbox — three-row flex column: toolbar / image / caption. The
+          image row is flex-1 with object-contain so any photo, portrait
+          or landscape, fits fully inside the visible viewport with the
+          toolbar sitting cleanly above it. No scroll, no crop. */}
       {active !== null && flat[active] && (
         <div
-          className="fixed inset-0 bg-black/85 z-50 overflow-y-auto overscroll-contain"
+          className="fixed inset-0 bg-black/95 z-50 flex flex-col overscroll-contain"
           style={{ WebkitOverflowScrolling: "touch" as any }}
-          onClick={() => setActive(null)}
+          onClick={e => { if (e.target === e.currentTarget) setActive(null); }}
         >
           <div
-            className="sticky top-0 z-10 flex items-center justify-between px-3 py-2 bg-black/70 backdrop-blur-sm"
+            className="flex-shrink-0 flex items-center justify-between px-3 py-2 bg-black/70 backdrop-blur-sm"
             style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))" }}
             onClick={e => e.stopPropagation()}
           >
@@ -136,20 +136,24 @@ function PhotoBrowser({ photos }: { photos: any[] }) {
             ><X className="w-5 h-5" /></button>
           </div>
           <div
-            className="max-w-2xl w-full mx-auto px-4 pt-2"
-            style={{ paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}
-            onClick={e => e.stopPropagation()}
+            className="flex-1 min-h-0 flex items-center justify-center px-3"
+            onClick={e => { if (e.target === e.currentTarget) setActive(null); }}
           >
             <img
               src={flat[active].data_url}
               alt={flat[active].caption || ""}
-              className="block w-full h-auto object-contain rounded-lg bg-black select-none"
+              className="max-w-full max-h-full w-auto h-auto object-contain rounded-lg select-none"
               draggable={false}
+              onClick={e => e.stopPropagation()}
             />
-            <div className="text-center text-white mt-3">
-              <p className="text-sm font-medium">{flat[active].caption || "Job photo"}</p>
-              <p className="text-xs text-white/60">{CAT_LABELS[flat[active].category] || flat[active].category} · {fmtDate(flat[active].taken_at)}</p>
-            </div>
+          </div>
+          <div
+            className="flex-shrink-0 text-center text-white px-4 py-3"
+            style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))" }}
+            onClick={e => e.stopPropagation()}
+          >
+            <p className="text-sm font-medium">{flat[active].caption || "Job photo"}</p>
+            <p className="text-xs text-white/60">{CAT_LABELS[flat[active].category] || flat[active].category} · {fmtDate(flat[active].taken_at)}</p>
           </div>
         </div>
       )}

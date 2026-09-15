@@ -282,44 +282,51 @@ export default function PhotoSearch() {
         </div>
       )}
 
-      {/* Lightbox. Backdrop is a fixed, full-screen scrollable container so
-          tall portrait photos, the metadata grid, and the GPS row are all
-          reachable by scrolling the modal itself — no viewport-height cap
-          clips the image on phones. `overscroll-contain` stops the body
-          behind from rubber-banding. */}
+      {/* Lightbox — three-row flex column: toolbar / image / metadata grid.
+          Image row is flex-1 with object-contain so the whole photo fits
+          inside the visible viewport regardless of aspect ratio; the
+          metadata grid at the bottom is capped and scrolls internally if
+          the GPS row is present. */}
       {lightbox && (
         <div
-          className="fixed inset-0 bg-black/85 z-50 overflow-y-auto overscroll-contain"
+          className="fixed inset-0 bg-black/95 z-50 flex flex-col overscroll-contain"
           style={{ WebkitOverflowScrolling: "touch" as any }}
-          onClick={() => setLightbox(null)}
+          onClick={e => { if (e.target === e.currentTarget) setLightbox(null); }}
         >
           <div
-            className="max-w-5xl w-full mx-auto my-4 bg-white rounded-lg overflow-hidden"
-            style={{ marginBottom: "calc(1rem + env(safe-area-inset-bottom))" }}
+            className="flex-shrink-0 bg-slate-900 text-white px-4 py-2 flex items-center justify-between"
+            style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))" }}
             onClick={e => e.stopPropagation()}
           >
-            <div className="bg-slate-900 text-white px-4 py-2 flex items-center justify-between sticky top-0 z-10">
-              <div className="text-sm font-semibold truncate">{lightbox.caption || lightbox.filename}</div>
-              <div className="flex items-center gap-2">
-                <Button size="sm" variant="secondary" onClick={() => { navigate(`/jobs/${lightbox.jobId}`); setLightbox(null); }}>
-                  <ArrowRight className="w-3 h-3 mr-1"/> Open job
-                </Button>
-                <Button size="sm" variant="ghost" className="text-white hover:bg-white/10" onClick={() => setLightbox(null)}>
-                  <X className="w-4 h-4"/>
-                </Button>
-              </div>
+            <div className="text-sm font-semibold truncate">{lightbox.caption || lightbox.filename}</div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Button size="sm" variant="secondary" onClick={() => { navigate(`/jobs/${lightbox.jobId}`); setLightbox(null); }}>
+                <ArrowRight className="w-3 h-3 mr-1"/> Open job
+              </Button>
+              <Button size="sm" variant="ghost" className="text-white hover:bg-white/10" onClick={() => setLightbox(null)}>
+                <X className="w-4 h-4"/>
+              </Button>
             </div>
-            <div className="bg-black flex items-center justify-center">
-              {lightbox.dataUrl && (
-                <img
-                  src={lightbox.dataUrl}
-                  alt={lightbox.caption || lightbox.filename}
-                  className="block w-full h-auto object-contain select-none"
-                  draggable={false}
-                />
-              )}
-            </div>
-            <div className="p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+          </div>
+          <div
+            className="flex-1 min-h-0 flex items-center justify-center bg-black px-3"
+            onClick={e => { if (e.target === e.currentTarget) setLightbox(null); }}
+          >
+            {lightbox.dataUrl && (
+              <img
+                src={lightbox.dataUrl}
+                alt={lightbox.caption || lightbox.filename}
+                className="max-w-full max-h-full w-auto h-auto object-contain rounded-lg select-none"
+                draggable={false}
+                onClick={e => e.stopPropagation()}
+              />
+            )}
+          </div>
+          <div
+            className="flex-shrink-0 bg-white dark:bg-slate-900 p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs max-h-[40vh] overflow-y-auto"
+            style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))" }}
+            onClick={e => e.stopPropagation()}
+          >
               <div><div className="text-slate-500 uppercase text-[10px]">Job</div><div className="font-medium">#{lightbox.jobNumber || lightbox.jobId}</div></div>
               <div><div className="text-slate-500 uppercase text-[10px]">Customer</div><div className="font-medium truncate">{lightbox.customerName || "—"}</div></div>
               <div><div className="text-slate-500 uppercase text-[10px]">Room</div><div className="font-medium">{lightbox.room || "—"}</div></div>
@@ -336,7 +343,6 @@ export default function PhotoSearch() {
                   </a>
                 </div>
               )}
-            </div>
           </div>
         </div>
       )}
