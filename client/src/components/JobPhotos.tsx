@@ -1138,29 +1138,36 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
             </button>
           </div>
 
-          {/* Content column. Backdrop-close is handled by the parent's
-              onClick (event delegation on e.target === e.currentTarget)
-              so we don't need an absolutely positioned close-button layer
-              that captures desktop wheel/scroll events. Extra bottom
-              padding respects the iOS home-indicator so the last field
-              is never covered. */}
+          {/* Image row — takes all remaining vertical space between the
+              toolbar (above) and the metadata panel (below). The image is
+              constrained to the full width and height of this row and
+              rendered with object-contain so the entire photo is visible
+              at any aspect ratio. No zoom, no crop, no scroll. */}
           <div
-            className="max-w-3xl w-full mx-auto px-4 pt-4"
-            style={{ paddingBottom: "calc(2.5rem + env(safe-area-inset-bottom))" }}
-            onClick={e => e.stopPropagation()}
+            className="flex-1 min-h-0 flex items-center justify-center px-3"
+            onClick={e => {
+              if (e.target === e.currentTarget) setLightbox(null);
+            }}
           >
-            {/* Image: no vh caps. Rendered at natural aspect inside the
-                max-w-3xl column so portrait shots aren't clipped and
-                landscape shots aren't stretched. `max-h-none` explicitly
-                overrides any inherited image caps from base CSS resets. */}
             <img
               src={lightbox.dataUrl}
               alt={lightbox.caption || lightbox.filename}
-              className="block w-full h-auto max-h-none rounded-lg object-contain select-none bg-black"
+              className="max-w-full max-h-full w-auto h-auto object-contain select-none rounded-lg"
               style={{ touchAction: "manipulation" }}
               draggable={false}
+              onClick={e => e.stopPropagation()}
             />
-            <div className="mt-3 flex items-center justify-between">
+          </div>
+
+          {/* Metadata + action row — fixed at the bottom of the flex column,
+              scrolls internally if the caption/actions get long. Bottom
+              padding respects the iOS home indicator. */}
+          <div
+            className="flex-shrink-0 max-w-3xl w-full mx-auto px-4 pt-3 max-h-[45vh] overflow-y-auto"
+            style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
               <div>
                 <p className="text-white font-medium text-sm">{lightbox.caption || lightbox.filename}</p>
                 <div className="flex flex-wrap gap-2 mt-1 items-center">
