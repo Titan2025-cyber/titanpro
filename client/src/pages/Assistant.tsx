@@ -181,6 +181,11 @@ export default function Assistant() {
             } else if (eventLine === "tool_result") {
               accTools = accTools.map(t => t.id === data.id ? { ...t, result: data.result } : t);
               setStreamTools(accTools);
+            } else if (eventLine === "done") {
+              // Server has finished — persist happened, stop reading.
+              // Break out of the outer while loop by cancelling the reader.
+              try { reader.cancel(); } catch {}
+              break;
             } else if (eventLine === "error") {
               throw new Error(data.message || "Assistant error");
             }
@@ -189,9 +194,14 @@ export default function Assistant() {
           }
         }
       }
-      // Reload the conversation to get the persisted assistant message
-      await openConversation(convId);
-      await refreshConversations();
+      // Reload the conversation to get the persisted assistant message.
+      // Wrapped in try so a failed reload never leaves the input stuck.
+      try {
+        await openConversation(convId);
+        await refreshConversations();
+      } catch (reloadErr) {
+        console.warn("reload after send failed", reloadErr);
+      }
     } catch (e: any) {
       toast({ title: "Assistant error", description: e?.message || String(e), variant: "destructive" });
     } finally {

@@ -411,10 +411,19 @@ export function registerAssistantRoutes(app: Express, sqlite: Database.Database)
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("X-Accel-Buffering", "no");
+    res.setHeader("Connection", "keep-alive");
     res.flushHeaders?.();
     const write = (event: string, data: any) => {
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     };
+    // Heartbeat so Railway's edge doesn't close the SSE connection during long turns.
+    // Any bytes on the socket reset its idle timer; a comment line is ignored by EventSource.
+    const heartbeat = setInterval(() => {
+      try { res.write(": keep-alive\n\n"); } catch { /* connection closed */ }
+    }, 15000);
+    // Client abort cleanup
+    let aborted = false;
+    req.on("close", () => { aborted = true; clearInterval(heartbeat); });
 
     try {
       const client = new Anthropic();
@@ -431,30 +440,31 @@ export function registerAssistantRoutes(app: Express, sqlite: Database.Database)
       const toolUses: any[] = [];
 
       for (let turn = 0; turn < MAX_TURNS; turn++) {
-        // Non-streaming for the tool loop (streaming with tool use is fiddly).
-        // We stream only the final assistant text to the client.
-        const response = await client.messages.create({
+        if (aborted) break;
+        // Stream every turn: text deltas are pushed to the client immediately
+        // so long tool loops don't look like a hang. The final message object
+        // (with tool_use blocks) is available after the stream ends.
+        const stream = client.messages.stream({
           model: MODEL,
           max_tokens: 4096,
           system: SYSTEM_PROMPT,
           tools: TOOLS,
           messages,
         });
+        // Forward text deltas as they arrive.
+        stream.on("text", (delta: string) => {
+          if (delta) {
+            assembledText += delta;
+            try { write("delta", { text: delta }); } catch { /* closed */ }
+          }
+        });
+        const response = await stream.finalMessage();
+        if (aborted) break;
 
         const contentBlocks = response.content;
-        const textBlocks = contentBlocks.filter((b: any) => b.type === "text");
         const toolBlocks = contentBlocks.filter((b: any) => b.type === "tool_use");
 
-        // Send any text the model produced this turn
-        for (const tb of textBlocks) {
-          const t = (tb as any).text || "";
-          if (t) {
-            assembledText += t;
-            write("delta", { text: t });
-          }
-        }
-
-        // If no tool calls, we're done
+        // If no tool calls, we're done (text already streamed above)
         if (toolBlocks.length === 0) {
           break;
         }
@@ -518,11 +528,13 @@ export function registerAssistantRoutes(app: Express, sqlite: Database.Database)
       }
 
       write("done", { ok: true });
+      clearInterval(heartbeat);
       res.end();
     } catch (e: any) {
       console.error("[assistant] stream error:", e?.message || e);
-      write("error", { message: e?.message || "Assistant failed. Try again." });
-      res.end();
+      clearInterval(heartbeat);
+      try { write("error", { message: e?.message || "Assistant failed. Try again." }); } catch {}
+      try { res.end(); } catch {}
     }
   });
 

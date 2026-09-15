@@ -109,6 +109,9 @@ export default function AssistantDrawer() {
             tools = [...tools, { id: data.id, name: data.name, input: data.input }];
           } else if (eventLine === "tool_result") {
             tools = tools.map(t => t.id === data.id ? { ...t, result: data.result } : t);
+          } else if (eventLine === "done") {
+            try { reader.cancel(); } catch {}
+            break;
           } else if (eventLine === "error") {
             throw new Error(data.message || "Assistant error");
           }
