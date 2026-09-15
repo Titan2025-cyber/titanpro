@@ -25,7 +25,11 @@ import { makeAuthMiddleware } from "./routes_auth";
 // ─────────────────────────────────────────────────────────────────────────────
 // Model + system prompt
 // ─────────────────────────────────────────────────────────────────────────────
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5";
+// Model IDs as of Sep 2026: `claude-sonnet-5` is current default ($2/$10 Mtok,
+// 1M context, best instruction following). Falls back to `claude-sonnet-4-5`
+// if the primary is rejected. Both use the same tool-use API shape.
+const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
+const MODEL_FALLBACK = "claude-sonnet-4-5";
 
 function llmAvailable(): boolean {
   return !!process.env.ANTHROPIC_API_KEY;
@@ -492,6 +496,7 @@ export function registerAssistantRoutes(app: Express, sqlite: Database.Database)
         // we emit the full text as a single delta so the client renders it.
         console.log("[assistant] turn", turn, "messages=", messages.length, "model=", MODEL);
         let response;
+        let usedModel = MODEL;
         try {
           response = await client.messages.create({
             model: MODEL,
@@ -501,13 +506,28 @@ export function registerAssistantRoutes(app: Express, sqlite: Database.Database)
             messages,
           });
         } catch (createErr: any) {
+          const status = createErr?.status;
+          const msg = createErr?.message || "";
+          const looksModelBad = status === 404 || /model|not[_ ]?found/i.test(msg);
           console.error("[assistant] messages.create THREW on turn", turn, "—",
             "name=", createErr?.name,
-            "status=", createErr?.status,
-            "message=", createErr?.message,
+            "status=", status,
+            "message=", msg,
             "body=", JSON.stringify(createErr?.error || createErr?.response?.data || null),
           );
-          throw createErr;
+          if (looksModelBad && MODEL !== MODEL_FALLBACK) {
+            console.warn("[assistant] retrying with fallback model:", MODEL_FALLBACK);
+            usedModel = MODEL_FALLBACK;
+            response = await client.messages.create({
+              model: MODEL_FALLBACK,
+              max_tokens: 4096,
+              system: SYSTEM_PROMPT,
+              tools: TOOLS,
+              messages,
+            });
+          } else {
+            throw createErr;
+          }
         }
         if (aborted) break;
         console.log("[assistant] turn", turn,
@@ -569,16 +589,21 @@ export function registerAssistantRoutes(app: Express, sqlite: Database.Database)
         if (response.stop_reason !== "tool_use") break;
       }
 
-      // Safety net: if we exited the tool loop with no user-facing text (Claude
-      // called tools but never narrated the result), do one more forced turn
-      // asking explicitly for a summary. Prevents the 'question posted but no
-      // answer shows' failure mode.
-      if (!assembledText.trim() && toolUses.length > 0 && !aborted) {
-        console.warn("[assistant] tool loop ended without text — forcing summary turn");
+      // Safety net: if we exited the tool loop with no user-facing text, do
+      // one more forced turn asking explicitly for a plain answer. Covers both
+      // 'Claude called tools but never narrated' AND 'Claude returned no
+      // content at all on the first turn'.
+      if (!assembledText.trim() && !aborted) {
+        console.warn("[assistant] ended without text — forcing plain-text turn. toolUses=", toolUses.length);
         try {
+          // If we have tool results, ask for a summary. If we don't (empty
+          // first turn), just re-ask the original question as plain text.
+          const forcePrompt = toolUses.length > 0
+            ? "Please answer the user's original question using the tool results above. Plain English, no more tool calls."
+            : "Please answer the user's question above in plain English.";
           messages.push({
             role: "user",
-            content: [{ type: "text", text: "Please summarize the results of the tools you just called in a short, plain-English answer for the user." }],
+            content: [{ type: "text", text: forcePrompt }],
           });
           const summary = await client.messages.create({
             model: MODEL,
@@ -586,6 +611,11 @@ export function registerAssistantRoutes(app: Express, sqlite: Database.Database)
             system: SYSTEM_PROMPT,
             messages, // no tools this turn — force a text response
           });
+          console.log("[assistant] forced turn returned",
+            "stop_reason=", summary.stop_reason,
+            "blocks=", (summary.content || []).length,
+            "types=", (summary.content || []).map((b: any) => b.type).join(","),
+          );
           const summaryText = (summary.content || [])
             .filter((b: any) => b.type === "text")
             .map((b: any) => b.text || "")
