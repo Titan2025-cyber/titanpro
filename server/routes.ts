@@ -4382,6 +4382,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ imported: results.filter(r => r.status !== "skipped").length, results });
   });
 
+  // Diagnostic: is the invoice reader wired up? (owner/admin only, no secrets exposed)
+  app.get("/api/consumables/parse-invoice/diag", requireRole("owner", "admin"), (_req, res) => {
+    res.json({
+      anthropicKeyPresent: !!process.env.ANTHROPIC_API_KEY,
+      anthropicKeyLength: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.length : 0,
+      anthropicModel: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5",
+      nodeEnv: process.env.NODE_ENV || null,
+    });
+  });
+
   // ── Parse a vendor invoice/receipt PDF into structured line items ───────────
   // Sends the PDF to Claude (document block) and returns extracted vendor +
   // line items for on-screen review. Does NOT touch stock — the reviewed lines
@@ -4397,6 +4407,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (comma !== -1) b64 = b64.slice(comma + 7);
 
     if (!process.env.ANTHROPIC_API_KEY) {
+      console.warn("[parse-invoice] ANTHROPIC_API_KEY not set \u2014 returning llmAvailable:false");
       return res.json({
         llmAvailable: false,
         vendor: null,
@@ -4429,20 +4440,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     try {
       const client = new Anthropic();
-      const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
+      const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5";
+      console.log("[parse-invoice] calling Anthropic", { model, pdfSize: b64.length });
       const msg = await client.messages.create({
         model,
-        max_tokens: 3000,
+        max_tokens: 4000,
         system,
         messages: [{
           role: "user",
           content: [
             { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } },
-            { type: "text", text: "Extract the purchasable inventory line items from this invoice as JSON." },
+            { type: "text", text: "Extract the purchasable inventory line items from this invoice as JSON. Watch for tables where the columns are laid out as: QTY ORDERED, PRODUCT/DESCRIPTION (may include a numeric product code AND a text description that wraps to the next line), QTY SHIPPED, QTY B.O., PRICE, U/M, EXTENSION. In this layout the product name is on the SECOND line under a numeric product code; use the description text (not the numeric code) as the item name, and use the numeric code as the sku." },
           ] as any,
         }],
       });
       const raw = msg.content.map((c: any) => (c.type === "text" ? c.text : "")).join("").trim();
+      console.log("[parse-invoice] response chars:", raw.length);
       // Parse JSON out of a possibly fenced response
       let parsed: any = null;
       let t = raw;
@@ -4451,9 +4464,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const first = t.search(/[[{]/);
       const last = Math.max(t.lastIndexOf("}"), t.lastIndexOf("]"));
       if (first !== -1 && last !== -1) {
-        try { parsed = JSON.parse(t.slice(first, last + 1)); } catch { parsed = null; }
+        try { parsed = JSON.parse(t.slice(first, last + 1)); } catch (e: any) {
+          console.error("[parse-invoice] JSON parse failed:", e.message, "raw excerpt:", raw.slice(0, 300));
+          parsed = null;
+        }
       }
-      if (!parsed) return res.status(422).json({ error: "Could not read the invoice. Try a clearer PDF or enter items manually.", llmAvailable: true });
+      if (!parsed) {
+        console.error("[parse-invoice] no JSON in response, raw excerpt:", raw.slice(0, 500));
+        return res.status(422).json({ error: "Could not read the invoice. The AI response wasn't valid JSON. Try a clearer PDF or enter items manually.", llmAvailable: true });
+      }
+      console.log("[parse-invoice] parsed lines:", (parsed.lines || []).length);
       const linesIn: any[] = Array.isArray(parsed) ? parsed : (parsed.lines || []);
       const lines = linesIn
         .map((l) => ({
@@ -4473,6 +4493,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         lines,
       });
     } catch (e: any) {
+      console.error("[parse-invoice] Anthropic call threw:", e?.message, e?.status);
       res.status(502).json({ error: `Invoice reader failed: ${e?.message || "unknown error"}`, llmAvailable: true });
     }
   }));
