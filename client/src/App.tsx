@@ -27,6 +27,7 @@ import ForceEnroll2FA from "@/components/ForceEnroll2FA";
 import ForcePinChange from "@/components/ForcePinChange";
 import EnvBanner from "@/components/EnvBanner";
 import CommandPalette from "@/components/CommandPalette";
+import AssistantDrawer from "@/components/AssistantDrawer";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { PresenceTracker } from "@/lib/presence";
 import { LocationTracker } from "@/lib/locationTracker";
@@ -34,6 +35,7 @@ import { LocationTracker } from "@/lib/locationTracker";
 
 // Lazy-loaded pages (code-split — each page downloads only when visited)
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
+const Assistant = lazy(() => import("@/pages/Assistant"));
 const MyToday = lazy(() => import("@/pages/MyToday"));
 const Settings = lazy(() => import("@/pages/Settings"));
 const CompanyDocuments = lazy(() => import("@/pages/CompanyDocuments"));
@@ -293,6 +295,7 @@ function AuthenticatedRoutes() {
           navigate via wouter. Rendered as an overlay; no visible chrome
           until the shortcut opens it. */}
       <CommandPalette />
+      <AssistantDrawer />
       <Suspense fallback={<PageLoader />}>
       <Switch>
         {/* Core */}
@@ -303,6 +306,7 @@ function AuthenticatedRoutes() {
             and My Today at /my/today for anyone who wants either view. */}
         <Route path="/" component={() => <Page component={SmartLanding} name="Home" />} />
         <Route path="/dashboard" component={() => <Page component={Dashboard} name="Dashboard" />} />
+        <Route path="/assistant" component={() => <Page component={Assistant} name="Assistant" />} />
         <Route path="/my/today" component={() => <Page component={MyToday} name="MyToday" />} />
         <Route path="/jobs" component={() => <Page component={Jobs} name="Jobs" />} />
         <Route path="/jobs/closed" component={() => <Page component={ClosedJobs} name="ClosedJobs" />} />

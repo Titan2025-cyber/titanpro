@@ -19,7 +19,7 @@ import {
   Mic, FileSearch, UserRound, Trophy, UserCog, KeyRound,
   FileSpreadsheet, QrCode, Handshake, ArrowLeft, LayoutDashboard as DashIcon,
   Package, Lock, Inbox,
-  Trash2, Settings as SettingsIcon, Wallet, LifeBuoy,
+  Trash2, Settings as SettingsIcon, Wallet, Sparkles, LifeBuoy,
 } from "lucide-react";
 import { useState, useEffect, type ReactNode } from "react";
 import GlobalSearch from "@/components/GlobalSearch";
@@ -60,6 +60,7 @@ const navGroups: NavGroup[] = [
     defaultOpen: true,
     items: [
       { href: "/", label: "Dashboard", icon: LayoutDashboard, permission: "dashboard" },
+      { href: "/assistant", label: "Titan Assistant", icon: Sparkles },
       { href: "/jobs", label: "Jobs", icon: Briefcase, permission: "jobs" },
       { href: "/jobs/closed", label: "Closed Jobs", icon: Lock, permission: "jobs", adminOnly: true },
       // Schedule Calendar promoted to a standalone Core entry (was previously
