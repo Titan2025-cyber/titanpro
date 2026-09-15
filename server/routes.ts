@@ -21,7 +21,7 @@ import { registerSuite5Routes } from "./routes_suite5";
 import { registerSuite6Routes } from "./routes_suite6";
 import { registerAIAgentRoutes } from "./routes_aiagent";
 import { registerCompanyDocsRoutes } from "./routes_company_docs";
-import { registerAssistantRoutes } from "./routes_assistant";
+// import { registerAssistantRoutes } from "./routes_assistant"; // DISABLED — pulled per Cody 2026-09-15, will re-enable later
 import { registerMarketingAIRoutes } from "./routes_marketing_ai";
 import { registerHRRoutes } from "./routes_hr";
 import { registerGmailRoutes } from "./routes_gmail";
@@ -6760,7 +6760,7 @@ cody@titanrestorationllc.com`;
   registerSuite6Routes(app, sqlite);
   registerAIAgentRoutes(app, sqlite);
   registerCompanyDocsRoutes(app, sqlite);
-  registerAssistantRoutes(app, sqlite);
+  // registerAssistantRoutes(app, sqlite); // DISABLED — pulled per Cody 2026-09-15
 
   // ── HR Management Module + AI HR Assistant (additive, self-contained) ───────
   registerHRRoutes(app, sqlite);

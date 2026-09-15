@@ -53,17 +53,17 @@ const navGroups: NavGroup[] = [
   // Route + page file left in place so PRs stay bisectable. ─────────────────
 
   // ─── 0. TITAN ASSISTANT ───────────────────────────────────────────────────
-  // Standalone module above Core so it reads as a first-class surface, not
-  // buried inside daily-ops navigation.
-  {
-    label: "Titan Assistant",
-    icon: Sparkles,
-    description: "AI helper for the whole platform",
-    defaultOpen: true,
-    items: [
-      { href: "/assistant", label: "Open Assistant", icon: Sparkles },
-    ],
-  },
+  // DISABLED per Cody 2026-09-15 — will re-enable when the assistant is fixed.
+  // Keeping the block commented so we can drop it back in without re-authoring.
+  // {
+  //   label: "Titan Assistant",
+  //   icon: Sparkles,
+  //   description: "AI helper for the whole platform",
+  //   defaultOpen: true,
+  //   items: [
+  //     { href: "/assistant", label: "Open Assistant", icon: Sparkles },
+  //   ],
+  // },
 
   // ─── 1. CORE ──────────────────────────────────────────────────────────────
   {
