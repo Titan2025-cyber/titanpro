@@ -234,24 +234,33 @@ export default function Assistant() {
               <div className="text-xs text-muted-foreground p-3">No conversations yet.</div>
             )}
             {conversations.map(c => (
-              <button
+              // Use a div as the row so we can nest a real button for delete.
+              // Nested <button> inside <button> is invalid HTML and breaks the
+              // inner click on some browsers — that was silently killing delete.
+              <div
                 key={c.id}
+                role="button"
+                tabIndex={0}
                 onClick={() => openConversation(c.id)}
-                className={`w-full text-left px-3 py-2 rounded-md text-sm group flex items-start gap-2 hover:bg-accent transition ${
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openConversation(c.id); } }}
+                className={`w-full text-left px-3 py-2 rounded-md text-sm flex items-center gap-2 hover:bg-accent transition cursor-pointer ${
                   activeId === c.id ? "bg-accent" : ""
                 }`}
                 data-testid={`button-open-conv-${c.id}`}
               >
-                <MessageSquare className="w-3.5 h-3.5 mt-0.5 shrink-0 opacity-60" />
+                <MessageSquare className="w-3.5 h-3.5 shrink-0 opacity-60" />
                 <span className="flex-1 truncate">{c.title}</span>
                 <button
+                  type="button"
                   onClick={(e) => deleteConversation(c.id, e)}
-                  className="opacity-0 group-hover:opacity-100 transition"
-                  aria-label="Delete"
+                  className="p-1 rounded hover:bg-destructive/10 transition shrink-0"
+                  aria-label="Delete conversation"
+                  title="Delete conversation"
+                  data-testid={`button-delete-conv-${c.id}`}
                 >
                   <Trash2 className="w-3.5 h-3.5 text-muted-foreground hover:text-destructive" />
                 </button>
-              </button>
+              </div>
             ))}
           </div>
         </ScrollArea>

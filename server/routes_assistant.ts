@@ -441,30 +441,34 @@ export function registerAssistantRoutes(app: Express, sqlite: Database.Database)
 
       for (let turn = 0; turn < MAX_TURNS; turn++) {
         if (aborted) break;
-        // Stream every turn: text deltas are pushed to the client immediately
-        // so long tool loops don't look like a hang. The final message object
-        // (with tool_use blocks) is available after the stream ends.
-        const stream = client.messages.stream({
+        // Non-streaming call — the heartbeat above keeps Railway's edge from
+        // killing the connection during long turns. Once the call resolves,
+        // we emit the full text as a single delta so the client renders it.
+        console.log("[assistant] turn", turn, "messages=", messages.length);
+        const response = await client.messages.create({
           model: MODEL,
           max_tokens: 4096,
           system: SYSTEM_PROMPT,
           tools: TOOLS,
           messages,
         });
-        // Forward text deltas as they arrive.
-        stream.on("text", (delta: string) => {
-          if (delta) {
-            assembledText += delta;
-            try { write("delta", { text: delta }); } catch { /* closed */ }
-          }
-        });
-        const response = await stream.finalMessage();
         if (aborted) break;
+        console.log("[assistant] turn", turn, "stop_reason=", response.stop_reason);
 
         const contentBlocks = response.content;
+        const textBlocks = contentBlocks.filter((b: any) => b.type === "text");
         const toolBlocks = contentBlocks.filter((b: any) => b.type === "tool_use");
 
-        // If no tool calls, we're done (text already streamed above)
+        // Emit any text produced this turn
+        for (const tb of textBlocks) {
+          const t = (tb as any).text || "";
+          if (t) {
+            assembledText += t;
+            try { write("delta", { text: t }); } catch { /* closed */ }
+          }
+        }
+
+        // If no tool calls, we're done
         if (toolBlocks.length === 0) {
           break;
         }
