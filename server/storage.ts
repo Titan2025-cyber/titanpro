@@ -903,6 +903,53 @@ sqlite.exec(`
     ON email_snooze(status, wake_at);
 `);
 
+// ── Email ↔ Job link ─────────────────────────────────────────────────────
+// A Gmail thread (or a specific message) attached to a job. Powers both
+// "see all email about this job" on the Job page and "this thread is
+// filed under Job #123" chip in the email UI. thread_id is preferred; when
+// only a message is linked, message_id is set and thread_id may be null.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS email_job_link (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    employee_id INTEGER NOT NULL,
+    gmail_thread_id TEXT,
+    gmail_message_id TEXT,
+    subject TEXT,
+    from_addr TEXT,
+    snippet TEXT,
+    linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(job_id, gmail_thread_id),
+    UNIQUE(job_id, gmail_message_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_email_job_link_job ON email_job_link(job_id);
+  CREATE INDEX IF NOT EXISTS idx_email_job_link_thread ON email_job_link(gmail_thread_id);
+`);
+
+// ── Email rules (filters) ────────────────────────────────────────────────
+// Server-evaluated rules that run on inbox fetch and apply Gmail labels /
+// star / mark-read to newly seen messages. Keeps rule execution off the
+// client so it works even when nobody has the app open.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS email_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    match_from TEXT,
+    match_to TEXT,
+    match_subject TEXT,
+    match_has_words TEXT,
+    action_add_label TEXT,
+    action_star INTEGER NOT NULL DEFAULT 0,
+    action_mark_read INTEGER NOT NULL DEFAULT 0,
+    action_archive INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_run_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_email_rules_emp ON email_rules(employee_id, enabled);
+`);
+
 // ── Object storage columns ────────────────────────────────────────────────
 // Backfill storage_key columns onto every table that previously held image
 // or file blobs as base64 data URLs. When Railway object storage is

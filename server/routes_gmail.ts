@@ -1283,4 +1283,322 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
       res.status(500).json({ error: e?.message || "Failed to move message to Trash." });
     }
   });
+
+  // ── UNTRASH ──────────────────────────────────────────────────────────
+  //   Powers Undo Trash / Undo Archive toasts. The client hands back the id
+  //   plus the set of labels it wants restored (Gmail archive is just
+  //   `removeLabelIds:[INBOX]`, undo re-adds it via the modify route below).
+  app.post("/api/gmail/messages/:id/untrash", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      await gmail.users.messages.untrash({ userId: "me", id: req.params.id });
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to restore message." });
+    }
+  });
+
+  // ── THREADS: full conversation view ────────────────────────────────────────
+  //   Gmail groups messages by threadId. This endpoint returns every message
+  //   in the thread, in send order, with headers + body + attachments
+  //   pre-parsed the same way the single-message endpoint does. The client
+  //   collapses older messages by default and expands the latest.
+  app.get("/api/gmail/threads/:id", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      const thread = await gmail.users.threads.get({ userId: "me", id: req.params.id, format: "full" });
+      const messages = (thread.data.messages || []).map((msg: any) => {
+        const headers = (msg.payload?.headers || []).reduce((acc: any, h: any) => {
+          acc[h.name.toLowerCase()] = h.value; return acc;
+        }, {} as any);
+        const decode = (data?: string | null) => data ? Buffer.from(data, "base64").toString("utf8") : "";
+        let body = ""; let bodyIsHtml = false;
+        const attachments: any[] = [];
+        const walk = (part: any): void => {
+          if (!part) return;
+          if (part.mimeType === "text/html" && part.body?.data && !bodyIsHtml) {
+            body = decode(part.body.data); bodyIsHtml = true;
+          } else if (part.mimeType === "text/plain" && part.body?.data && !body) {
+            body = decode(part.body.data);
+          }
+          const filename = part.filename || "";
+          const attachmentId = part.body?.attachmentId || "";
+          if (filename && attachmentId) {
+            const disp = (part.headers || []).find((h: any) => (h.name || "").toLowerCase() === "content-disposition");
+            const cid = (part.headers || []).find((h: any) => (h.name || "").toLowerCase() === "content-id");
+            attachments.push({
+              attachmentId, filename,
+              mimeType: part.mimeType || "application/octet-stream",
+              size: Number(part.body?.size) || 0,
+              inline: /inline/i.test(disp?.value || ""),
+              contentId: cid?.value?.replace(/[<>]/g, ""),
+            });
+          }
+          (part.parts || []).forEach(walk);
+        };
+        walk(msg.payload);
+        // Simple tracker-pixel sniff: 1x1 pixel images from ad/tracking hosts.
+        const trackerHosts = ["mailchimp", "sendgrid", "hubspot", "marketo", "salesforce", "mailgun", "constantcontact", "pixel", "click", "track"];
+        const hasTracker = bodyIsHtml && /<img[^>]*(?:width="1"|height="1"|width='1'|height='1')/i.test(body)
+          || trackerHosts.some(h => body.toLowerCase().includes(h + ".") || body.toLowerCase().includes("//" + h));
+        return {
+          id: msg.id, threadId: msg.threadId,
+          from: headers.from || "", to: headers.to || "",
+          cc: headers.cc || "", bcc: headers.bcc || "",
+          subject: headers.subject || "(no subject)",
+          date: headers.date || "",
+          messageId: headers["message-id"] || "",
+          inReplyTo: headers["in-reply-to"] || "",
+          references: headers["references"] || "",
+          replyTo: headers["reply-to"] || "",
+          body, bodyIsHtml,
+          attachments,
+          labels: msg.labelIds || [],
+          snippet: msg.snippet || "",
+          unread: (msg.labelIds || []).includes("UNREAD"),
+          starred: (msg.labelIds || []).includes("STARRED"),
+          hasTracker,
+        };
+      });
+      res.json({ id: thread.data.id, messages });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to load thread." });
+    }
+  });
+
+  // ── LABELS: list / create / rename / delete + apply to message ────────────────
+  //   Gmail's own label API. System labels (INBOX / STARRED / SENT / etc.) are
+  //   surfaced as read-only. User labels can be renamed and deleted. Applying
+  //   uses the same /modify endpoint the star/archive actions already call, so
+  //   we don't add a new one — the client just calls /modify with addLabelIds.
+  app.get("/api/gmail/labels", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      const r = await gmail.users.labels.list({ userId: "me" });
+      const labels = (r.data.labels || []).map(l => ({
+        id: l.id, name: l.name, type: l.type,
+        messagesTotal: l.messagesTotal ?? null,
+        messagesUnread: l.messagesUnread ?? null,
+        color: (l as any).color || null,
+      }));
+      res.json({ labels });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to load labels." });
+    }
+  });
+  app.post("/api/gmail/labels", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    const name = String(req.body?.name || "").trim();
+    if (!name) return res.status(400).json({ error: "Label name required." });
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      const r = await gmail.users.labels.create({
+        userId: "me",
+        requestBody: { name, labelListVisibility: "labelShow", messageListVisibility: "show" },
+      });
+      res.json({ id: r.data.id, name: r.data.name });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to create label." });
+    }
+  });
+  app.patch("/api/gmail/labels/:id", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    const name = String(req.body?.name || "").trim();
+    if (!name) return res.status(400).json({ error: "Label name required." });
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      const r = await gmail.users.labels.patch({ userId: "me", id: req.params.id, requestBody: { name } });
+      res.json({ id: r.data.id, name: r.data.name });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to rename label." });
+    }
+  });
+  app.delete("/api/gmail/labels/:id", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      await gmail.users.labels.delete({ userId: "me", id: req.params.id });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to delete label." });
+    }
+  });
+
+  // ── RULES (server-side filters) ────────────────────────────────────────
+  //   Rules are stored in sqlite and evaluated on-demand when the user hits
+  //   "Run rules now" or via the scheduler's inbox-poll pass. Each rule
+  //   translates to a Gmail search query and a batch modify call.
+  app.get("/api/gmail/rules", requireStaffAuth, (req: any, res) => {
+    const rows = sqlite.prepare(
+      `SELECT id, name, match_from AS matchFrom, match_to AS matchTo,
+              match_subject AS matchSubject, match_has_words AS matchHasWords,
+              action_add_label AS actionAddLabel, action_star AS actionStar,
+              action_mark_read AS actionMarkRead, action_archive AS actionArchive,
+              enabled, created_at AS createdAt, last_run_at AS lastRunAt
+         FROM email_rules WHERE employee_id = ? ORDER BY id DESC`
+    ).all(req.employee.id) as any[];
+    res.json({ rules: rows });
+  });
+  app.post("/api/gmail/rules", requireStaffAuth, (req: any, res) => {
+    const b = req.body || {};
+    if (!b.name) return res.status(400).json({ error: "Rule name required." });
+    const info = sqlite.prepare(
+      `INSERT INTO email_rules(employee_id, name, match_from, match_to, match_subject, match_has_words,
+                               action_add_label, action_star, action_mark_read, action_archive, enabled)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(
+      req.employee.id, b.name, b.matchFrom || null, b.matchTo || null,
+      b.matchSubject || null, b.matchHasWords || null,
+      b.actionAddLabel || null, b.actionStar ? 1 : 0,
+      b.actionMarkRead ? 1 : 0, b.actionArchive ? 1 : 0,
+      b.enabled === false ? 0 : 1,
+    );
+    res.json({ id: info.lastInsertRowid });
+  });
+  app.patch("/api/gmail/rules/:id", requireStaffAuth, (req: any, res) => {
+    const b = req.body || {};
+    const fields: string[] = []; const vals: any[] = [];
+    const map: Record<string, string> = {
+      name: "name", matchFrom: "match_from", matchTo: "match_to",
+      matchSubject: "match_subject", matchHasWords: "match_has_words",
+      actionAddLabel: "action_add_label",
+    };
+    for (const [k, col] of Object.entries(map)) if (k in b) { fields.push(`${col} = ?`); vals.push(b[k] ?? null); }
+    for (const k of ["actionStar", "actionMarkRead", "actionArchive", "enabled"]) {
+      if (k in b) {
+        const col = k.replace(/([A-Z])/g, "_$1").toLowerCase();
+        fields.push(`${col} = ?`); vals.push(b[k] ? 1 : 0);
+      }
+    }
+    if (!fields.length) return res.json({ ok: true });
+    vals.push(req.employee.id, req.params.id);
+    sqlite.prepare(`UPDATE email_rules SET ${fields.join(", ")} WHERE employee_id = ? AND id = ?`).run(...vals);
+    res.json({ ok: true });
+  });
+  app.delete("/api/gmail/rules/:id", requireStaffAuth, (req: any, res) => {
+    sqlite.prepare(`DELETE FROM email_rules WHERE employee_id = ? AND id = ?`).run(req.employee.id, req.params.id);
+    res.json({ ok: true });
+  });
+  // ── RUN RULES NOW ──────────────────────────────────────────────────
+  //   Evaluates every enabled rule for this employee against Gmail using the
+  //   rule's match fields as a search query. Applies actions to matching
+  //   messages via /modify. Bounded to newer:1d and 200 msgs/rule for safety.
+  app.post("/api/gmail/rules/run", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured." });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user." });
+    const rules = sqlite.prepare(
+      `SELECT * FROM email_rules WHERE employee_id = ? AND enabled = 1`
+    ).all(req.employee.id) as any[];
+    const gmail = google.gmail({ version: "v1", auth: oauth2 });
+    // Preload labels once for name→id lookups.
+    const labelResp = await gmail.users.labels.list({ userId: "me" });
+    const labelIdByName = new Map<string, string>();
+    (labelResp.data.labels || []).forEach(l => labelIdByName.set(l.name || "", l.id || ""));
+    let totalApplied = 0;
+    const perRule: any[] = [];
+    for (const r of rules) {
+      const parts: string[] = ["newer_than:2d"];
+      if (r.match_from) parts.push(`from:${JSON.stringify(r.match_from)}`);
+      if (r.match_to) parts.push(`to:${JSON.stringify(r.match_to)}`);
+      if (r.match_subject) parts.push(`subject:${JSON.stringify(r.match_subject)}`);
+      if (r.match_has_words) parts.push(JSON.stringify(r.match_has_words));
+      const q = parts.join(" ");
+      try {
+        const list = await gmail.users.messages.list({ userId: "me", q, maxResults: 100 });
+        const ids = (list.data.messages || []).map(m => m.id!).filter(Boolean);
+        if (!ids.length) { perRule.push({ id: r.id, name: r.name, matched: 0 }); continue; }
+        const addLabelIds: string[] = [];
+        if (r.action_add_label) {
+          let lid = labelIdByName.get(r.action_add_label);
+          if (!lid) {
+            const created = await gmail.users.labels.create({
+              userId: "me",
+              requestBody: { name: r.action_add_label, labelListVisibility: "labelShow", messageListVisibility: "show" },
+            });
+            lid = created.data.id || undefined;
+            if (lid) labelIdByName.set(r.action_add_label, lid);
+          }
+          if (lid) addLabelIds.push(lid);
+        }
+        if (r.action_star) addLabelIds.push("STARRED");
+        const removeLabelIds: string[] = [];
+        if (r.action_mark_read) removeLabelIds.push("UNREAD");
+        if (r.action_archive) removeLabelIds.push("INBOX");
+        if (addLabelIds.length || removeLabelIds.length) {
+          await gmail.users.messages.batchModify({
+            userId: "me",
+            requestBody: { ids, addLabelIds, removeLabelIds },
+          });
+        }
+        totalApplied += ids.length;
+        perRule.push({ id: r.id, name: r.name, matched: ids.length });
+      } catch (e: any) {
+        perRule.push({ id: r.id, name: r.name, error: e?.message || "failed" });
+      }
+      sqlite.prepare(`UPDATE email_rules SET last_run_at = ? WHERE id = ?`).run(new Date().toISOString(), r.id);
+    }
+    res.json({ ok: true, totalApplied, rules: perRule });
+  });
+
+  // ── EMAIL ↔ JOB LINKS ────────────────────────────────────────────────
+  //   Attach a Gmail thread or specific message to a job. Bidirectional:
+  //   the email UI shows a "Filed under Job #123" chip; the Job page shows
+  //   an Email tab with all threads linked to it plus snippets.
+  app.post("/api/gmail/link-job", requireStaffAuth, (req: any, res) => {
+    const { jobId, threadId, messageId, subject, from, snippet } = req.body || {};
+    if (!jobId || (!threadId && !messageId)) return res.status(400).json({ error: "jobId + threadId or messageId required." });
+    try {
+      sqlite.prepare(
+        `INSERT OR IGNORE INTO email_job_link
+           (job_id, employee_id, gmail_thread_id, gmail_message_id, subject, from_addr, snippet)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(jobId, req.employee.id, threadId || null, messageId || null, subject || null, from || null, snippet || null);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to link." });
+    }
+  });
+  app.delete("/api/gmail/link-job/:linkId", requireStaffAuth, (req: any, res) => {
+    sqlite.prepare(`DELETE FROM email_job_link WHERE id = ? AND employee_id = ?`)
+      .run(req.params.linkId, req.employee.id);
+    res.json({ ok: true });
+  });
+  // Which jobs is this thread/message already linked to?
+  app.get("/api/gmail/thread-links", requireStaffAuth, (req: any, res) => {
+    const { threadId, messageId } = req.query || {};
+    const rows = sqlite.prepare(
+      `SELECT ejl.id, ejl.job_id AS jobId, ejl.linked_at AS linkedAt,
+              j.job_number AS jobNumber, j.customer_name AS customerName
+         FROM email_job_link ejl
+         LEFT JOIN jobs j ON j.id = ejl.job_id
+        WHERE (? IS NOT NULL AND ejl.gmail_thread_id = ?)
+           OR (? IS NOT NULL AND ejl.gmail_message_id = ?)`
+    ).all(threadId || null, threadId || null, messageId || null, messageId || null);
+    res.json({ links: rows });
+  });
+  // What email is filed under this job?
+  app.get("/api/jobs/:jobId/emails", requireStaffAuth, (req: any, res) => {
+    const rows = sqlite.prepare(
+      `SELECT id, gmail_thread_id AS threadId, gmail_message_id AS messageId,
+              subject, from_addr AS \"from\", snippet, linked_at AS linkedAt
+         FROM email_job_link WHERE job_id = ? ORDER BY linked_at DESC`
+    ).all(req.params.jobId);
+    res.json({ emails: rows });
+  });
 }

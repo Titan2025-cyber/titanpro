@@ -6,6 +6,7 @@ import {
   Star, Archive, MailOpen, ArrowLeft, X, Reply, ReplyAll, Forward,
   HelpCircle, Paperclip, File as FileIcon, Download, ChevronDown, Tag,
   MoreVertical, Undo2, Pen, Clock, CalendarClock, Briefcase, User as UserIcon,
+  AlertTriangle, Printer, Play,
 } from "lucide-react";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -23,6 +24,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Badge } from "@/components/ui/badge";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 import { useAuth } from "@/lib/auth";
 import type { Email } from "@shared/schema";
 import { fmtDateShort } from "@/lib/dates";
@@ -140,6 +142,15 @@ export default function EmailPage() {
   const [jobPickerOpen, setJobPickerOpen] = useState(false);
   const [contactSuggest, setContactSuggest] = useState<{ field: "to" | "cc" | "bcc"; q: string; items: Array<{ email: string; name: string; source: string }> } | null>(null);
   const [currentDraftId, setCurrentDraftId] = useState<string | null>(null);
+
+  // Push C additions
+  const [labelsOpen, setLabelsOpen] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [threadOpen, setThreadOpen] = useState<string | null>(null); // threadId
+  const [labelPickerFor, setLabelPickerFor] = useState<string | null>(null); // messageId
+  const [jobLinkFor, setJobLinkFor] = useState<{ threadId?: string; messageId?: string; subject?: string; from?: string; snippet?: string } | null>(null);
+  const [inlineReplyOpen, setInlineReplyOpen] = useState(false);
+  const [inlineReplyText, setInlineReplyText] = useState("");
 
   const [gmailInput, setGmailInput] = useState("");
   const [liveSelectedId, setLiveSelectedId] = useState<string | null>(null);
@@ -439,6 +450,91 @@ export default function EmailPage() {
   const snoozedQuery = useQuery<{ snoozed: Array<{ id: number; messageId: string; wakeAt: string; created_at: string }> }>({
     queryKey: ["/api/gmail/snooze"],
     enabled: gmailLive && folder === "snoozed",
+  });
+
+  // ── Push C: labels ─────────────────────────────────────────────────
+  const labelsQuery = useQuery<{ labels: Array<{ id: string; name: string; type: string; messagesTotal: number | null; messagesUnread: number | null }> }>({
+    queryKey: ["/api/gmail/labels"],
+    enabled: gmailLive,
+  });
+  const createLabel = useMutation({
+    mutationFn: (name: string) => apiRequest("POST", "/api/gmail/labels", { name }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/gmail/labels"] }); toast({ title: "Label created" }); },
+  });
+  const renameLabel = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => apiRequest("PATCH", `/api/gmail/labels/${id}`, { name }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/gmail/labels"] }); toast({ title: "Label renamed" }); },
+  });
+  const deleteLabel = useMutation({
+    mutationFn: (id: string) => apiRequest("DELETE", `/api/gmail/labels/${id}`),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/gmail/labels"] }); toast({ title: "Label deleted" }); },
+  });
+  const applyLabelToMessage = useMutation({
+    mutationFn: async ({ messageId, addLabelIds, removeLabelIds }: { messageId: string; addLabelIds?: string[]; removeLabelIds?: string[] }) => {
+      return apiRequest("POST", `/api/gmail/messages/${messageId}/modify`, { addLabelIds, removeLabelIds });
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] }),
+  });
+
+  // ── Push C: rules ──────────────────────────────────────────────────
+  const rulesQuery = useQuery<{ rules: Array<any> }>({
+    queryKey: ["/api/gmail/rules"],
+    enabled: gmailLive && rulesOpen,
+  });
+  const saveRule = useMutation({
+    mutationFn: (rule: any) => rule.id ? apiRequest("PATCH", `/api/gmail/rules/${rule.id}`, rule) : apiRequest("POST", "/api/gmail/rules", rule),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/gmail/rules"] }); toast({ title: "Rule saved" }); },
+  });
+  const deleteRule = useMutation({
+    mutationFn: (id: number) => apiRequest("DELETE", `/api/gmail/rules/${id}`),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/gmail/rules"] }); toast({ title: "Rule deleted" }); },
+  });
+  const runRules = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/gmail/rules/run").then(r => r.json()),
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/rules"] });
+      toast({ title: "Rules ran", description: `${data.totalApplied || 0} messages affected` });
+    },
+  });
+
+  // ── Push C: thread view ─────────────────────────────────────────────
+  const threadQuery = useQuery<{ id: string; messages: Array<any> }>({
+    queryKey: [`/api/gmail/threads/${threadOpen}`],
+    enabled: gmailLive && !!threadOpen,
+  });
+
+  // ── Push C: job links ──────────────────────────────────────────────
+  const threadLinksQuery = useQuery<{ links: Array<{ id: number; jobId: number; jobNumber?: string; customerName?: string }> }>({
+    queryKey: [`/api/gmail/thread-links`, threadOpen || liveSelectedId],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (threadOpen) params.set("threadId", threadOpen);
+      else if (liveSelectedId) params.set("messageId", liveSelectedId);
+      const r = await apiRequest("GET", `/api/gmail/thread-links?${params.toString()}`);
+      return r.json();
+    },
+    enabled: gmailLive && !!(threadOpen || liveSelectedId),
+  });
+  const linkJob = useMutation({
+    mutationFn: (payload: any) => apiRequest("POST", "/api/gmail/link-job", payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/thread-links"] });
+      toast({ title: "Filed under job" });
+    },
+  });
+  const unlinkJob = useMutation({
+    mutationFn: (linkId: number) => apiRequest("DELETE", `/api/gmail/link-job/${linkId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/thread-links"] });
+      toast({ title: "Unlinked" });
+    },
+  });
+
+  // ── Push C: undo trash / undo archive ─────────────────────────────
+  const untrashMessage = useMutation({
+    mutationFn: (id: string) => apiRequest("POST", `/api/gmail/messages/${id}/untrash`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] }),
   });
 
   // Contact autocomplete: debounce lookups so we don't hammer the server on
@@ -746,7 +842,16 @@ export default function EmailPage() {
         (cur) => cur ? { messages: cur.messages.filter(m => m.id !== id) } : cur,
       );
       if (liveSelectedId === id) setLiveSelectedId(null);
-      toast({ title: "Archived" });
+      toast({
+        title: "Archived",
+        description: "Message archived",
+        action: (
+          <ToastAction altText="Undo archive" onClick={async () => {
+            await apiRequest("POST", `/api/gmail/messages/${id}/modify`, { add: ["INBOX"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] });
+          }}>Undo</ToastAction>
+        ),
+      });
     },
   );
 
@@ -768,7 +873,14 @@ export default function EmailPage() {
         (cur) => cur ? { messages: cur.messages.filter(m => m.id !== id) } : cur,
       );
       if (liveSelectedId === id) setLiveSelectedId(null);
-      toast({ title: "Moved to Trash" });
+      toast({
+        title: "Moved to Trash",
+        action: (
+          <ToastAction altText="Undo trash" onClick={() => untrashMessage.mutate(id)}>
+            Undo
+          </ToastAction>
+        ),
+      });
     },
   );
 
@@ -953,7 +1065,8 @@ export default function EmailPage() {
               type="search"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder={gmailLive ? "Search mail  (press / to focus)" : "Search"}
+              placeholder={gmailLive ? "Search mail (from:, subject:, has:attachment, is:unread…)" : "Search"}
+              title={"Gmail operators: from: to: subject: has:attachment is:unread newer_than:7d \"quoted phrase\""}
               disabled={!gmailLive}
               className="w-full h-10 pl-10 pr-10 rounded-lg bg-neutral-100 dark:bg-neutral-900 border border-transparent focus:border-neutral-300 dark:focus:border-neutral-700 focus:bg-white dark:focus:bg-neutral-950 focus:outline-none text-sm disabled:opacity-60"
             />
@@ -970,6 +1083,24 @@ export default function EmailPage() {
           </div>
         </form>
         <div className="flex items-center gap-1 ml-auto">
+          {gmailLive && (
+            <>
+              <button
+                onClick={() => setLabelsOpen(true)}
+                className="px-2.5 py-1.5 text-xs rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"
+                aria-label="Manage labels"
+              >
+                Labels
+              </button>
+              <button
+                onClick={() => setRulesOpen(true)}
+                className="px-2.5 py-1.5 text-xs rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"
+                aria-label="Manage rules"
+              >
+                Rules
+              </button>
+            </>
+          )}
           <button
             data-testid="button-shortcuts-help"
             onClick={() => setShortcutsOpen(true)}
@@ -1431,7 +1562,7 @@ export default function EmailPage() {
                 <button
                   key={f.id}
                   data-testid={`nav-folder-${f.id}`}
-                  onClick={() => { setFolder(f.id); setSelectedId(null); setLiveSelectedId(null); }}
+                  onClick={() => { setFolder(f.id); setSelectedId(null); setLiveSelectedId(null); setSearchTerm(""); setSearchQuery(""); }}
                   className={`w-full flex items-center gap-3 h-8 pl-6 pr-4 rounded-r-full text-sm transition-colors ${
                     active
                       ? "bg-[#fce8e6] text-[#c5221f] font-semibold"
@@ -1446,6 +1577,31 @@ export default function EmailPage() {
                 </button>
               );
             })}
+            {gmailLive && labelsQuery.data?.labels && labelsQuery.data.labels.some(l => l.type === "user") && (
+              <div className="mt-3 pl-6 pr-4">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-neutral-500 mb-1">Labels</div>
+                {labelsQuery.data.labels.filter(l => l.type === "user").sort((a, b) => (a.name || "").localeCompare(b.name || "")).slice(0, 40).map(l => {
+                  const active = searchQuery === `label:${JSON.stringify(l.name)}`;
+                  return (
+                    <button
+                      key={l.id}
+                      onClick={() => {
+                        const q = `label:${JSON.stringify(l.name)}`;
+                        setSearchTerm(q); setSearchQuery(q);
+                        setFolder("inbox"); setSelectedId(null); setLiveSelectedId(null);
+                      }}
+                      className={`w-full flex items-center gap-2 h-7 px-2 -ml-2 rounded text-xs transition-colors ${
+                        active ? "bg-[#fce8e6] text-[#c5221f] font-semibold" : "text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200/60 dark:hover:bg-neutral-800"
+                      }`}
+                    >
+                      <Tag className="w-3 h-3 shrink-0" />
+                      <span className="flex-1 text-left truncate">{l.name}</span>
+                      {l.messagesUnread ? <span className="text-neutral-500">{l.messagesUnread}</span> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </nav>
 
           {/* Signed-in identity + owner diag block — pinned bottom */}
@@ -1640,6 +1796,19 @@ export default function EmailPage() {
                   starred={!!liveDetail.starred}
                   onDownloadAttachment={(att) => downloadAttachment(liveDetail.id, att)}
                   onSnooze={() => { setSnoozeAt(""); setSnoozeOpen(liveDetail.id); }}
+                  onOpenThread={() => setThreadOpen(liveDetail.threadId || liveDetail.id)}
+                  onFileToJob={() => setJobLinkFor({
+                    threadId: liveDetail.threadId,
+                    messageId: liveDetail.id,
+                    subject: liveDetail.subject,
+                    from: liveDetail.from,
+                    snippet: liveDetail.snippet,
+                  })}
+                  jobLinks={threadLinksQuery.data?.links || []}
+                  onUnlinkJob={(linkId) => unlinkJob.mutate(linkId)}
+                  labels={labelsQuery.data?.labels || []}
+                  onAddLabel={(labelId) => applyLabelToMessage.mutate({ messageId: liveDetail.id, addLabelIds: [labelId] })}
+                  onRemoveLabel={(labelId) => applyLabelToMessage.mutate({ messageId: liveDetail.id, removeLabelIds: [labelId] })}
                 />
               ) : (
                 <EmptyPane message="Could not load this message." />
@@ -1776,6 +1945,79 @@ export default function EmailPage() {
 
       {/* ── Attach from job ── */}
       <JobPickerDialog open={jobPickerOpen} onOpenChange={setJobPickerOpen} onAttach={attachFromJob} />
+
+      {/* ── Labels manager ── */}
+      <LabelsManagerDialog
+        open={labelsOpen}
+        onOpenChange={setLabelsOpen}
+        labels={labelsQuery.data?.labels || []}
+        onCreate={(name) => createLabel.mutate(name)}
+        onRename={(id, name) => renameLabel.mutate({ id, name })}
+        onDelete={(id) => deleteLabel.mutate(id)}
+      />
+
+      {/* ── Rules manager ── */}
+      <RulesManagerDialog
+        open={rulesOpen}
+        onOpenChange={setRulesOpen}
+        rules={rulesQuery.data?.rules || []}
+        onSave={(rule) => saveRule.mutate(rule)}
+        onDelete={(id) => deleteRule.mutate(id)}
+        onRunNow={() => runRules.mutate()}
+        running={runRules.isPending}
+      />
+
+      {/* ── Thread (conversation) dialog ── */}
+      <Dialog open={!!threadOpen} onOpenChange={(v) => { if (!v) setThreadOpen(null); }}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{threadQuery.data?.messages?.[0]?.subject || "Conversation"}</DialogTitle>
+          </DialogHeader>
+          {threadQuery.isLoading && <div className="text-sm text-neutral-500">Loading conversation…</div>}
+          <div className="space-y-3">
+            {(threadQuery.data?.messages || []).map((m, idx, arr) => (
+              <ThreadMessage
+                key={m.id}
+                msg={m}
+                defaultOpen={idx === arr.length - 1}
+              />
+            ))}
+          </div>
+          <DialogFooter className="flex-wrap gap-2">
+            <Button variant="outline" onClick={() => window.print()}><FileText className="w-4 h-4 mr-1" /> Print / PDF</Button>
+            <Button variant="outline" onClick={() => {
+              const m = threadQuery.data?.messages?.[0];
+              if (m) setJobLinkFor({ threadId: threadQuery.data?.id, subject: m.subject, from: m.from, snippet: m.snippet });
+            }}><Briefcase className="w-4 h-4 mr-1" /> File under job</Button>
+            <Button onClick={() => {
+              const last = threadQuery.data?.messages?.[threadQuery.data.messages.length - 1];
+              if (last) {
+                setThreadOpen(null);
+                buildReplyCompose({
+                  ...last,
+                  to: last.from,
+                }, "reply");
+              }
+            }} className="bg-[#c5221f] hover:bg-[#a01a17] text-white"><Reply className="w-4 h-4 mr-1" /> Reply</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Job link picker ── */}
+      <Dialog open={!!jobLinkFor} onOpenChange={(v) => { if (!v) setJobLinkFor(null); }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>File email under job</DialogTitle>
+          </DialogHeader>
+          <JobLinkPickerBody
+            onPick={(jobId) => {
+              if (jobLinkFor) linkJob.mutate({ jobId, ...jobLinkFor });
+              setJobLinkFor(null);
+            }}
+            onCancel={() => setJobLinkFor(null)}
+          />
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
         <DialogContent className="sm:max-w-md">
@@ -2059,7 +2301,7 @@ const SYSTEM_LABELS = new Set([
 
 function GmailDetail({
   detail, onBack, onReply, onReplyAll, onForward, onArchive, onTrash, onMarkUnread, onToggleStar, starred, onSnooze,
-  onDownloadAttachment,
+  onDownloadAttachment, onOpenThread, onFileToJob, jobLinks, onUnlinkJob, labels, onAddLabel, onRemoveLabel,
 }: {
   detail: any;
   onBack: () => void;
@@ -2073,6 +2315,13 @@ function GmailDetail({
   starred: boolean;
   onDownloadAttachment: (att: { attachmentId: string; filename: string; mimeType: string }) => void;
   onSnooze: () => void;
+  onOpenThread?: () => void;
+  onFileToJob?: () => void;
+  jobLinks?: Array<{ id: number; jobId: number; jobNumber?: string; customerName?: string }>;
+  onUnlinkJob?: (linkId: number) => void;
+  labels?: Array<{ id: string; name: string; type: string }>;
+  onAddLabel?: (labelId: string) => void;
+  onRemoveLabel?: (labelId: string) => void;
 }) {
   const sender = parseSender(detail.from || "");
   const isHtml = /<[a-z][\s\S]*>/i.test(detail.body || "");
@@ -2173,7 +2422,77 @@ function GmailDetail({
         >
           <Forward className="w-4 h-4" />
         </button>
+        {onOpenThread && detail.threadId && (
+          <button
+            onClick={onOpenThread}
+            className="p-2 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"
+            aria-label="View conversation"
+            title="View conversation"
+          >
+            <Mail className="w-4 h-4" />
+          </button>
+        )}
+        {onFileToJob && (
+          <button
+            onClick={onFileToJob}
+            className="p-2 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"
+            aria-label="File under job"
+            title="File under job"
+          >
+            <Briefcase className="w-4 h-4" />
+          </button>
+        )}
+        {labels && onAddLabel && labels.filter(l => l.type === "user").length > 0 && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="p-2 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"
+                aria-label="Apply label"
+                title="Apply label"
+              >
+                <Tag className="w-4 h-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto">
+              {labels.filter(l => l.type === "user").sort((a, b) => a.name.localeCompare(b.name)).map(l => {
+                const has = (detail.labels || []).includes(l.id);
+                return (
+                  <DropdownMenuItem
+                    key={l.id}
+                    onSelect={() => has ? onRemoveLabel?.(l.id) : onAddLabel(l.id)}
+                  >
+                    <span className={`inline-block w-3 mr-2 ${has ? "text-[#c5221f]" : "text-neutral-400"}`}>{has ? "✓" : "·"}</span>
+                    <span>{l.name}</span>
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
+
+      {/* Job link chips + tracker warning */}
+      {(jobLinks && jobLinks.length > 0) && (
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {jobLinks.map(l => (
+            <span key={l.id} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-900/50">
+              <Briefcase className="w-3 h-3" />
+              Filed under Job {l.jobNumber || `#${l.jobId}`}{l.customerName ? ` · ${l.customerName}` : ""}
+              {onUnlinkJob && (
+                <button onClick={() => onUnlinkJob(l.id)} className="ml-1 opacity-60 hover:opacity-100" aria-label="Unlink">
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+      {detail.hasTracker && (
+        <div className="mb-3 inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-900/50">
+          <AlertTriangle className="w-3.5 h-3.5" />
+          This message contains a tracking pixel.
+        </div>
+      )}
 
       <div className="flex items-start justify-between gap-4 mb-4">
         <h1
@@ -2548,5 +2867,272 @@ export function JobPickerDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Push C — helper components
+// ══════════════════════════════════════════════════════════════════════════
+
+function LabelsManagerDialog({
+  open, onOpenChange, labels, onCreate, onRename, onDelete,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  labels: Array<{ id: string; name: string; type: string }>;
+  onCreate: (name: string) => void;
+  onRename: (id: string, name: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [newName, setNewName] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
+  const userLabels = labels.filter(l => l.type === "user").sort((a, b) => a.name.localeCompare(b.name));
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Manage labels</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="flex gap-2">
+            <Input
+              placeholder="New label name"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && newName.trim()) {
+                  onCreate(newName.trim());
+                  setNewName("");
+                }
+              }}
+            />
+            <Button
+              onClick={() => { if (newName.trim()) { onCreate(newName.trim()); setNewName(""); } }}
+              disabled={!newName.trim()}
+              className="bg-[#c5221f] hover:bg-[#a01a17] text-white"
+            >Create</Button>
+          </div>
+          <div className="border rounded max-h-80 overflow-y-auto">
+            {userLabels.length === 0 && (
+              <div className="p-3 text-sm text-neutral-500">No custom labels yet.</div>
+            )}
+            {userLabels.map(l => (
+              <div key={l.id} className="flex items-center gap-2 px-3 py-2 border-b last:border-b-0">
+                <Tag className="w-3.5 h-3.5 text-neutral-500" />
+                {editingId === l.id ? (
+                  <>
+                    <Input
+                      value={editingName}
+                      onChange={(e) => setEditingName(e.target.value)}
+                      className="h-7 text-sm flex-1"
+                      autoFocus
+                      onKeyDown={(e) => { if (e.key === "Enter") { onRename(l.id, editingName.trim()); setEditingId(null); } }}
+                    />
+                    <Button size="sm" variant="ghost" onClick={() => { onRename(l.id, editingName.trim()); setEditingId(null); }}>Save</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>Cancel</Button>
+                  </>
+                ) : (
+                  <>
+                    <span className="flex-1 text-sm">{l.name}</span>
+                    <Button size="sm" variant="ghost" onClick={() => { setEditingId(l.id); setEditingName(l.name); }}>Rename</Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button size="sm" variant="ghost" className="text-red-600 hover:text-red-700">Delete</Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Delete label “{l.name}”?</AlertDialogTitle>
+                          <AlertDialogDescription>Messages tagged with this label will remain in Gmail; only the label is removed.</AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => onDelete(l.id)} className="bg-red-600 hover:bg-red-700">Delete</AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RulesManagerDialog({
+  open, onOpenChange, rules, onSave, onDelete, onRunNow, running,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  rules: Array<any>;
+  onSave: (rule: any) => void;
+  onDelete: (id: number) => void;
+  onRunNow: () => void;
+  running: boolean;
+}) {
+  const emptyRule = () => ({
+    name: "", matchFrom: "", matchTo: "", matchSubject: "", matchHasWords: "",
+    actionAddLabel: "", actionStar: false, actionMarkRead: false, actionArchive: false, enabled: true,
+  });
+  const [draft, setDraft] = useState<any>(null);
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Email rules</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="flex justify-between items-center">
+            <p className="text-xs text-neutral-500">Rules run on inbox messages from the last 2 days when triggered manually.</p>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" onClick={onRunNow} disabled={running}>
+                <Play className="w-3.5 h-3.5 mr-1" /> {running ? "Running…" : "Run now"}
+              </Button>
+              <Button size="sm" onClick={() => setDraft(emptyRule())} className="bg-[#c5221f] hover:bg-[#a01a17] text-white">
+                <Plus className="w-3.5 h-3.5 mr-1" /> New rule
+              </Button>
+            </div>
+          </div>
+
+          {draft && (
+            <div className="border rounded p-3 space-y-2 bg-neutral-50 dark:bg-neutral-900">
+              <div className="flex gap-2">
+                <Input placeholder="Rule name (e.g. State Farm claims)" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Input placeholder='From contains… (e.g. "@statefarm.com")' value={draft.matchFrom} onChange={(e) => setDraft({ ...draft, matchFrom: e.target.value })} />
+                <Input placeholder="To contains…" value={draft.matchTo} onChange={(e) => setDraft({ ...draft, matchTo: e.target.value })} />
+                <Input placeholder='Subject contains… (e.g. "claim")' value={draft.matchSubject} onChange={(e) => setDraft({ ...draft, matchSubject: e.target.value })} />
+                <Input placeholder="Body/subject has words…" value={draft.matchHasWords} onChange={(e) => setDraft({ ...draft, matchHasWords: e.target.value })} />
+              </div>
+              <div className="grid grid-cols-2 gap-2 items-center">
+                <Input placeholder="Then add label… (creates if missing)" value={draft.actionAddLabel} onChange={(e) => setDraft({ ...draft, actionAddLabel: e.target.value })} />
+                <div className="flex flex-wrap gap-3 text-sm">
+                  <label className="inline-flex items-center gap-1.5"><Checkbox checked={draft.actionStar} onCheckedChange={(v) => setDraft({ ...draft, actionStar: !!v })} /> Star</label>
+                  <label className="inline-flex items-center gap-1.5"><Checkbox checked={draft.actionMarkRead} onCheckedChange={(v) => setDraft({ ...draft, actionMarkRead: !!v })} /> Mark read</label>
+                  <label className="inline-flex items-center gap-1.5"><Checkbox checked={draft.actionArchive} onCheckedChange={(v) => setDraft({ ...draft, actionArchive: !!v })} /> Archive</label>
+                  <label className="inline-flex items-center gap-1.5"><Checkbox checked={draft.enabled} onCheckedChange={(v) => setDraft({ ...draft, enabled: !!v })} /> Enabled</label>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="outline" onClick={() => setDraft(null)}>Cancel</Button>
+                <Button size="sm" onClick={() => { onSave(draft); setDraft(null); }} disabled={!draft.name.trim()} className="bg-[#c5221f] hover:bg-[#a01a17] text-white">Save</Button>
+              </div>
+            </div>
+          )}
+
+          <div className="border rounded max-h-96 overflow-y-auto">
+            {rules.length === 0 && !draft && (
+              <div className="p-4 text-sm text-neutral-500 text-center">No rules yet. Click New rule to create one.</div>
+            )}
+            {rules.map((r: any) => (
+              <div key={r.id} className="px-3 py-2 border-b last:border-b-0 flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium truncate">{r.name}</span>
+                    {!r.enabled && <span className="text-xs px-1.5 rounded bg-neutral-200 dark:bg-neutral-800 text-neutral-600">Disabled</span>}
+                  </div>
+                  <div className="text-xs text-neutral-500 truncate">
+                    {[r.match_from && `from:${r.match_from}`, r.match_subject && `subject:${r.match_subject}`, r.match_has_words && `has:${r.match_has_words}`].filter(Boolean).join(" • ")}
+                    {r.action_add_label && <> → label <b>{r.action_add_label}</b></>}
+                    {r.action_star && " · star"}
+                    {r.action_mark_read && " · mark read"}
+                    {r.action_archive && " · archive"}
+                  </div>
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => setDraft({
+                  id: r.id, name: r.name, matchFrom: r.match_from || "", matchTo: r.match_to || "",
+                  matchSubject: r.match_subject || "", matchHasWords: r.match_has_words || "",
+                  actionAddLabel: r.action_add_label || "", actionStar: !!r.action_star,
+                  actionMarkRead: !!r.action_mark_read, actionArchive: !!r.action_archive, enabled: !!r.enabled,
+                })}>Edit</Button>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button size="sm" variant="ghost" className="text-red-600">Delete</Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Delete rule?</AlertDialogTitle>
+                      <AlertDialogDescription>“{r.name}” will no longer run.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => onDelete(r.id)} className="bg-red-600 hover:bg-red-700">Delete</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            ))}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ThreadMessage({ msg, defaultOpen }: { msg: any; defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const isHtml = /<[a-z][\s\S]*>/i.test(msg.body || "");
+  return (
+    <div className="border rounded">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-neutral-50 dark:hover:bg-neutral-900"
+      >
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium truncate">{msg.from}</div>
+          {!open && <div className="text-xs text-neutral-500 truncate">{msg.snippet}</div>}
+        </div>
+        {msg.hasTracker && <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />}
+        <span className="text-xs text-neutral-500 whitespace-nowrap">{new Date(msg.date).toLocaleString()}</span>
+        <ChevronDown className={`w-4 h-4 text-neutral-400 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="px-3 pb-3 text-sm">
+          <div className="text-xs text-neutral-500 mb-2">To: {msg.to}{msg.cc ? ` · Cc: ${msg.cc}` : ""}</div>
+          {isHtml ? (
+            <div className="prose prose-sm max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: msg.body }} />
+          ) : (
+            <pre className="whitespace-pre-wrap font-sans">{msg.body}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function JobLinkPickerBody({ onPick, onCancel }: { onPick: (jobId: number) => void; onCancel: () => void }) {
+  const jobsQ = useQuery<{ jobs: Array<any> }>({ queryKey: ["/api/jobs"] });
+  const [q, setQ] = useState("");
+  const filtered = (jobsQ.data?.jobs || []).filter(j => {
+    if (!q) return true;
+    const term = q.toLowerCase();
+    return String(j.jobNumber || "").toLowerCase().includes(term)
+      || String(j.customerName || "").toLowerCase().includes(term)
+      || String(j.address || "").toLowerCase().includes(term);
+  }).slice(0, 40);
+  return (
+    <div className="space-y-3">
+      <Input placeholder="Search jobs by number, customer, or address…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
+      <div className="border rounded max-h-80 overflow-y-auto">
+        {filtered.length === 0 && <div className="p-3 text-sm text-neutral-500">No jobs match.</div>}
+        {filtered.map(j => (
+          <button
+            key={j.id}
+            onClick={() => onPick(j.id)}
+            className="w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-neutral-50 dark:hover:bg-neutral-900"
+          >
+            <div className="text-sm font-medium">Job {j.jobNumber} · {j.customerName || "—"}</div>
+            <div className="text-xs text-neutral-500 truncate">{j.address || ""}</div>
+          </button>
+        ))}
+      </div>
+      <DialogFooter>
+        <Button variant="outline" onClick={onCancel}>Cancel</Button>
+      </DialogFooter>
+    </div>
   );
 }
