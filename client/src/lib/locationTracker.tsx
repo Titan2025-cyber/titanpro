@@ -64,11 +64,30 @@ export function LocationTracker() {
           })
         );
         const { latitude, longitude, accuracy } = pos.coords;
-        await apiRequest("POST", "/api/tech-locations/me", { latitude, longitude, accuracy });
-      } catch {
-        // Permission denied, timeout, offline — all swallowed. The next tick
-        // will retry, and the server's 10-minute freshness filter naturally
-        // hides pins for phones that go dark.
+        // Report the fix to the server AND, best-effort, log the round-trip
+        // response so we can tell from the browser console whether the ping
+        // is silently being dropped (server: 'not_clocked_in') vs actually
+        // succeeding. This diagnostic doesn't cost anything in production.
+        const res = await apiRequest("POST", "/api/tech-locations/me", { latitude, longitude, accuracy });
+        try {
+          const body = await res.clone().json();
+          // eslint-disable-next-line no-console
+          console.info("[LocationTracker] fix pushed", { latitude, longitude, accuracy, response: body });
+        } catch {}
+      } catch (err: any) {
+        // Log the reason so the diagnostic screen can pick it up. We still
+        // don't surface it to the tech — they can't do anything about
+        // permission-denied except re-grant it in the browser settings.
+        const code = err?.code;
+        const reason = code === 1 ? "permission_denied"
+          : code === 2 ? "position_unavailable"
+          : code === 3 ? "timeout"
+          : (err?.message || "unknown");
+        // eslint-disable-next-line no-console
+        console.warn("[LocationTracker] fix failed:", reason);
+        try {
+          (window as any).__lastGeoError = { reason, at: new Date().toISOString() };
+        } catch {}
       } finally {
         inFlightRef.current = false;
       }

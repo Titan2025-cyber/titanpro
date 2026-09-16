@@ -7577,6 +7577,53 @@ Approve in Partner Portal → Admin View.
     res.json({ ok: true, tracked: true });
   }));
 
+  // GET /api/tech-locations/diag
+  //   Owner-only. Everything the map needs, WITHOUT the 10-minute freshness
+  //   filter, so we can see when the pipe is silent (no rows), stale (rows
+  //   too old), or wired to the wrong identity (row keyed on a name that
+  //   doesn't match any open time_clock row). Also lists every currently
+  //   open time_clock row so we can spot mismatches at a glance.
+  app.get("/api/tech-locations/diag", requireRole("owner", "admin"), wrapAsync((_req: any, res: any) => {
+    const nowMs = Date.now();
+    const cutoffMs = nowMs - 10 * 60 * 1000;
+    const locs: any[] = sqlite.prepare(
+      "SELECT * FROM tech_locations ORDER BY captured_at DESC"
+    ).all();
+    const openClocks: any[] = sqlite.prepare(
+      "SELECT id, employee_id, employee_name, job_id, clock_in_at FROM time_clock WHERE clock_out_at IS NULL ORDER BY clock_in_at DESC"
+    ).all();
+    const emps: any[] = sqlite.prepare(
+      "SELECT id, name, role, is_active FROM employees WHERE is_active = 1 ORDER BY name"
+    ).all();
+    res.json({
+      serverTime: new Date(nowMs).toISOString(),
+      freshnessCutoff: new Date(cutoffMs).toISOString(),
+      openClocks: openClocks.map(c => ({
+        clockId: c.id,
+        employeeId: c.employee_id,
+        employeeName: c.employee_name,
+        jobId: c.job_id,
+        clockInAt: c.clock_in_at,
+        ageSec: Math.round((nowMs - Date.parse(c.clock_in_at)) / 1000),
+      })),
+      techLocations: locs.map(l => {
+        const t = Date.parse(l.captured_at);
+        return {
+          employeeId: l.employee_id,
+          employeeName: l.employee_name,
+          latitude: l.latitude,
+          longitude: l.longitude,
+          accuracyMeters: l.accuracy_meters,
+          jobId: l.job_id,
+          capturedAt: l.captured_at,
+          ageSec: Number.isFinite(t) ? Math.round((nowMs - t) / 1000) : null,
+          isFresh: Number.isFinite(t) && t >= cutoffMs,
+        };
+      }),
+      activeEmployees: emps,
+    });
+  }));
+
   // GET /api/tech-locations
   //   Owner/admin only. Returns each clocked-in tech's latest fix, filtered
   //   to fixes captured in the last 10 minutes (stale fixes are hidden so a
