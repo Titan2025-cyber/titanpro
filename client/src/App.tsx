@@ -353,7 +353,11 @@ function AuthenticatedRoutes() {
         <Route path="/partner-hub" component={() => <Page component={PartnerHub} name="PartnerHub" />} />
         <Route path="/marketing-hub" component={() => <Page component={MarketingHub} name="MarketingHub" />} />
         <Route path="/equipment-hub" component={() => <Page component={EquipmentHub} name="EquipmentHub" />} />
-        <Route path="/comms-hub" component={() => <Page component={CommsHub} name="CommsHub" />} />
+        {/* Email and Messaging (Dispatch) are now standalone top-level modules.
+            Old CommsHub wrapper is retired — /comms-hub redirects to /email
+            below so old bookmarks still resolve. */}
+        <Route path="/email" component={() => <Page component={EmailPage} name="Email" />} />
+        <Route path="/messaging" component={() => <Page component={Messaging} name="Messaging" />} />
 
         {/* Legacy insurance routes — redirect into consolidated hubs (preserves bookmarks) */}
         <Route path="/supplements"><Redirect to="/supplement-hub?tab=active" /></Route>
@@ -396,8 +400,7 @@ function AuthenticatedRoutes() {
         <Route path="/ar-aging"><Redirect to="/ar-hub?tab=aging" /></Route>
 
         {/* Comms */}
-        <Route path="/messaging"><Redirect to="/comms-hub?tab=messaging" /></Route>
-        <Route path="/email"><Redirect to="/comms-hub?tab=email" /></Route>
+        <Route path="/comms-hub"><Redirect to="/email" /></Route>
 
         {/* Tools */}
         <Route path="/job-templates" component={() => <Page component={JobTemplates} name="JobTemplates" />} />

@@ -52,18 +52,46 @@ const navGroups: NavGroup[] = [
   // "Lead & Asbestos" tab (client/src/components/JobHazmatPanel.tsx).
   // Route + page file left in place so PRs stay bisectable. ─────────────────
 
+  // --- 0a. EMAIL ---
+  // Standalone top-level module. Was the "Email" tab inside the old
+  // Communications hub; promoted to first-class navigation per Cody.
+  {
+    label: "Email",
+    icon: Mail,
+    description: "Gmail inbox and compose",
+    defaultOpen: true,
+    items: [
+      { href: "/email", label: "Inbox", icon: Mail, permission: "messaging" },
+    ],
+  },
+
+  // --- 0b. DISPATCH ---
+  // Was the "Messaging" tab inside the old Communications hub; promoted to
+  // a standalone top-level module. Renamed "Dispatch" at Cody's request
+  // (the old Field Ops "Dispatch" entry was renamed "Scheduling Hub" to
+  // avoid the collision). URL /messaging preserved.
+  {
+    label: "Dispatch",
+    icon: MessageSquare,
+    description: "Internal + customer messaging",
+    defaultOpen: true,
+    items: [
+      { href: "/messaging", label: "Messages", icon: MessageSquare, permission: "messaging" },
+    ],
+  },
+
   // ─── 0. TITAN ASSISTANT ───────────────────────────────────────────────────
-  // DISABLED per Cody 2026-09-15 — will re-enable when the assistant is fixed.
-  // Keeping the block commented so we can drop it back in without re-authoring.
-  // {
-  //   label: "Titan Assistant",
-  //   icon: Sparkles,
-  //   description: "AI helper for the whole platform",
-  //   defaultOpen: true,
-  //   items: [
-  //     { href: "/assistant", label: "Open Assistant", icon: Sparkles },
-  //   ],
-  // },
+  // Standalone module above Core so it reads as a first-class surface, not
+  // buried inside daily-ops navigation.
+  {
+    label: "Titan Assistant",
+    icon: Sparkles,
+    description: "AI helper for the whole platform",
+    defaultOpen: true,
+    items: [
+      { href: "/assistant", label: "Open Assistant", icon: Sparkles },
+    ],
+  },
 
   // ─── 1. CORE ──────────────────────────────────────────────────────────────
   {
@@ -100,7 +128,7 @@ const navGroups: NavGroup[] = [
       // — Consolidated hubs (each combines several tools as tabs) —
       // Dispatch (was "Scheduling & Dispatch" — Schedule tab moved to Core).
       // Hub still bundles Dispatch, Appt Reminders, and Departure Checklist.
-      { href: "/scheduling-hub", label: "Dispatch", icon: Grid3X3, permission: "scheduling" },
+      { href: "/scheduling-hub", label: "Scheduling Hub", icon: Grid3X3, permission: "scheduling" },
       // Technicians hub retired entirely. Scorecard, Training (LMS), and
       // Certifications now live under HR Management > Workforce. Old
       // deep links (/tech-scorecard, /tech-lms, /certifications) redirect
@@ -212,14 +240,8 @@ const navGroups: NavGroup[] = [
   },
 
   // ─── 7. COMMS ─────────────────────────────────────────────────────────────
-  {
-    label: "Comms",
-    icon: MessageSquare,
-    description: "Messages, email & SMS",
-    items: [
-      { href: "/comms-hub", label: "Communications", icon: MessageSquare, permission: "messaging" },
-    ],
-  },
+  // Comms group retired 2026-09-16 --- split into Email (group 0a) and
+  // Dispatch (group 0b). /comms-hub redirects to /email in App.tsx.
 
   // ─── 8. DOCUMENTS ─────────────────────────────────────────────────────────
   {
