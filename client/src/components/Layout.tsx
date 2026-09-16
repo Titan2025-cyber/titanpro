@@ -80,18 +80,8 @@ const navGroups: NavGroup[] = [
     ],
   },
 
-  // ─── 0. TITAN ASSISTANT ───────────────────────────────────────────────────
-  // Standalone module above Core so it reads as a first-class surface, not
-  // buried inside daily-ops navigation.
-  {
-    label: "Titan Assistant",
-    icon: Sparkles,
-    description: "AI helper for the whole platform",
-    defaultOpen: true,
-    items: [
-      { href: "/assistant", label: "Open Assistant", icon: Sparkles },
-    ],
-  },
+  // Titan Assistant sidebar group DISABLED per Cody 2026-09-16 — kept in repo, will re-enable later
+
 
   // ─── 1. CORE ──────────────────────────────────────────────────────────────
   {
