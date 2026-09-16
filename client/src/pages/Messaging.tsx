@@ -2,10 +2,13 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { UserSelect } from "@/components/UserSelect";
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
-import { Plus, Send, Hash, Briefcase, MapPin, FileText, Check, Sparkles, ArrowRight, UserPlus, X } from "lucide-react";
+import { Plus, Send, Hash, Briefcase, MapPin, FileText, Check, Sparkles, ArrowRight, UserPlus, X, MoreVertical, Users, Trash2, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -572,11 +575,24 @@ export default function Messaging() {
   const [author, setAuthor] = useState("Cody Brantley");
   const [newChannelOpen, setNewChannelOpen] = useState(false);
   const [channelName, setChannelName] = useState("");
+  const [channelDescription, setChannelDescription] = useState("");
+  const [newChannelMemberIds, setNewChannelMemberIds] = useState<number[]>([]);
   const [jobDialogMsg, setJobDialogMsg] = useState<Message | null>(null);
   const [newLeadOpen, setNewLeadOpen] = useState(false);
+  // Manage / rename / delete state for the channel kebab menu.
+  const [manageChannel, setManageChannel] = useState<Channel | null>(null);
+  const [manageMemberIds, setManageMemberIds] = useState<number[]>([]);
+  const [renameChannel, setRenameChannel] = useState<Channel | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [deleteChannel, setDeleteChannel] = useState<Channel | null>(null);
+  const { toast } = useToast();
 
   const [, navigate] = useLocation();
   const { data: channels = [] } = useQuery<Channel[]>({ queryKey: ["/api/channels"] });
+  const { data: employees = [] } = useQuery<Array<{ id: number; name: string; role: string; isActive?: boolean }>>({
+    queryKey: ["/api/employees"],
+  });
+  const activeEmployees = employees.filter(e => e.isActive !== false);
   const { data: jobs = [] } = useQuery<Job[]>({ queryKey: ["/api/jobs"] });
   const { data: messages = [] } = useQuery<Message[]>({
     queryKey: ["/api/channels", activeChannelId, "messages"],
@@ -593,8 +609,76 @@ export default function Messaging() {
   });
 
   const createChannel = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/channels", { name: channelName.toLowerCase().replace(/\s+/g, "-"), description: "" }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/channels"] }); setNewChannelOpen(false); setChannelName(""); },
+    mutationFn: () => apiRequest("POST", "/api/channels", {
+      name: channelName.toLowerCase().trim().replace(/\s+/g, "-"),
+      description: channelDescription.trim() || undefined,
+      memberIds: newChannelMemberIds,
+    }),
+    onSuccess: async (res) => {
+      const body = await res.json().catch(() => ({}));
+      queryClient.invalidateQueries({ queryKey: ["/api/channels"] });
+      setNewChannelOpen(false);
+      setChannelName("");
+      setChannelDescription("");
+      setNewChannelMemberIds([]);
+      if (body?.id) setActiveChannelId(body.id);
+      toast({ title: "Channel created", description: `#${body?.name || channelName}` });
+    },
+    onError: async (err: any) => {
+      const msg = err?.body?.error || err?.message || "Could not create channel.";
+      toast({ title: "Create failed", description: msg, variant: "destructive" });
+    },
+  });
+
+  // Save member changes on an existing channel.
+  const updateMembers = useMutation({
+    mutationFn: () => apiRequest("PATCH", `/api/channels/${manageChannel!.id}`, { memberIds: manageMemberIds }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/channels"] });
+      setManageChannel(null);
+      toast({ title: "Members updated" });
+    },
+    onError: async (err: any) => {
+      const msg = err?.body?.error || err?.message || "Could not update members.";
+      toast({ title: "Update failed", description: msg, variant: "destructive" });
+    },
+  });
+
+  // Rename a channel.
+  const renameChannelMut = useMutation({
+    mutationFn: () => apiRequest("PATCH", `/api/channels/${renameChannel!.id}`, {
+      name: renameValue.toLowerCase().trim().replace(/\s+/g, "-"),
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/channels"] });
+      setRenameChannel(null);
+      setRenameValue("");
+      toast({ title: "Channel renamed" });
+    },
+    onError: async (err: any) => {
+      const msg = err?.body?.error || err?.message || "Could not rename channel.";
+      toast({ title: "Rename failed", description: msg, variant: "destructive" });
+    },
+  });
+
+  // Delete a channel (and its message history + membership rows on the server).
+  const deleteChannelMut = useMutation({
+    mutationFn: () => apiRequest("DELETE", `/api/channels/${deleteChannel!.id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/channels"] });
+      // If we deleted the active channel, move focus to the first surviving one.
+      if (activeChannelId === deleteChannel!.id) {
+        const rest = channels.filter(c => c.id !== deleteChannel!.id);
+        setActiveChannelId(rest[0]?.id ?? null);
+      }
+      const name = deleteChannel!.name;
+      setDeleteChannel(null);
+      toast({ title: "Channel deleted", description: `#${name}` });
+    },
+    onError: async (err: any) => {
+      const msg = err?.body?.error || err?.message || "Could not delete channel.";
+      toast({ title: "Delete failed", description: msg, variant: "destructive" });
+    },
   });
 
   return (
@@ -608,31 +692,123 @@ export default function Messaging() {
         <div className="flex-1 overflow-y-auto py-2 px-2">
           <div className="flex items-center justify-between px-2 mb-1">
             <p className="text-xs uppercase tracking-wider opacity-50">Channels</p>
-            <Dialog open={newChannelOpen} onOpenChange={setNewChannelOpen}>
+            <Dialog open={newChannelOpen} onOpenChange={(o) => {
+              setNewChannelOpen(o);
+              if (!o) { setChannelName(""); setChannelDescription(""); setNewChannelMemberIds([]); }
+            }}>
               <DialogTrigger asChild>
-                <button className="text-white opacity-50 hover:opacity-100"><Plus className="w-3.5 h-3.5" /></button>
+                <button className="text-white opacity-50 hover:opacity-100" data-testid="button-new-channel"><Plus className="w-3.5 h-3.5" /></button>
               </DialogTrigger>
-              <DialogContent>
-                <DialogHeader><DialogTitle>New Channel</DialogTitle></DialogHeader>
+              <DialogContent className="max-w-md">
+                <DialogHeader>
+                  <DialogTitle>New Channel</DialogTitle>
+                  <DialogDescription>Create a channel and choose who can see it. Leave members empty for a public channel visible to everyone.</DialogDescription>
+                </DialogHeader>
                 <div className="space-y-3">
-                  <div><Label>Channel Name</Label><Input value={channelName} onChange={e => setChannelName(e.target.value)} placeholder="e.g. water-damage" /></div>
-                  <Button className="w-full" onClick={() => createChannel.mutate()} disabled={!channelName.trim()}>Create</Button>
+                  <div>
+                    <Label>Channel Name</Label>
+                    <Input
+                      value={channelName}
+                      onChange={e => setChannelName(e.target.value)}
+                      placeholder="e.g. water-damage"
+                      data-testid="input-channel-name"
+                    />
+                  </div>
+                  <div>
+                    <Label>Description (optional)</Label>
+                    <Input
+                      value={channelDescription}
+                      onChange={e => setChannelDescription(e.target.value)}
+                      placeholder="What's this channel for?"
+                      data-testid="input-channel-description"
+                    />
+                  </div>
+                  <div>
+                    <Label>Members ({newChannelMemberIds.length} selected)</Label>
+                    <p className="text-xs text-muted-foreground mb-2">Empty = public. You'll be added automatically when you pick anyone.</p>
+                    <div className="max-h-52 overflow-y-auto border rounded-md p-2 space-y-1">
+                      {activeEmployees.map(emp => (
+                        <label key={emp.id} className="flex items-center gap-2 py-1 px-1 rounded hover:bg-muted cursor-pointer text-sm">
+                          <Checkbox
+                            checked={newChannelMemberIds.includes(emp.id)}
+                            onCheckedChange={(chk) => {
+                              setNewChannelMemberIds(prev => chk ? [...prev, emp.id] : prev.filter(x => x !== emp.id));
+                            }}
+                            data-testid={`checkbox-newchan-${emp.id}`}
+                          />
+                          <span className="flex-1">{emp.name}</span>
+                          <span className="text-xs text-muted-foreground capitalize">{emp.role}</span>
+                        </label>
+                      ))}
+                      {activeEmployees.length === 0 && <p className="text-xs text-muted-foreground py-2 text-center">No active employees yet.</p>}
+                    </div>
+                  </div>
+                  <Button
+                    className="w-full bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red)/0.85)]"
+                    onClick={() => createChannel.mutate()}
+                    disabled={!channelName.trim() || createChannel.isPending}
+                    data-testid="button-create-channel"
+                  >
+                    {createChannel.isPending ? "Creating…" : "Create Channel"}
+                  </Button>
                 </div>
               </DialogContent>
             </Dialog>
           </div>
-          {channels.map(ch => (
-            <button
-              key={ch.id}
-              onClick={() => setActiveChannelId(ch.id)}
-              data-testid={`channel-${ch.name}`}
-              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-left ${(activeChannelId || channels[0]?.id) === ch.id ? "bg-white/20 text-white" : "text-white/60 hover:bg-white/10 hover:text-white"}`}
-            >
-              <Hash className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">{ch.name}</span>
-              {isJobChannel(ch.name) && <Briefcase className="w-3 h-3 ml-auto shrink-0 opacity-60" />}
-            </button>
-          ))}
+          {channels.map(ch => {
+            const isActive = (activeChannelId || channels[0]?.id) === ch.id;
+            const memberCount = (ch as any).memberIds?.length || 0;
+            return (
+              <div key={ch.id} className={`group flex items-center gap-1 pr-1 rounded ${isActive ? "bg-white/20" : "hover:bg-white/10"}`}>
+                <button
+                  onClick={() => setActiveChannelId(ch.id)}
+                  data-testid={`channel-${ch.name}`}
+                  className={`flex-1 min-w-0 flex items-center gap-2 px-2 py-1.5 text-sm text-left ${isActive ? "text-white" : "text-white/60 group-hover:text-white"}`}
+                >
+                  <Hash className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">{ch.name}</span>
+                  {isJobChannel(ch.name) && <Briefcase className="w-3 h-3 shrink-0 opacity-60" />}
+                  {memberCount > 0 && <span className="ml-auto text-[10px] opacity-50">{memberCount}</span>}
+                </button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      className="p-1 rounded opacity-0 group-hover:opacity-70 hover:opacity-100 text-white"
+                      onClick={(e) => e.stopPropagation()}
+                      data-testid={`channel-menu-${ch.name}`}
+                    >
+                      <MoreVertical className="w-3.5 h-3.5" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-48">
+                    <DropdownMenuItem
+                      onClick={() => {
+                        setManageChannel(ch);
+                        setManageMemberIds((ch as any).memberIds || []);
+                      }}
+                      data-testid={`menu-manage-${ch.name}`}
+                    >
+                      <Users className="w-4 h-4 mr-2" />Manage members
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => { setRenameChannel(ch); setRenameValue(ch.name); }}
+                      data-testid={`menu-rename-${ch.name}`}
+                    >
+                      <Pencil className="w-4 h-4 mr-2" />Rename
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      className="text-destructive focus:text-destructive"
+                      onClick={() => setDeleteChannel(ch)}
+                      data-testid={`menu-delete-${ch.name}`}
+                    >
+                      <Trash2 className="w-4 h-4 mr-2" />Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            );
+          })}
         </div>
         <div className="px-3 py-2 border-t border-white/10">
           <UserSelect
@@ -763,6 +939,84 @@ export default function Messaging() {
           onOpenChange={(v) => { if (!v) setJobDialogMsg(null); }}
         />
       )}
+
+      {/* Manage members */}
+      <Dialog open={!!manageChannel} onOpenChange={(o) => { if (!o) setManageChannel(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>#{manageChannel?.name} — Members</DialogTitle>
+            <DialogDescription>Check anyone who should see this channel. Uncheck everyone to make it public.</DialogDescription>
+          </DialogHeader>
+          <div className="max-h-72 overflow-y-auto border rounded-md p-2 space-y-1">
+            {activeEmployees.map(emp => (
+              <label key={emp.id} className="flex items-center gap-2 py-1 px-1 rounded hover:bg-muted cursor-pointer text-sm">
+                <Checkbox
+                  checked={manageMemberIds.includes(emp.id)}
+                  onCheckedChange={(chk) => {
+                    setManageMemberIds(prev => chk ? [...prev, emp.id] : prev.filter(x => x !== emp.id));
+                  }}
+                  data-testid={`checkbox-manage-${emp.id}`}
+                />
+                <span className="flex-1">{emp.name}</span>
+                <span className="text-xs text-muted-foreground capitalize">{emp.role}</span>
+              </label>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setManageChannel(null)}>Cancel</Button>
+            <Button onClick={() => updateMembers.mutate()} disabled={updateMembers.isPending} data-testid="button-save-members">
+              {updateMembers.isPending ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Rename */}
+      <Dialog open={!!renameChannel} onOpenChange={(o) => { if (!o) { setRenameChannel(null); setRenameValue(""); } }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Rename #{renameChannel?.name}</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={renameValue}
+            onChange={e => setRenameValue(e.target.value)}
+            placeholder="new-name"
+            data-testid="input-rename-channel"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenameChannel(null)}>Cancel</Button>
+            <Button
+              onClick={() => renameChannelMut.mutate()}
+              disabled={!renameValue.trim() || renameValue.trim() === renameChannel?.name || renameChannelMut.isPending}
+              data-testid="button-save-rename"
+            >
+              {renameChannelMut.isPending ? "Saving…" : "Rename"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirm */}
+      <AlertDialog open={!!deleteChannel} onOpenChange={(o) => { if (!o) setDeleteChannel(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete #{deleteChannel?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes the channel and every message posted in it. This can't be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => deleteChannelMut.mutate()}
+              data-testid="button-confirm-delete-channel"
+            >
+              {deleteChannelMut.isPending ? "Deleting…" : "Delete channel"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

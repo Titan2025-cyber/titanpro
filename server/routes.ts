@@ -7,7 +7,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { registerCrudGapRoutes } from "./routes_crud_gaps";
 import { registerSuite4Routes } from "./routes_suite4";
 import { registerQuickAddAndESignRoutes } from "./routes_quickadd_esign";
-import { registerAuthRoutes, makeAuthMiddleware } from "./routes_auth";
+import { registerAuthRoutes, makeAuthMiddleware, writeAudit } from "./routes_auth";
 import { makeNotifier } from "./notify_bell";
 import { sendMentionEmails } from "./notify_email";
 import { sendShiftAssignmentEmail } from "./notify_tags";
@@ -955,17 +955,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const body = `${lossLabel} loss for ${customerName}${addr}.${assigned}`;
       const nowIso = new Date().toISOString();
 
-      // 1) Post to the team messaging channel (general, id=1)
+      // 1) Post to the market's Dispatch channel (#aug or #cola). #general
+      //    was removed 2026-09-16 — the two market channels are the only
+      //    Dispatch surfaces now. Route by address: any SC address (or a
+      //    Columbia-market job) lands in #cola; everything else lands in
+      //    #aug so nothing goes silent when the address is missing.
       const channels = storage.getChannels();
-      const generalChannel = channels.find((c) => c.name === "general" || c.id === 1) || channels[0];
-      if (generalChannel) {
+      const addrL = String(job.address || "").toLowerCase();
+      const isCola = /\b(sc|south carolina|columbia|west columbia|cayce|lexington|irmo|chapin|newberry|orangeburg|aiken|sumter)\b/.test(addrL);
+      const targetName = isCola ? "cola" : "aug";
+      const marketChannel = channels.find((c) => (c.name || "").toLowerCase() === targetName) || channels.find((c) => (c.name || "").toLowerCase() === "aug") || channels[0];
+      if (marketChannel) {
         const chanMsg = [
           `🆕 New job entered: ${job.jobNumber}`,
           `${lossLabel} loss${addr}`,
           `Customer: ${customerName}${assigned}`,
           `Status: ${job.status || "lead"}`,
         ].join("\n");
-        storage.createMessage({ channelId: generalChannel.id, author: "Titan Pro Bot", body: chanMsg });
+        storage.createMessage({ channelId: marketChannel.id, author: "Titan Pro Bot", body: chanMsg });
       }
 
       // 2) Per-employee notification for every active employee — now also
@@ -2264,13 +2271,207 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // ── Channels & Messages ───────────────────────────────────────────────────
-  app.get("/api/channels", (_req, res) => { res.json(storage.getChannels()); });
-  app.post("/api/channels", (req, res) => { res.json(storage.createChannel(req.body)); });
-  app.get("/api/channels/:id/messages", (req, res) => { res.json(storage.getMessages(Number(req.params.id))); });
-  app.post("/api/channels/:id/messages", (req, res) => {
-    const msg = storage.createMessage({ ...req.body, channelId: Number(req.params.id) });
+  // Protected channels — previously #aug/#cola were locked from delete/rename.
+  // Cody wants full control over every channel (2026-09-16), so nothing is
+  // protected. Keeping the constant + isProtected shape so client code that
+  // reads `isProtected` continues to compile; every channel now returns false.
+  const PROTECTED_CHANNELS = new Set<string>();
+
+  // Membership helper: returns the set of employee_ids on a channel. A
+  // channel with zero rows is treated as public (visible to everyone).
+  function channelMemberIds(channelId: number): Set<number> {
+    const rows = sqlite
+      .prepare("SELECT employee_id FROM channel_members WHERE channel_id = ?")
+      .all(channelId) as Array<{ employee_id: number }>;
+    return new Set(rows.map(r => r.employee_id));
+  }
+  function canUserSeeChannel(channelId: number, employeeId: number, role: string): boolean {
+    // Owner + admin always see everything.
+    if (role === "owner" || role === "admin") return true;
+    const ids = channelMemberIds(channelId);
+    if (ids.size === 0) return true; // public
+    return ids.has(employeeId);
+  }
+
+  // GET /api/channels \u2014 list every channel the caller is a member of (or
+  // that has no membership rows = public). Each row is enriched with the
+  // full memberIds list so the client can render pills / manage members.
+  app.get("/api/channels", requireStaffAuth, (req, res) => {
+    const emp = (req as any).employee;
+    const all = storage.getChannels();
+    const visible = all.filter(c => canUserSeeChannel(c.id, emp.id, emp.role));
+    const withMembers = visible.map(c => ({
+      ...c,
+      memberIds: Array.from(channelMemberIds(c.id)),
+      isProtected: PROTECTED_CHANNELS.has((c.name || "").toLowerCase()),
+    }));
+    res.json(withMembers);
+  });
+
+  // POST /api/channels \u2014 create a new channel. Body: { name, description?,
+  // memberIds?: number[] }. Creator is auto-added to the member list so they
+  // never lock themselves out. Empty memberIds => public channel.
+  app.post("/api/channels", requireStaffAuth, (req, res) => {
+    const emp = (req as any).employee;
+    const name = String(req.body?.name || "").trim();
+    const description = req.body?.description ? String(req.body.description).trim() : null;
+    const memberIdsRaw: any[] = Array.isArray(req.body?.memberIds) ? req.body.memberIds : [];
+    if (!name) return res.status(400).json({ error: "Channel name is required." });
+    const nameL = name.toLowerCase();
+    if (PROTECTED_CHANNELS.has(nameL)) {
+      return res.status(400).json({ error: `"${name}" is reserved. Pick a different channel name.` });
+    }
+    const existing = storage.getChannels().find(c => (c.name || "").toLowerCase() === nameL);
+    if (existing) return res.status(409).json({ error: `A channel named "${existing.name}" already exists.` });
+
+    const created = storage.createChannel({ name, description } as any);
+    // Persist is_private + created_by directly — the drizzle schema type doesn't
+    // include them so we use the raw sqlite bindings.
+    try {
+      sqlite.prepare("UPDATE channels SET is_private = ?, created_by = ? WHERE id = ?")
+        .run(memberIdsRaw.length > 0 ? 1 : 0, emp.id, created.id);
+    } catch { /* columns may not exist on very old DBs — non-fatal */ }
+    const memberSet = new Set<number>(memberIdsRaw.map((x: any) => Number(x)).filter((n: number) => Number.isFinite(n) && n > 0));
+    if (memberSet.size > 0) memberSet.add(emp.id);
+    const insertMember = sqlite.prepare(
+      "INSERT OR IGNORE INTO channel_members (channel_id, employee_id, created_at) VALUES (?, ?, ?)"
+    );
+    const now = new Date().toISOString();
+    for (const id of memberSet) insertMember.run(created.id, id, now);
+    res.json({ ...created, memberIds: Array.from(memberSet), isProtected: false });
+  });
+
+  // PATCH /api/channels/:id \u2014 rename or replace member list. Members are
+  // REPLACED (not merged) when memberIds is provided. Sending memberIds: []
+  // resets the channel to public.
+  app.patch("/api/channels/:id", requireStaffAuth, (req, res) => {
+    const emp = (req as any).employee;
+    const id = Number(req.params.id);
+    const chan = storage.getChannels().find(c => c.id === id);
+    if (!chan) return res.status(404).json({ error: "Channel not found." });
+    if (!canUserSeeChannel(id, emp.id, emp.role)) return res.status(403).json({ error: "You are not a member of this channel." });
+    const isProtected = PROTECTED_CHANNELS.has((chan.name || "").toLowerCase());
+
+    if (typeof req.body?.name === "string") {
+      const newName = req.body.name.trim();
+      if (isProtected && newName.toLowerCase() !== (chan.name || "").toLowerCase()) {
+        return res.status(400).json({ error: "This channel cannot be renamed." });
+      }
+      if (!newName) return res.status(400).json({ error: "Channel name cannot be empty." });
+      const dupe = storage.getChannels().find(c => c.id !== id && (c.name || "").toLowerCase() === newName.toLowerCase());
+      if (dupe) return res.status(409).json({ error: `A channel named "${dupe.name}" already exists.` });
+      sqlite.prepare("UPDATE channels SET name = ? WHERE id = ?").run(newName, id);
+    }
+    if ("description" in (req.body || {})) {
+      const desc = req.body.description ? String(req.body.description).trim() : null;
+      sqlite.prepare("UPDATE channels SET description = ? WHERE id = ?").run(desc, id);
+    }
+
+    if (Array.isArray(req.body?.memberIds)) {
+      if (isProtected) {
+        return res.status(400).json({ error: "This channel is always visible to everyone; membership cannot be restricted." });
+      }
+      const newIds = new Set<number>((req.body.memberIds as any[]).map((x: any) => Number(x)).filter((n: number) => Number.isFinite(n) && n > 0));
+      if (newIds.size > 0 && emp.role !== "owner" && emp.role !== "admin") newIds.add(emp.id);
+      const tx = sqlite.transaction(() => {
+        sqlite.prepare("DELETE FROM channel_members WHERE channel_id = ?").run(id);
+        const ins = sqlite.prepare("INSERT OR IGNORE INTO channel_members (channel_id, employee_id, created_at) VALUES (?, ?, ?)");
+        const now = new Date().toISOString();
+        for (const eid of newIds) ins.run(id, eid, now);
+        sqlite.prepare("UPDATE channels SET is_private = ? WHERE id = ?").run(newIds.size > 0 ? 1 : 0, id);
+      });
+      tx();
+    }
+
+    const updated = storage.getChannels().find(c => c.id === id);
+    res.json({
+      ...updated,
+      memberIds: Array.from(channelMemberIds(id)),
+      isProtected,
+    });
+  });
+
+  // DELETE /api/channels/:id \u2014 hard delete channel + its messages.
+  // Protected channels (#aug/#cola) cannot be deleted. Owner/admin only.
+  app.delete("/api/channels/:id", requireRole("owner", "admin"), (req, res) => {
+    const id = Number(req.params.id);
+    const chan = storage.getChannels().find(c => c.id === id);
+    if (!chan) return res.status(404).json({ error: "Channel not found." });
+    if (PROTECTED_CHANNELS.has((chan.name || "").toLowerCase())) {
+      return res.status(400).json({ error: "This channel is permanent and cannot be deleted." });
+    }
+    const tx = sqlite.transaction(() => {
+      sqlite.prepare("DELETE FROM messages WHERE channel_id = ?").run(id);
+      sqlite.prepare("DELETE FROM channel_members WHERE channel_id = ?").run(id);
+      sqlite.prepare("DELETE FROM channels WHERE id = ?").run(id);
+    });
+    tx();
+    res.json({ ok: true });
+  });
+
+  // Messages \u2014 gated on membership.
+  app.get("/api/channels/:id/messages", requireStaffAuth, (req, res) => {
+    const emp = (req as any).employee;
+    const id = Number(req.params.id);
+    if (!canUserSeeChannel(id, emp.id, emp.role)) return res.status(403).json({ error: "You are not a member of this channel." });
+    res.json(storage.getMessages(id));
+  });
+  app.post("/api/channels/:id/messages", requireStaffAuth, (req, res) => {
+    const emp = (req as any).employee;
+    const id = Number(req.params.id);
+    if (!canUserSeeChannel(id, emp.id, emp.role)) return res.status(403).json({ error: "You are not a member of this channel." });
+    const msg = storage.createMessage({ ...req.body, channelId: id });
     res.json(msg);
   });
+
+  // \u2500\u2500 Dispatch: open lead queue \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // Every job that has not yet been "contacted" (contacted_at IS NULL) AND
+  // is still in the early pipeline (progressStage pending_sale OR status
+  // new/lead) shows up here. Newest first.
+  app.get("/api/dispatch/leads", requireStaffAuth, (_req, res) => {
+    const rows = sqlite.prepare(`
+      SELECT j.id, j.job_number as jobNumber, j.address, j.description,
+             j.loss_type as lossType, j.assigned_tech as assignedTech,
+             j.status, j.progress_stage as progressStage,
+             j.contacted_at as contactedAt,
+             j.created_at as createdAt,
+             c.name as customerName, c.phone as customerPhone, c.email as customerEmail
+      FROM jobs j
+      LEFT JOIN contacts c ON c.id = j.contact_id
+      WHERE (j.contacted_at IS NULL OR TRIM(j.contacted_at) = '')
+        AND (j.progress_stage = 'pending_sale' OR j.status = 'new' OR j.status = 'lead')
+        AND (j.status IS NULL OR j.status <> 'closed')
+      ORDER BY datetime(j.created_at) DESC
+      LIMIT 200
+    `).all();
+    res.json(rows);
+  });
+
+  // POST /api/jobs/:id/mark-contacted \u2014 flag lead as worked so it drops off
+  // the Dispatch queue. Idempotent.
+  app.post("/api/jobs/:id/mark-contacted", requireStaffAuth, (req, res) => {
+    const id = Number(req.params.id);
+    const emp = (req as any).employee;
+    const j = storage.getJob(id);
+    if (!j) return res.status(404).json({ error: "Job not found." });
+    if (!(j as any).contactedAt) {
+      sqlite.prepare("UPDATE jobs SET contacted_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+    }
+    try { writeAudit(sqlite, emp.id, emp.name, "lead.contacted", "job", id, j.jobNumber || null); } catch {}
+    res.json({ ok: true });
+  });
+
+  // POST /api/jobs/:id/mark-uncontacted \u2014 undo, put back on the queue.
+  app.post("/api/jobs/:id/mark-uncontacted", requireStaffAuth, (req, res) => {
+    const id = Number(req.params.id);
+    const emp = (req as any).employee;
+    const j = storage.getJob(id);
+    if (!j) return res.status(404).json({ error: "Job not found." });
+    sqlite.prepare("UPDATE jobs SET contacted_at = NULL WHERE id = ?").run(id);
+    try { writeAudit(sqlite, emp.id, emp.name, "lead.uncontacted", "job", id, j.jobNumber || null); } catch {}
+    res.json({ ok: true });
+  });
+
 
   // ── Parse a channel message into a Job file (AUG / Cola intake) ────────────
   // Recognizes labeled fields on any line (case-insensitive), e.g.
@@ -2610,12 +2811,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         `📞 Cody Brantley: 706-922-0154`,
       ].join("\n");
 
-      // Post to general channel (id=1)
+      // Post to the market's Dispatch channel (#aug default, #cola if the
+      // job address looks South Carolina). #general was removed 2026-09-16.
       try {
         const channels = storage.getChannels();
-        const generalChannel = channels.find(c => c.name === "general" || c.id === 1);
-        if (generalChannel) {
-          storage.createMessage({ channelId: generalChannel.id, author: "Titan Pro Bot", body: alertMsg });
+        const j: any = storage.getJob ? storage.getJob(Number(jobId)) : null;
+        const addrL = String(j?.address || "").toLowerCase();
+        const isCola = /\b(sc|south carolina|columbia|west columbia|cayce|lexington|irmo|chapin|newberry|orangeburg|aiken|sumter)\b/.test(addrL);
+        const targetName = isCola ? "cola" : "aug";
+        const dispatchChannel = channels.find(c => (c.name || "").toLowerCase() === targetName) || channels.find(c => (c.name || "").toLowerCase() === "aug") || channels[0];
+        if (dispatchChannel) {
+          storage.createMessage({ channelId: dispatchChannel.id, author: "Titan Pro Bot", body: alertMsg });
         }
       } catch (e) { /* channel may not exist */ }
 

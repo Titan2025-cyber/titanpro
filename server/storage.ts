@@ -829,6 +829,35 @@ if (!dryingCols.includes("missed_reason")) {
   sqlite.exec(`ALTER TABLE drying_records ADD COLUMN missed_reason TEXT`);
 }
 
+// ── Dispatch: channel membership + lead-contact tracking (Cody 2026-09-16) ──
+// channel_members: which employees see + can post to a private channel. If
+// a channel has zero rows here it is treated as PUBLIC (visible to all
+// staff). #aug and #cola stay public via this convention.
+sqlite.exec(`CREATE TABLE IF NOT EXISTS channel_members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id INTEGER NOT NULL,
+  employee_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT ''
+)`);
+sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_channel_members_ce ON channel_members(channel_id, employee_id)`);
+
+// channels.is_private: explicit flag so a channel with the members table
+// empty for a fresh entry can still be marked private (defense in depth).
+const channelCols = (sqlite.prepare("PRAGMA table_info(channels)").all() as any[]).map((c: any) => c.name);
+if (!channelCols.includes("is_private")) {
+  sqlite.exec(`ALTER TABLE channels ADD COLUMN is_private INTEGER DEFAULT 0`);
+}
+if (!channelCols.includes("created_by")) {
+  sqlite.exec(`ALTER TABLE channels ADD COLUMN created_by INTEGER`);
+}
+
+// jobs.contacted_at: timestamp when a lead has been worked (customer
+// contacted / first action taken). Used to drop the job off the Dispatch
+// lead queue. NULL = still an open lead.
+if (!jobCols.includes("contacted_at")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN contacted_at TEXT`);
+}
+
 // ── Object storage columns ────────────────────────────────────────────────
 // Backfill storage_key columns onto every table that previously held image
 // or file blobs as base64 data URLs. When Railway object storage is
@@ -1087,18 +1116,16 @@ function seed() {
   sqlite.prepare(`INSERT INTO job_costs (job_id, category, description, quantity, unit_cost, total, vendor, cost_date, phase, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(2, "material", "Cabinetry & drywall materials", 1, 6200, 6200, "Building Supply", "2026-08-08", "reconstruction", now);
   sqlite.prepare(`INSERT INTO job_costs (job_id, category, description, quantity, unit_cost, total, vendor, cost_date, phase, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(2, "labor", "Reconstruction crew – framing & finish", 40, 48, 1920, "In-house", "2026-08-12", "reconstruction", now);
 
-  // Channels
-  sqlite.prepare(`INSERT INTO channels (name, description, created_at) VALUES (?, ?, ?)`).run("general", "Company-wide announcements", now);
-  sqlite.prepare(`INSERT INTO channels (name, description, created_at) VALUES (?, ?, ?)`).run("field-ops", "Field technician coordination", now);
-  sqlite.prepare(`INSERT INTO channels (name, description, created_at) VALUES (?, ?, ?)`).run("estimating", "Estimate reviews and approvals", now);
-  sqlite.prepare(`INSERT INTO channels (name, description, created_at) VALUES (?, ?, ?)`).run("insurance", "Insurance carrier negotiations", now);
+  // Channels — Dispatch only surfaces the two market channels (Cody
+  // 2026-09-16, explicitly authorized deletion of the four legacy channels).
+  // The idempotent boot cleanup below prunes any that exist from prior boots.
   sqlite.prepare(`INSERT INTO channels (name, description, created_at) VALUES (?, ?, ?)`).run("aug", "Augusta, GA market — post new jobs here", now);
   sqlite.prepare(`INSERT INTO channels (name, description, created_at) VALUES (?, ?, ?)`).run("cola", "Columbia, SC market — post new jobs here", now);
 
   // Messages
   sqlite.prepare(`INSERT INTO messages (channel_id, author, body, created_at) VALUES (?, ?, ?, ?)`).run(1, "Cody Brantley", "Good morning team! Big week ahead — let's crush it.", now);
-  sqlite.prepare(`INSERT INTO messages (channel_id, author, body, created_at) VALUES (?, ?, ?, ?)`).run(2, "John", "On site at Hayes job. Starting water extraction now.", now);
-  sqlite.prepare(`INSERT INTO messages (channel_id, author, body, created_at) VALUES (?, ?, ?, ?)`).run(2, "Mason", "Heading to Thornton job for soot cleaning.", now);
+  sqlite.prepare(`INSERT INTO messages (channel_id, author, body, created_at) VALUES (?, ?, ?, ?)`).run(1, "John", "On site at Hayes job. Starting water extraction now.", now);
+  sqlite.prepare(`INSERT INTO messages (channel_id, author, body, created_at) VALUES (?, ?, ?, ?)`).run(1, "Mason", "Heading to Thornton job for soot cleaning.", now);
 
   // Emails
   sqlite.prepare(`INSERT INTO emails (folder, "from", "to", subject, body, read, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).run("inbox", "tbradley@statefarm.com", "cody@titanrestorationllc.com", "RE: Hayes Claim SF-2026-44821", "Hi Cody, I reviewed the estimate for the Hayes claim. The adjuster approved the mitigation scope. Please proceed and send the final invoice once complete.\n\nBest,\nTom Bradley\nState Farm Agent", 0, now);
@@ -1120,6 +1147,12 @@ function seed() {
 }
 
 seed();
+
+// Note: previously we boot-pruned every channel except #aug/#cola. That was
+// removed 2026-09-16 — Cody manages channels manually via the Dispatch UI
+// (create/delete/rename with member lists). The seed() above still inserts
+// #aug + #cola on a fresh DB, but they are no longer treated as protected.
+
 
 // ── Storage interface ─────────────────────────────────────────────────────────
 export interface IStorage {
