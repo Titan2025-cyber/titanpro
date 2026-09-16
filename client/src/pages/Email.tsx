@@ -159,6 +159,12 @@ export default function EmailPage() {
       return apiRequest("GET", `/api/gmail/messages?${p.toString()}`).then(r => r.json());
     },
     enabled: gmailLive,
+    // Background polling so new mail lands without a manual refresh. 30s
+    // is a good tradeoff — Gmail's own web UI polls in roughly the same
+    // window. `refetchIntervalInBackground: false` (default) means we
+    // stop when the tab is hidden, so this doesn't burn quota all night.
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
   });
   const liveMessages: GmailRow[] = gmailData?.messages || [];
 
