@@ -5,7 +5,7 @@ import {
   Settings, CheckCircle, Trash2, Link2, LogOut, RefreshCw, Search,
   Star, Archive, MailOpen, ArrowLeft, X, Reply, ReplyAll, Forward,
   HelpCircle, Paperclip, File as FileIcon, Download, ChevronDown, Tag,
-  MoreVertical, Undo2, Pen,
+  MoreVertical, Undo2, Pen, Clock, CalendarClock, Briefcase, User as UserIcon,
 } from "lucide-react";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -99,7 +99,7 @@ function initials(name: string): string {
 }
 
 export default function EmailPage() {
-  const [folder, setFolder] = useState<"inbox" | "starred" | "sent" | "drafts" | "trash">("inbox");
+  const [folder, setFolder] = useState<"inbox" | "starred" | "sent" | "drafts" | "snoozed" | "scheduled" | "trash">("inbox");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
   const [gmailSettingsOpen, setGmailSettingsOpen] = useState(false);
@@ -129,6 +129,18 @@ export default function EmailPage() {
   // the toast can cancel it. If the user hits Undo we call gmail.trash.
   const [pendingUndoId, setPendingUndoId] = useState<string | null>(null);
   const composeFileRef = useRef<HTMLInputElement | null>(null);
+
+  // Push B state: schedule send, snooze, drafts, contact autocomplete,
+  // attach-from-job picker, current draft id (Gmail returns one per compose
+  // once the user has saved).
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleAt, setScheduleAt] = useState<string>("");
+  const [snoozeOpen, setSnoozeOpen] = useState<string | null>(null); // message id
+  const [snoozeAt, setSnoozeAt] = useState<string>("");
+  const [jobPickerOpen, setJobPickerOpen] = useState(false);
+  const [contactSuggest, setContactSuggest] = useState<{ field: "to" | "cc" | "bcc"; q: string; items: Array<{ email: string; name: string; source: string }> } | null>(null);
+  const [currentDraftId, setCurrentDraftId] = useState<string | null>(null);
+
   const [gmailInput, setGmailInput] = useState("");
   const [liveSelectedId, setLiveSelectedId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -320,6 +332,176 @@ export default function EmailPage() {
     },
     onError: (e: any) => toast({ title: "Undo failed", description: String(e?.message || e), variant: "destructive" }),
   });
+
+  // ── Push B mutations: drafts, scheduled send, snooze ────────────────────────
+  // Save current compose to Gmail Drafts. If we already have a draft id
+  // (from an earlier save in this compose session), we PUT to update; else
+  // we POST to create and stash the returned id.
+  const saveDraft = useMutation({
+    mutationFn: async () => {
+      const finalHtml = composeHtmlWithSig(compose.html || compose.body || "");
+      const payload = {
+        to: compose.to, cc: compose.cc || undefined, bcc: compose.bcc || undefined,
+        subject: compose.subject, html: finalHtml, body: compose.body || undefined,
+        threadId: compose.threadId, inReplyTo: compose.inReplyTo, references: compose.references,
+      };
+      const url = currentDraftId ? `/api/gmail/drafts/${currentDraftId}` : "/api/gmail/drafts";
+      const method = currentDraftId ? "PUT" : "POST";
+      const res = await apiRequest(method, url, payload);
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      if (data?.id) setCurrentDraftId(data.id);
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/drafts"] });
+      toast({ title: "Draft saved" });
+    },
+    onError: (e: any) => toast({ title: "Save failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
+  const scheduleSend = useMutation({
+    mutationFn: async () => {
+      if (!scheduleAt) throw new Error("Pick a time first.");
+      const finalHtml = composeHtmlWithSig(compose.html || compose.body || "");
+      const payload = {
+        to: compose.to, cc: compose.cc || undefined, bcc: compose.bcc || undefined,
+        subject: compose.subject, html: finalHtml, body: compose.body || undefined,
+        threadId: compose.threadId, inReplyTo: compose.inReplyTo, references: compose.references,
+        attachments: compose.attachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, dataBase64: a.dataBase64 })),
+      };
+      const res = await apiRequest("POST", "/api/gmail/schedule", {
+        scheduledFor: new Date(scheduleAt).toISOString(),
+        payload,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/schedule"] });
+      setScheduleOpen(false);
+      setScheduleAt("");
+      setComposeOpen(false);
+      setCompose({ to: "", cc: "", bcc: "", subject: "", body: "", html: "", attachments: [], mode: "new" });
+      setShowCcBcc(false);
+      setCurrentDraftId(null);
+      toast({ title: "Scheduled", description: "Email will send at the chosen time." });
+    },
+    onError: (e: any) => toast({ title: "Scheduling failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
+  const cancelScheduled = useMutation({
+    mutationFn: (id: number) => apiRequest("DELETE", `/api/gmail/schedule/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/schedule"] });
+      toast({ title: "Scheduled send cancelled" });
+    },
+  });
+
+  const snoozeMessage = useMutation({
+    mutationFn: async (args: { messageId: string; wakeAt: string }) => {
+      const res = await apiRequest("POST", `/api/gmail/messages/${args.messageId}/snooze`, { wakeAt: new Date(args.wakeAt).toISOString() });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/snooze"] });
+      setSnoozeOpen(null);
+      setSnoozeAt("");
+      toast({ title: "Snoozed", description: "Message will return to your inbox at the chosen time." });
+    },
+    onError: (e: any) => toast({ title: "Snooze failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
+  const unsnoozeMessage = useMutation({
+    mutationFn: (id: number) => apiRequest("DELETE", `/api/gmail/snooze/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/snooze"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] });
+      toast({ title: "Unsnoozed", description: "Message is back in your inbox." });
+    },
+  });
+
+  const deleteDraft = useMutation({
+    mutationFn: (id: string) => apiRequest("DELETE", `/api/gmail/drafts/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/drafts"] });
+      toast({ title: "Draft deleted" });
+    },
+  });
+
+  // Drafts + scheduled + snooze queries
+  const draftsQuery = useQuery<{ drafts: Array<{ draftId: string; messageId: string; threadId: string; to: string; subject: string; snippet: string; date: string }> }>({
+    queryKey: ["/api/gmail/drafts"],
+    enabled: gmailLive && folder === "drafts",
+  });
+  const scheduledQuery = useQuery<{ scheduled: Array<{ id: number; scheduled_for: string; status: string; error: string | null; to_field: string; subject: string }> }>({
+    queryKey: ["/api/gmail/schedule"],
+    enabled: gmailLive && folder === "scheduled",
+  });
+  const snoozedQuery = useQuery<{ snoozed: Array<{ id: number; messageId: string; wakeAt: string; created_at: string }> }>({
+    queryKey: ["/api/gmail/snooze"],
+    enabled: gmailLive && folder === "snoozed",
+  });
+
+  // Contact autocomplete: debounce lookups so we don't hammer the server on
+  // every keystroke. Fires GET /api/gmail/contacts?q= 220ms after the last
+  // change on the currently-active field.
+  useEffect(() => {
+    if (!contactSuggest?.q || contactSuggest.q.length < 2) return;
+    const t = window.setTimeout(async () => {
+      try {
+        const r = await apiRequest("GET", `/api/gmail/contacts?q=${encodeURIComponent(contactSuggest.q)}`);
+        const data = await r.json();
+        setContactSuggest(cur => cur ? { ...cur, items: data.contacts || [] } : cur);
+      } catch { /* ignore */ }
+    }, 220);
+    return () => window.clearTimeout(t);
+  }, [contactSuggest?.q]);
+
+  // Load a draft into the compose window.
+  const loadDraftIntoCompose = async (draftId: string) => {
+    try {
+      const r = await apiRequest("GET", `/api/gmail/drafts/${draftId}`);
+      const d = await r.json();
+      setCompose({
+        to: d.to || "", cc: d.cc || "", bcc: d.bcc || "",
+        subject: d.subject || "", body: d.body || "", html: d.bodyHtml || d.body || "",
+        attachments: [], mode: "new",
+        threadId: d.threadId || undefined,
+        inReplyTo: d.inReplyTo || undefined,
+        references: d.references || undefined,
+      });
+      setShowCcBcc(Boolean(d.cc || d.bcc));
+      setCurrentDraftId(draftId);
+      setComposeOpen(true);
+    } catch (e: any) {
+      toast({ title: "Failed to open draft", description: String(e?.message || e), variant: "destructive" });
+    }
+  };
+
+  // Attach-from-job picker: fetch attachable files for the chosen job, then
+  // pull their bytes one by one via /attach-content and stuff them into the
+  // compose attachments list. Runs into the same 25 MB cap.
+  const attachFromJob = async (jobId: number, files: Array<{ kind: "document" | "photo"; id: number; filename: string; mimeType: string }>) => {
+    try {
+      let running = compose.attachments.reduce((n, a) => n + a.size, 0);
+      const next = [...compose.attachments];
+      for (const f of files) {
+        const r = await apiRequest("POST", `/api/jobs/${jobId}/attach-content`, { kind: f.kind, id: f.id });
+        const data = await r.json();
+        if (!data.contentBase64) continue;
+        const size = Math.floor((data.contentBase64.length * 3) / 4);
+        if (running + size > 25 * 1024 * 1024) {
+          toast({ title: "Attachment too large", description: "Skipped remaining files — 25 MB limit reached.", variant: "destructive" });
+          break;
+        }
+        running += size;
+        next.push({ filename: data.filename || f.filename, mimeType: data.mimeType || f.mimeType, size, dataBase64: data.contentBase64 });
+      }
+      setCompose(c => ({ ...c, attachments: next }));
+      setJobPickerOpen(false);
+    } catch (e: any) {
+      toast({ title: "Attach failed", description: String(e?.message || e), variant: "destructive" });
+    }
+  };
 
   // ── Reply / Reply All / Forward prefill ──────────────────────────────
   // Builds the compose state from a Gmail message detail. All three modes
@@ -686,11 +868,13 @@ export default function EmailPage() {
   const unreadCount = gmailLive ? liveUnread : legacyUnread;
 
   const FOLDERS: { id: typeof folder; label: string; icon: any }[] = [
-    { id: "inbox",   label: "Inbox",   icon: Inbox },
-    { id: "starred", label: "Starred", icon: Star },
-    { id: "sent",    label: "Sent",    icon: SendIcon },
-    { id: "drafts",  label: "Drafts",  icon: FileText },
-    { id: "trash",   label: "Trash",   icon: Trash2 },
+    { id: "inbox",     label: "Inbox",     icon: Inbox },
+    { id: "starred",   label: "Starred",   icon: Star },
+    { id: "snoozed",   label: "Snoozed",   icon: Clock },
+    { id: "scheduled", label: "Scheduled", icon: CalendarClock },
+    { id: "sent",      label: "Sent",      icon: SendIcon },
+    { id: "drafts",    label: "Drafts",    icon: FileText },
+    { id: "trash",     label: "Trash",     icon: Trash2 },
   ];
 
   // ── Keyboard shortcuts (Gmail-style) ─────────────────────────────────
@@ -980,14 +1164,33 @@ export default function EmailPage() {
                     {gmailLive && <Badge variant="secondary" className="ml-auto text-xs">Gmail</Badge>}
                   </div>
                   <div className="flex items-start gap-2">
-                    <div className="flex-1">
+                    <div className="flex-1 relative">
                       <Label>To</Label>
                       <Input
                         data-testid="input-email-to"
                         value={compose.to}
-                        onChange={e => setCompose(f => ({ ...f, to: e.target.value }))}
+                        onChange={e => {
+                          const v = e.target.value;
+                          setCompose(f => ({ ...f, to: v }));
+                          const tail = v.split(/[,;]\s*/).pop() || "";
+                          if (tail.length >= 2) setContactSuggest({ field: "to", q: tail, items: [] });
+                          else setContactSuggest(null);
+                        }}
+                        onBlur={() => window.setTimeout(() => setContactSuggest(null), 150)}
                         placeholder="recipient@email.com"
                       />
+                      {contactSuggest?.field === "to" && contactSuggest.items.length > 0 && (
+                        <ContactSuggestList
+                          items={contactSuggest.items}
+                          onPick={(email) => {
+                            const parts = (compose.to || "").split(/([,;]\s*)/);
+                            parts[parts.length - 1] = email;
+                            const newVal = parts.join("") + ", ";
+                            setCompose(f => ({ ...f, to: newVal }));
+                            setContactSuggest(null);
+                          }}
+                        />
+                      )}
                     </div>
                     <button
                       type="button"
@@ -999,23 +1202,59 @@ export default function EmailPage() {
                   </div>
                   {showCcBcc && (
                     <>
-                      <div>
+                      <div className="relative">
                         <Label>Cc</Label>
                         <Input
                           data-testid="input-email-cc"
                           value={compose.cc}
-                          onChange={e => setCompose(f => ({ ...f, cc: e.target.value }))}
+                          onChange={e => {
+                            const v = e.target.value;
+                            setCompose(f => ({ ...f, cc: v }));
+                            const tail = v.split(/[,;]\s*/).pop() || "";
+                            if (tail.length >= 2) setContactSuggest({ field: "cc", q: tail, items: [] });
+                            else setContactSuggest(null);
+                          }}
+                          onBlur={() => window.setTimeout(() => setContactSuggest(null), 150)}
                           placeholder="comma-separated"
                         />
+                        {contactSuggest?.field === "cc" && contactSuggest.items.length > 0 && (
+                          <ContactSuggestList
+                            items={contactSuggest.items}
+                            onPick={(email) => {
+                              const parts = (compose.cc || "").split(/([,;]\s*)/);
+                              parts[parts.length - 1] = email;
+                              setCompose(f => ({ ...f, cc: parts.join("") + ", " }));
+                              setContactSuggest(null);
+                            }}
+                          />
+                        )}
                       </div>
-                      <div>
+                      <div className="relative">
                         <Label>Bcc</Label>
                         <Input
                           data-testid="input-email-bcc"
                           value={compose.bcc}
-                          onChange={e => setCompose(f => ({ ...f, bcc: e.target.value }))}
+                          onChange={e => {
+                            const v = e.target.value;
+                            setCompose(f => ({ ...f, bcc: v }));
+                            const tail = v.split(/[,;]\s*/).pop() || "";
+                            if (tail.length >= 2) setContactSuggest({ field: "bcc", q: tail, items: [] });
+                            else setContactSuggest(null);
+                          }}
+                          onBlur={() => window.setTimeout(() => setContactSuggest(null), 150)}
                           placeholder="comma-separated"
                         />
+                        {contactSuggest?.field === "bcc" && contactSuggest.items.length > 0 && (
+                          <ContactSuggestList
+                            items={contactSuggest.items}
+                            onPick={(email) => {
+                              const parts = (compose.bcc || "").split(/([,;]\s*)/);
+                              parts[parts.length - 1] = email;
+                              setCompose(f => ({ ...f, bcc: parts.join("") + ", " }));
+                              setContactSuggest(null);
+                            }}
+                          />
+                        )}
                       </div>
                     </>
                   )}
@@ -1085,7 +1324,7 @@ export default function EmailPage() {
                     className="hidden"
                     onChange={(e) => onPickFiles(e.target.files)}
                   />
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2 items-center">
                     {gmailLive ? (
                       <>
                         <Button
@@ -1098,6 +1337,30 @@ export default function EmailPage() {
                           {sendViaGmailLive.isPending ? "Sending…" : "Send"}
                         </Button>
                         <Button
+                          data-testid="button-schedule-send"
+                          type="button"
+                          variant="outline"
+                          className="gap-2"
+                          onClick={() => setScheduleOpen(true)}
+                          disabled={!compose.to}
+                          title="Schedule send"
+                        >
+                          <CalendarClock className="w-4 h-4" />
+                          Schedule
+                        </Button>
+                        <Button
+                          data-testid="button-save-draft"
+                          type="button"
+                          variant="outline"
+                          className="gap-2"
+                          onClick={() => saveDraft.mutate()}
+                          disabled={saveDraft.isPending || (!compose.to && !compose.subject && !compose.html)}
+                          title="Save draft"
+                        >
+                          <FileText className="w-4 h-4" />
+                          {saveDraft.isPending ? "Saving…" : "Save draft"}
+                        </Button>
+                        <Button
                           data-testid="button-attach-file"
                           type="button"
                           variant="outline"
@@ -1107,6 +1370,17 @@ export default function EmailPage() {
                         >
                           <Paperclip className="w-4 h-4" />
                           Attach
+                        </Button>
+                        <Button
+                          data-testid="button-attach-from-job"
+                          type="button"
+                          variant="outline"
+                          className="gap-2"
+                          onClick={() => setJobPickerOpen(true)}
+                          title="Attach a file from a job"
+                        >
+                          <Briefcase className="w-4 h-4" />
+                          Attach from job
                         </Button>
                       </>
                     ) : (
@@ -1210,7 +1484,93 @@ export default function EmailPage() {
 
         {/* ─── Middle: message list ─── */}
         <section className={`${(gmailLive ? liveSelectedId : selected) ? "hidden md:flex" : "flex"} flex-col ${gmailLive ? "w-96" : "w-80"} shrink-0 border-r bg-white dark:bg-neutral-950`}>
-          {gmailLive ? (
+          {gmailLive && folder === "drafts" ? (
+            <div className="flex flex-col h-full">
+              <div className="px-3 py-2 border-b text-xs font-medium text-neutral-500">Drafts</div>
+              <div className="flex-1 overflow-y-auto">
+                {draftsQuery.isLoading && <div className="p-4 text-sm text-neutral-500">Loading drafts…</div>}
+                {(draftsQuery.data?.drafts || []).length === 0 && !draftsQuery.isLoading && (
+                  <div className="p-4 text-sm text-neutral-500">No drafts saved.</div>
+                )}
+                {(draftsQuery.data?.drafts || []).map(d => (
+                  <div
+                    key={d.draftId}
+                    className="px-3 py-2 border-b hover:bg-neutral-50 dark:hover:bg-neutral-900 cursor-pointer flex items-start gap-2"
+                    onClick={() => loadDraftIntoCompose(d.draftId)}
+                  >
+                    <FileText className="w-4 h-4 mt-1 text-neutral-400 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{d.subject || "(no subject)"}</div>
+                      <div className="text-xs text-neutral-500 truncate">To: {d.to || "(no recipient)"}</div>
+                      <div className="text-xs text-neutral-400 truncate">{d.snippet}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(ev) => { ev.stopPropagation(); deleteDraft.mutate(d.draftId); }}
+                      className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                      title="Delete draft"
+                    ><Trash2 className="w-3.5 h-3.5" /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : gmailLive && folder === "scheduled" ? (
+            <div className="flex flex-col h-full">
+              <div className="px-3 py-2 border-b text-xs font-medium text-neutral-500">Scheduled sends</div>
+              <div className="flex-1 overflow-y-auto">
+                {scheduledQuery.isLoading && <div className="p-4 text-sm text-neutral-500">Loading…</div>}
+                {(scheduledQuery.data?.scheduled || []).length === 0 && !scheduledQuery.isLoading && (
+                  <div className="p-4 text-sm text-neutral-500">Nothing scheduled.</div>
+                )}
+                {(scheduledQuery.data?.scheduled || []).map(s => (
+                  <div key={s.id} className="px-3 py-2 border-b flex items-start gap-2">
+                    <CalendarClock className="w-4 h-4 mt-1 text-neutral-400 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{s.subject || "(no subject)"}</div>
+                      <div className="text-xs text-neutral-500 truncate">To: {s.to_field || ""}</div>
+                      <div className="text-xs text-neutral-400">
+                        {new Date(s.scheduled_for).toLocaleString()} — {s.status}
+                        {s.error && <span className="text-red-600"> — {s.error}</span>}
+                      </div>
+                    </div>
+                    {s.status === "pending" && (
+                      <button
+                        type="button"
+                        onClick={() => cancelScheduled.mutate(s.id)}
+                        className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                        title="Cancel scheduled send"
+                      ><X className="w-3.5 h-3.5" /></button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : gmailLive && folder === "snoozed" ? (
+            <div className="flex flex-col h-full">
+              <div className="px-3 py-2 border-b text-xs font-medium text-neutral-500">Snoozed</div>
+              <div className="flex-1 overflow-y-auto">
+                {snoozedQuery.isLoading && <div className="p-4 text-sm text-neutral-500">Loading…</div>}
+                {(snoozedQuery.data?.snoozed || []).length === 0 && !snoozedQuery.isLoading && (
+                  <div className="p-4 text-sm text-neutral-500">No snoozed messages.</div>
+                )}
+                {(snoozedQuery.data?.snoozed || []).map(s => (
+                  <div key={s.id} className="px-3 py-2 border-b flex items-start gap-2">
+                    <Clock className="w-4 h-4 mt-1 text-neutral-400 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">Message #{s.messageId.slice(-8)}</div>
+                      <div className="text-xs text-neutral-500">Wakes {new Date(s.wakeAt).toLocaleString()}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => unsnoozeMessage.mutate(s.id)}
+                      className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                      title="Unsnooze now"
+                    ><Undo2 className="w-3.5 h-3.5" /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : gmailLive ? (
             <GmailList
               rows={liveMessages}
               loading={gmailLoading}
@@ -1279,6 +1639,7 @@ export default function EmailPage() {
                   })}
                   starred={!!liveDetail.starred}
                   onDownloadAttachment={(att) => downloadAttachment(liveDetail.id, att)}
+                  onSnooze={() => { setSnoozeAt(""); setSnoozeOpen(liveDetail.id); }}
                 />
               ) : (
                 <EmptyPane message="Could not load this message." />
@@ -1348,6 +1709,73 @@ export default function EmailPage() {
           </button>
         </div>
       )}
+
+      {/* ── Schedule send dialog ── */}
+      <Dialog open={scheduleOpen} onOpenChange={setScheduleOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Schedule send</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              {[
+                { label: "Tomorrow 8am", offset: () => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(8, 0, 0, 0); return d; } },
+                { label: "Tomorrow 1pm", offset: () => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(13, 0, 0, 0); return d; } },
+                { label: "Monday 8am",   offset: () => { const d = new Date(); const day = d.getDay(); const add = (1 + 7 - day) % 7 || 7; d.setDate(d.getDate() + add); d.setHours(8, 0, 0, 0); return d; } },
+                { label: "In 1 hour",    offset: () => new Date(Date.now() + 60 * 60_000) },
+              ].map(p => (
+                <Button key={p.label} size="sm" variant="outline" onClick={() => setScheduleAt(p.offset().toISOString().slice(0, 16))}>
+                  {p.label}
+                </Button>
+              ))}
+            </div>
+            <div>
+              <Label>Custom date + time (your local time)</Label>
+              <Input type="datetime-local" value={scheduleAt} onChange={e => setScheduleAt(e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setScheduleOpen(false)}>Cancel</Button>
+            <Button onClick={() => scheduleSend.mutate()} disabled={!scheduleAt || scheduleSend.isPending} className="bg-[#c5221f] hover:bg-[#a01a17] text-white">
+              {scheduleSend.isPending ? "Scheduling…" : "Schedule send"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Snooze dialog ── */}
+      <Dialog open={!!snoozeOpen} onOpenChange={(v) => { if (!v) setSnoozeOpen(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Snooze until</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              {[
+                { label: "Later today (3h)", offset: () => new Date(Date.now() + 3 * 60 * 60_000) },
+                { label: "Tomorrow 8am",     offset: () => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(8, 0, 0, 0); return d; } },
+                { label: "This weekend",     offset: () => { const d = new Date(); const day = d.getDay(); const add = (6 + 7 - day) % 7 || 7; d.setDate(d.getDate() + add); d.setHours(8, 0, 0, 0); return d; } },
+                { label: "Next week",        offset: () => { const d = new Date(); const day = d.getDay(); const add = (1 + 7 - day) % 7 || 7; d.setDate(d.getDate() + add); d.setHours(8, 0, 0, 0); return d; } },
+              ].map(p => (
+                <Button key={p.label} size="sm" variant="outline" onClick={() => setSnoozeAt(p.offset().toISOString().slice(0, 16))}>{p.label}</Button>
+              ))}
+            </div>
+            <div>
+              <Label>Custom</Label>
+              <Input type="datetime-local" value={snoozeAt} onChange={e => setSnoozeAt(e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSnoozeOpen(null)}>Cancel</Button>
+            <Button onClick={() => snoozeOpen && snoozeMessage.mutate({ messageId: snoozeOpen, wakeAt: snoozeAt })} disabled={!snoozeAt || snoozeMessage.isPending}>
+              {snoozeMessage.isPending ? "Snoozing…" : "Snooze"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Attach from job ── */}
+      <JobPickerDialog open={jobPickerOpen} onOpenChange={setJobPickerOpen} onAttach={attachFromJob} />
 
       <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
         <DialogContent className="sm:max-w-md">
@@ -1630,7 +2058,7 @@ const SYSTEM_LABELS = new Set([
 ]);
 
 function GmailDetail({
-  detail, onBack, onReply, onReplyAll, onForward, onArchive, onTrash, onMarkUnread, onToggleStar, starred,
+  detail, onBack, onReply, onReplyAll, onForward, onArchive, onTrash, onMarkUnread, onToggleStar, starred, onSnooze,
   onDownloadAttachment,
 }: {
   detail: any;
@@ -1644,6 +2072,7 @@ function GmailDetail({
   onToggleStar: () => void;
   starred: boolean;
   onDownloadAttachment: (att: { attachmentId: string; filename: string; mimeType: string }) => void;
+  onSnooze: () => void;
 }) {
   const sender = parseSender(detail.from || "");
   const isHtml = /<[a-z][\s\S]*>/i.test(detail.body || "");
@@ -1706,6 +2135,15 @@ function GmailDetail({
           title="Mark as unread"
         >
           <MailOpen className="w-4 h-4" />
+        </button>
+        <button
+          data-testid="button-snooze-detail"
+          onClick={onSnooze}
+          className="p-2 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"
+          aria-label="Snooze"
+          title="Snooze"
+        >
+          <Clock className="w-4 h-4" />
         </button>
         <div className="w-px h-6 bg-neutral-200 dark:bg-neutral-800 mx-1" />
         <button
@@ -1974,5 +2412,141 @@ function LegacyDetail({
         </AlertDialog>
       </div>
     </div>
+  );
+}
+
+// ─── ContactSuggestList ─────────────────────────────────────────────────
+// Small floating list rendered under a To/Cc/Bcc input when the server
+// returns any contact suggestions for the current tail token.
+function ContactSuggestList({
+  items,
+  onPick,
+}: {
+  items: Array<{ email: string; name: string; source: string }>;
+  onPick: (email: string) => void;
+}) {
+  return (
+    <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-white dark:bg-neutral-900 border rounded-md shadow-lg max-h-64 overflow-y-auto">
+      {items.map((c, i) => (
+        <button
+          key={`${c.email}-${i}`}
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); onPick(c.email); }}
+          className="w-full text-left px-3 py-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center gap-2"
+        >
+          <UserIcon className="w-3.5 h-3.5 text-neutral-400" />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm truncate">{c.name || c.email}</div>
+            {c.name && <div className="text-xs text-neutral-500 truncate">{c.email}</div>}
+          </div>
+          <span className="text-[10px] uppercase tracking-wide text-neutral-400">{c.source}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── JobPickerDialog ────────────────────────────────────────────────────
+// Two-step picker for "Attach from job": pick a recent job, then pick the
+// files to attach. Bytes are fetched at attach time, not list time.
+export function JobPickerDialog({
+  open,
+  onOpenChange,
+  onAttach,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  onAttach: (jobId: number, files: Array<{ kind: "document" | "photo"; id: number; filename: string; mimeType: string }>) => void;
+}) {
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // Recent jobs (top 25 by id desc).
+  const jobsQuery = useQuery<any[]>({
+    queryKey: ["/api/jobs", { limit: 25 }],
+    queryFn: async () => {
+      const r = await apiRequest("GET", "/api/jobs?limit=25");
+      return r.json();
+    },
+    enabled: open,
+  });
+  const filesQuery = useQuery<{ files: Array<{ kind: "document" | "photo"; id: number; filename: string; mimeType: string }> }>({
+    queryKey: [`/api/jobs/${selectedJobId}/attachable-files`],
+    enabled: open && selectedJobId !== null,
+  });
+
+  useEffect(() => {
+    if (!open) { setSelectedJobId(null); setSelected(new Set()); }
+  }, [open]);
+
+  const toggle = (k: string) => setSelected(cur => {
+    const n = new Set(cur);
+    if (n.has(k)) n.delete(k); else n.add(k);
+    return n;
+  });
+
+  const attach = () => {
+    if (selectedJobId === null) return;
+    const files = (filesQuery.data?.files || []).filter(f => selected.has(`${f.kind}-${f.id}`));
+    onAttach(selectedJobId, files);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Attach from job</DialogTitle>
+        </DialogHeader>
+        {selectedJobId === null ? (
+          <div className="max-h-[400px] overflow-y-auto -mx-6 px-6">
+            {jobsQuery.isLoading && <div className="text-sm text-neutral-500 py-4">Loading recent jobs…</div>}
+            {(jobsQuery.data || []).map((j: any) => (
+              <button
+                type="button"
+                key={j.id}
+                className="w-full text-left px-3 py-2 border-b hover:bg-neutral-50 dark:hover:bg-neutral-900"
+                onClick={() => setSelectedJobId(j.id)}
+              >
+                <div className="text-sm font-medium">{j.jobNumber || `Job #${j.id}`} — {j.customerName || "(no customer)"}</div>
+                <div className="text-xs text-neutral-500">{j.address || j.propertyAddress || ""}</div>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="max-h-[400px] overflow-y-auto -mx-6 px-6">
+            <button
+              type="button"
+              className="text-xs text-neutral-500 hover:text-neutral-800 mb-2"
+              onClick={() => setSelectedJobId(null)}
+            >← Pick a different job</button>
+            {filesQuery.isLoading && <div className="text-sm text-neutral-500 py-4">Loading files…</div>}
+            {(filesQuery.data?.files || []).length === 0 && !filesQuery.isLoading && (
+              <div className="text-sm text-neutral-500 py-4">This job has no attachable files.</div>
+            )}
+            {(filesQuery.data?.files || []).map(f => {
+              const k = `${f.kind}-${f.id}`;
+              return (
+                <label key={k} className="flex items-center gap-2 px-3 py-2 border-b hover:bg-neutral-50 dark:hover:bg-neutral-900 cursor-pointer">
+                  <Checkbox checked={selected.has(k)} onCheckedChange={() => toggle(k)} />
+                  {f.kind === "photo" ? <FileIcon className="w-4 h-4 text-neutral-400" /> : <FileText className="w-4 h-4 text-neutral-400" />}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm truncate">{f.filename}</div>
+                    <div className="text-xs text-neutral-500">{f.mimeType}</div>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          {selectedJobId !== null && (
+            <Button onClick={attach} disabled={selected.size === 0}>
+              Attach {selected.size > 0 ? `(${selected.size})` : ""}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

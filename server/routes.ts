@@ -31,6 +31,7 @@ import { ensureNotifPrefsTable, getPrefsMatrix, setPref, NOTIF_CHANNELS, NOTIF_E
 import { geocodeJobInBackground, geocoderStatus } from "./geocoder";
 import { lookupProperty } from "./property_lookup";
 import { startScheduler, runSchedulerNow } from "./scheduler";
+import { startEmailScheduler } from "./email_scheduler";
 import { registerMegaBuildRoutes } from "./routes_megabuild";
 import {
   writeImageFieldSafe,
@@ -3746,6 +3747,83 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     storage.deleteJobDocument(Number(req.params.id));
     res.json({ success: true });
   });
+
+  // ── GET /api/jobs/:id/attachable-files ────────────────────────────────
+  // Returns a flat list of documents + photos on this job that the Email
+  // compose window can present as "Attach from job". Each row is the minimum
+  // the picker needs to render: kind, id, filename, mime type, size.
+  app.get("/api/jobs/:id/attachable-files", wrapAsync(async (req, res) => {
+    const jobId = Number(req.params.id);
+    const out: Array<{ kind: "document" | "photo"; id: number; filename: string; mimeType: string; sizeBytes: number | null; storageKey?: string | null }> = [];
+    try {
+      const docs = (storage.getJobDocuments(jobId) as any[]) || [];
+      for (const d of docs) {
+        out.push({
+          kind: "document",
+          id: d.id,
+          filename: d.fileName || d.filename || `${d.title || "document"}.pdf`,
+          mimeType: d.fileMimeType || "application/pdf",
+          sizeBytes: null,
+          storageKey: d.storageKey || null,
+        });
+      }
+    } catch {}
+    try {
+      const photos = (sqlite.prepare("SELECT id, file_name, mime_type, storage_key FROM photos WHERE job_id = ?").all(jobId) as any[]) || [];
+      for (const p of photos) {
+        out.push({
+          kind: "photo",
+          id: p.id,
+          filename: p.file_name || `photo-${p.id}.jpg`,
+          mimeType: p.mime_type || "image/jpeg",
+          sizeBytes: null,
+          storageKey: p.storage_key || null,
+        });
+      }
+    } catch { /* photos table shape may vary */ }
+    res.json({ files: out });
+  }));
+
+  // POST /api/jobs/:id/attach-content ─ Return the base64 payload for a
+  // single attachable file so the client can pass it to /api/gmail/send as
+  // an attachment. Keeps large blobs off the initial list response.
+  app.post("/api/jobs/:id/attach-content", wrapAsync(async (req, res) => {
+    const jobId = Number(req.params.id);
+    const { kind, id } = req.body || {};
+    if (kind !== "document" && kind !== "photo") return res.status(400).json({ error: "kind must be 'document' or 'photo'" });
+    if (!id) return res.status(400).json({ error: "id required" });
+    let mime = "application/octet-stream";
+    let filename = "file";
+    let dataUrl: string | null = null;
+    let storageKey: string | null = null;
+    if (kind === "document") {
+      const doc: any = (storage.getJobDocuments(jobId) as any[])?.find((d: any) => d.id === Number(id));
+      if (!doc) return res.status(404).json({ error: "document not found" });
+      mime = doc.fileMimeType || "application/pdf";
+      filename = doc.fileName || doc.filename || `${doc.title || "document"}.pdf`;
+      dataUrl = doc.fileData || null;
+      storageKey = doc.storageKey || null;
+    } else {
+      const p: any = sqlite.prepare("SELECT * FROM photos WHERE id = ? AND job_id = ?").get(Number(id), jobId);
+      if (!p) return res.status(404).json({ error: "photo not found" });
+      mime = p.mime_type || "image/jpeg";
+      filename = p.file_name || `photo-${p.id}.jpg`;
+      dataUrl = p.data_url || null;
+      storageKey = p.storage_key || null;
+    }
+    if (!dataUrl && storageKey && objectStorage.isConfigured()) {
+      try {
+        const url = await objectStorage.getReadUrl(storageKey);
+        const r = await fetch(url);
+        const buf = Buffer.from(await r.arrayBuffer());
+        dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
+      } catch { /* fall through */ }
+    }
+    if (!dataUrl) return res.status(400).json({ error: "attachment has no readable content" });
+    const b64 = dataUrl.startsWith("data:") ? dataUrl.split(",")[1] : dataUrl;
+    res.json({ filename, mimeType: mime, contentBase64: b64 });
+  }));
+
   // ── Equipment ────────────────────────────────────────────────────────────
   app.get("/api/equipment", (_req, res) => {
     const rows = sqlite.prepare("SELECT * FROM equipment ORDER BY category, name").all();
@@ -10313,6 +10391,7 @@ Approve in Partner Portal → Admin View.
   // Kick off the in-process scheduler (adjuster silence, AR stalled, COI/cert
   // reminders, NOAA polling). See server/scheduler.ts.
   startScheduler(sqlite);
+  startEmailScheduler(sqlite);
 
   registerCrudGapRoutes(app, sqlite, { requireRole, requireStaffAuth });
 

@@ -865,6 +865,44 @@ if (!empCols.includes("email_signature")) {
   sqlite.exec(`ALTER TABLE employees ADD COLUMN email_signature TEXT`);
 }
 
+// ── Email: scheduled send + snooze tables ─────────────────────────────
+// Scheduled outbound Gmail messages. Row lives here until the email ticker
+// picks it up at `scheduled_for`, then it's sent through Gmail as the owning
+// employee and the row is deleted (status='sent') or marked failed.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS email_scheduled (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL,
+    scheduled_for TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT,
+    sent_message_id TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processed_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_email_scheduled_due
+    ON email_scheduled(status, scheduled_for);
+`);
+
+// Snoozed Gmail messages. `wake_at` timestamp triggers the ticker to move
+// the message back into INBOX (add INBOX, remove SNOOZED custom label).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS email_snooze (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL,
+    gmail_message_id TEXT NOT NULL,
+    gmail_thread_id TEXT,
+    wake_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    woke_at TEXT,
+    UNIQUE(employee_id, gmail_message_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_email_snooze_due
+    ON email_snooze(status, wake_at);
+`);
+
 // ── Object storage columns ────────────────────────────────────────────────
 // Backfill storage_key columns onto every table that previously held image
 // or file blobs as base64 data URLs. When Railway object storage is

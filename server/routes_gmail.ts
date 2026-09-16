@@ -165,11 +165,17 @@ export async function sendGmailAsEmployee(
   senderEmployeeId: number,
   args: {
     to: string | string[];
+    cc?: string;
+    bcc?: string;
     subject: string;
     html?: string;
     text?: string;
     replyTo?: string;
     attachments?: GmailAttachment[];
+    // Threading headers used by Reply / Reply All / scheduled replies.
+    threadId?: string;
+    inReplyTo?: string;
+    references?: string;
   },
 ): Promise<{ ok: true; id: string | null } | { ok: false; reason: string }> {
   if (!gmailConfigured()) return { ok: false, reason: "not_configured" };
@@ -231,9 +237,13 @@ export async function sendGmailAsEmployee(
 
   const headers = [
     `To: ${toList}`,
+    args.cc ? `Cc: ${args.cc}` : "",
+    args.bcc ? `Bcc: ${args.bcc}` : "",
     from ? `From: ${from}` : "",
     args.replyTo ? `Reply-To: ${args.replyTo}` : "",
     `Subject: ${encodeSubjectHeader(subject)}`,
+    args.inReplyTo ? `In-Reply-To: ${args.inReplyTo}` : "",
+    args.references ? `References: ${args.references}` : "",
     "MIME-Version: 1.0",
     `Content-Type: ${outerContentType}`,
   ].filter(Boolean);
@@ -299,7 +309,9 @@ export async function sendGmailAsEmployee(
 
   try {
     const gmail = google.gmail({ version: "v1", auth: oauth2 });
-    const sent = await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
+    const requestBody: any = { raw };
+    if (args.threadId) requestBody.threadId = args.threadId;
+    const sent = await gmail.users.messages.send({ userId: "me", requestBody });
     return { ok: true, id: sent.data.id || null };
   } catch (e: any) {
     return { ok: false, reason: "send_failed: " + (e?.message || String(e)) };
@@ -833,6 +845,329 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
     sqlite.prepare("UPDATE employees SET email_signature = ? WHERE id = ?").run(sig, req.employee.id);
     res.json({ ok: true, signature: sig });
   });
+
+  // ── DRAFTS ──────────────────────────────────────────────────────────
+  // Drafts live in Gmail (users.drafts). We surface them so the compose
+  // window can persist unfinished emails between browsers and let the user
+  // resume them from the Drafts folder in the sidebar. Every save is a
+  // full replace of the draft body (Gmail overwrites on update).
+  //
+  // Helper: build the raw MIME for a draft. Reuses the same builder shape as
+  // the send route so drafts round-trip cleanly when the user hits Send.
+  function buildDraftRaw(input: {
+    to: string; cc?: string; bcc?: string; subject: string; body?: string; html?: string;
+    from?: string; inReplyTo?: string; references?: string;
+  }): string {
+    const alt = `alt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    const text = input.body || (input.html ? input.html.replace(/<[^>]+>/g, "") : "");
+    const html = input.html || (input.body ? `<pre style="font-family:inherit;white-space:pre-wrap">${text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>` : "");
+    const headers = [
+      `To: ${input.to || ""}`,
+      input.cc ? `Cc: ${input.cc}` : "",
+      input.bcc ? `Bcc: ${input.bcc}` : "",
+      input.from ? `From: ${input.from}` : "",
+      `Subject: ${encodeSubjectHeader(input.subject || "(no subject)")}`,
+      input.inReplyTo ? `In-Reply-To: ${input.inReplyTo}` : "",
+      input.references ? `References: ${input.references}` : "",
+      "MIME-Version: 1.0",
+      `Content-Type: multipart/alternative; boundary="${alt}"`,
+    ].filter(Boolean);
+    const body = [
+      ...headers,
+      "",
+      `--${alt}`,
+      "Content-Type: text/plain; charset=UTF-8",
+      "Content-Transfer-Encoding: 7bit",
+      "",
+      text,
+      "",
+      `--${alt}`,
+      "Content-Type: text/html; charset=UTF-8",
+      "Content-Transfer-Encoding: 7bit",
+      "",
+      html,
+      "",
+      `--${alt}--`,
+      "",
+    ].join("\r\n");
+    return Buffer.from(body, "utf8").toString("base64")
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  // POST /api/gmail/drafts   → create a new draft. Body: the standard
+  // compose payload; returns { id }.
+  app.post("/api/gmail/drafts", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    try {
+      const from = (sqlite.prepare("SELECT gmail_email FROM employees WHERE id = ?").get(req.employee.id) as any)?.gmail_email || "";
+      const raw = buildDraftRaw({ ...req.body, from });
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      const created = await gmail.users.drafts.create({
+        userId: "me",
+        requestBody: { message: { raw, threadId: req.body?.threadId || undefined } },
+      });
+      res.json({ id: created.data.id, messageId: created.data.message?.id });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to save draft." });
+    }
+  });
+
+  // PUT /api/gmail/drafts/:id → overwrite an existing draft with new body.
+  app.put("/api/gmail/drafts/:id", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    try {
+      const from = (sqlite.prepare("SELECT gmail_email FROM employees WHERE id = ?").get(req.employee.id) as any)?.gmail_email || "";
+      const raw = buildDraftRaw({ ...req.body, from });
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      const updated = await gmail.users.drafts.update({
+        userId: "me",
+        id: req.params.id,
+        requestBody: { message: { raw, threadId: req.body?.threadId || undefined } },
+      });
+      res.json({ id: updated.data.id, messageId: updated.data.message?.id });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to update draft." });
+    }
+  });
+
+  // GET /api/gmail/drafts → list metadata (id + subject + snippet)
+  app.get("/api/gmail/drafts", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      const list = await gmail.users.drafts.list({ userId: "me", maxResults: 25 });
+      const drafts = list.data.drafts || [];
+      // Enrich with metadata headers so the sidebar can show subject + date.
+      const rows = await Promise.all(drafts.map(async (d) => {
+        try {
+          const msg = await gmail.users.messages.get({
+            userId: "me", id: d.message?.id || "", format: "metadata",
+            metadataHeaders: ["From", "To", "Subject", "Date"],
+          });
+          const headers = (msg.data.payload?.headers || []).reduce((acc: any, h: any) => {
+            acc[h.name.toLowerCase()] = h.value; return acc;
+          }, {});
+          return {
+            draftId: d.id,
+            messageId: d.message?.id,
+            threadId: d.message?.threadId,
+            snippet: msg.data.snippet,
+            to: headers.to || "",
+            subject: headers.subject || "(no subject)",
+            date: headers.date || "",
+          };
+        } catch { return { draftId: d.id, messageId: d.message?.id, subject: "(unreadable)", to: "", snippet: "", date: "" }; }
+      }));
+      res.json({ drafts: rows });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to list drafts." });
+    }
+  });
+
+  // GET /api/gmail/drafts/:id → full draft (for opening in compose)
+  app.get("/api/gmail/drafts/:id", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      const draft = await gmail.users.drafts.get({ userId: "me", id: req.params.id, format: "full" });
+      const payload = draft.data.message?.payload;
+      const headers = (payload?.headers || []).reduce((acc: any, h: any) => {
+        acc[h.name.toLowerCase()] = h.value; return acc;
+      }, {});
+      // Extract body text + html by walking payload parts. Same logic as the
+      // message detail handler.
+      let bodyText = "";
+      let bodyHtml = "";
+      const walk = (part: any) => {
+        if (!part) return;
+        const data = part.body?.data;
+        if (data) {
+          const decoded = Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+          if (part.mimeType === "text/plain") bodyText = decoded;
+          else if (part.mimeType === "text/html") bodyHtml = decoded;
+        }
+        (part.parts || []).forEach(walk);
+      };
+      walk(payload);
+      res.json({
+        draftId: draft.data.id,
+        messageId: draft.data.message?.id,
+        threadId: draft.data.message?.threadId,
+        to: headers.to || "",
+        cc: headers.cc || "",
+        bcc: headers.bcc || "",
+        subject: headers.subject || "",
+        body: bodyText,
+        bodyHtml,
+        inReplyTo: headers["in-reply-to"] || "",
+        references: headers["references"] || "",
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to load draft." });
+    }
+  });
+
+  // DELETE /api/gmail/drafts/:id
+  app.delete("/api/gmail/drafts/:id", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      await gmail.users.drafts.delete({ userId: "me", id: req.params.id });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to delete draft." });
+    }
+  });
+
+  // ── SCHEDULED SEND ───────────────────────────────────────────────────────
+  // Store the full send payload in SQLite along with the wake-time. The
+  // email ticker (server/email_scheduler.ts) polls every 30s and fires
+  // sendGmailAsEmployee when scheduled_for <= now.
+  app.post("/api/gmail/schedule", requireStaffAuth, (req: any, res) => {
+    const { scheduledFor, payload } = req.body || {};
+    if (!scheduledFor) return res.status(400).json({ error: "scheduledFor required." });
+    if (!payload?.to || !payload?.subject) return res.status(400).json({ error: "payload.to and payload.subject required." });
+    const when = Date.parse(scheduledFor);
+    if (Number.isNaN(when)) return res.status(400).json({ error: "scheduledFor is not a valid date." });
+    if (when < Date.now() - 60_000) return res.status(400).json({ error: "scheduledFor must be in the future." });
+    const row = sqlite.prepare(
+      `INSERT INTO email_scheduled (employee_id, scheduled_for, payload_json) VALUES (?, ?, ?) RETURNING *`,
+    ).get(req.employee.id, new Date(when).toISOString(), JSON.stringify(payload));
+    res.json(row);
+  });
+  app.get("/api/gmail/schedule", requireStaffAuth, (req: any, res) => {
+    const rows = sqlite.prepare(
+      `SELECT id, scheduled_for, status, error, sent_message_id, created_at, processed_at,
+              json_extract(payload_json, '$.to') AS to_field,
+              json_extract(payload_json, '$.subject') AS subject
+         FROM email_scheduled WHERE employee_id = ? ORDER BY scheduled_for DESC LIMIT 100`,
+    ).all(req.employee.id);
+    res.json({ scheduled: rows });
+  });
+  app.delete("/api/gmail/schedule/:id", requireStaffAuth, (req: any, res) => {
+    const row: any = sqlite.prepare(`SELECT * FROM email_scheduled WHERE id = ? AND employee_id = ?`).get(req.params.id, req.employee.id);
+    if (!row) return res.status(404).json({ error: "Not found." });
+    if (row.status !== "pending") return res.status(409).json({ error: `Cannot cancel a ${row.status} scheduled send.` });
+    sqlite.prepare(`DELETE FROM email_scheduled WHERE id = ?`).run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  // ── SNOOZE ────────────────────────────────────────────────────────────
+  // A snoozed message is:
+  //   1) removed from INBOX  → add SNOOZED custom label + remove INBOX
+  //   2) tracked in email_snooze until wake_at
+  //   3) restored to INBOX on wake by the email ticker
+  // We create the custom label lazily if it doesn't exist yet.
+  async function ensureSnoozedLabel(gmail: any): Promise<string | null> {
+    try {
+      const list = await gmail.users.labels.list({ userId: "me" });
+      const found = (list.data.labels || []).find((l: any) => l.name === "Titan/Snoozed");
+      if (found) return found.id;
+      const created = await gmail.users.labels.create({
+        userId: "me",
+        requestBody: { name: "Titan/Snoozed", labelListVisibility: "labelHide", messageListVisibility: "hide" },
+      });
+      return created.data.id || null;
+    } catch { return null; }
+  }
+  app.post("/api/gmail/messages/:id/snooze", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    const wakeAt = req.body?.wakeAt;
+    if (!wakeAt) return res.status(400).json({ error: "wakeAt required." });
+    const when = Date.parse(wakeAt);
+    if (Number.isNaN(when) || when < Date.now() + 60_000) return res.status(400).json({ error: "wakeAt must be at least 1 minute in the future." });
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      const labelId = await ensureSnoozedLabel(gmail);
+      const modify: any = { removeLabelIds: ["INBOX"] };
+      if (labelId) modify.addLabelIds = [labelId];
+      await gmail.users.messages.modify({ userId: "me", id: req.params.id, requestBody: modify });
+      // Also stash thread id for restoring the whole conversation on wake.
+      const meta = await gmail.users.messages.get({ userId: "me", id: req.params.id, format: "metadata", metadataHeaders: [] });
+      sqlite.prepare(
+        `INSERT INTO email_snooze (employee_id, gmail_message_id, gmail_thread_id, wake_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(employee_id, gmail_message_id) DO UPDATE SET wake_at = excluded.wake_at, status = 'pending'`,
+      ).run(req.employee.id, req.params.id, meta.data.threadId || null, new Date(when).toISOString());
+      res.json({ ok: true, wakeAt: new Date(when).toISOString() });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to snooze message." });
+    }
+  });
+  app.get("/api/gmail/snooze", requireStaffAuth, (req: any, res) => {
+    const rows = sqlite.prepare(
+      `SELECT id, gmail_message_id AS messageId, gmail_thread_id AS threadId, wake_at AS wakeAt, status, created_at
+         FROM email_snooze WHERE employee_id = ? AND status = 'pending' ORDER BY wake_at ASC`,
+    ).all(req.employee.id);
+    res.json({ snoozed: rows });
+  });
+  app.delete("/api/gmail/snooze/:id", requireStaffAuth, async (req: any, res) => {
+    // Cancelling early: pull the message back into INBOX now.
+    const row: any = sqlite.prepare(`SELECT * FROM email_snooze WHERE id = ? AND employee_id = ?`).get(req.params.id, req.employee.id);
+    if (!row) return res.status(404).json({ error: "Not found." });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (oauth2) {
+      try {
+        const gmail = google.gmail({ version: "v1", auth: oauth2 });
+        const labelId = await ensureSnoozedLabel(gmail);
+        const modify: any = { addLabelIds: ["INBOX"] };
+        if (labelId) modify.removeLabelIds = [labelId];
+        await gmail.users.messages.modify({ userId: "me", id: row.gmail_message_id, requestBody: modify });
+      } catch { /* still cancel the row locally */ }
+    }
+    sqlite.prepare(`UPDATE email_snooze SET status = 'cancelled', woke_at = CURRENT_TIMESTAMP WHERE id = ?`).run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  // ── CONTACT AUTOCOMPLETE ─────────────────────────────────────────────
+  // Unions: employees.gmail_email + contacts.email + jobs.customer_email +
+  // (optionally) People API. Small, cache-friendly, no OAuth needed for the
+  // internal sources.
+  app.get("/api/gmail/contacts", requireStaffAuth, (req: any, res) => {
+    const q = String(req.query.q || "").trim().toLowerCase();
+    if (!q || q.length < 2) return res.json({ contacts: [] });
+    const like = `%${q}%`;
+    const results: Array<{ email: string; name: string; source: string }> = [];
+    const seen = new Set<string>();
+    const push = (email: string, name: string, source: string) => {
+      const key = (email || "").toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      results.push({ email, name: name || "", source });
+    };
+    // Employees (only those with a gmail_email set).
+    try {
+      for (const r of sqlite.prepare(
+        `SELECT name, gmail_email FROM employees WHERE gmail_email IS NOT NULL AND (LOWER(gmail_email) LIKE ? OR LOWER(name) LIKE ?) LIMIT 5`,
+      ).all(like, like) as any[]) push(r.gmail_email, r.name, "employee");
+    } catch { /* table shape variance */ }
+    // Contacts.
+    try {
+      for (const r of sqlite.prepare(
+        `SELECT name, email FROM contacts WHERE email IS NOT NULL AND (LOWER(email) LIKE ? OR LOWER(name) LIKE ?) LIMIT 8`,
+      ).all(like, like) as any[]) push(r.email, r.name, "contact");
+    } catch { /* table missing on old dbs */ }
+    // Jobs (customer email).
+    try {
+      for (const r of sqlite.prepare(
+        `SELECT customer_name AS name, customer_email AS email FROM jobs WHERE customer_email IS NOT NULL AND (LOWER(customer_email) LIKE ? OR LOWER(customer_name) LIKE ?) LIMIT 8`,
+      ).all(like, like) as any[]) push(r.email, r.name, "job");
+    } catch { /* column variance */ }
+    res.json({ contacts: results.slice(0, 12) });
+  });
+
 
   // ── ATTACHMENT DOWNLOAD ───────────────────────────────────────────────
   //   Streams a single attachment as a real file download. Requires the
