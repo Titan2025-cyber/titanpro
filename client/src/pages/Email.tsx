@@ -22,7 +22,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, buildAuthHeaders } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { useAuth } from "@/lib/auth";
@@ -777,7 +777,7 @@ export default function EmailPage() {
     const p = new URLSearchParams({ filename: att.filename, mimeType: att.mimeType });
     const url = `/api/gmail/messages/${messageId}/attachments/${att.attachmentId}?${p.toString()}`;
     try {
-      const res = await fetch(url, { credentials: "same-origin" });
+      const res = await fetch(url, { credentials: "same-origin", headers: buildAuthHeaders(url) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const objectUrl = URL.createObjectURL(blob);
