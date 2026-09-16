@@ -3,7 +3,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Plus, Send, Inbox, Send as SendIcon, FileText, Mail, ExternalLink,
   Settings, CheckCircle, Trash2, Link2, LogOut, RefreshCw, Search,
-  Star, Archive, MailOpen, ArrowLeft, X, Reply, HelpCircle,
+  Star, Archive, MailOpen, ArrowLeft, X, Reply, HelpCircle, Paperclip,
+  File as FileIcon, Download,
 } from "lucide-react";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -77,6 +78,15 @@ function avatarColor(seed: string): string {
   return `hsl(${hue}, 55%, 45%)`;
 }
 
+// "12345" → "12.1 KB". Used in the attachment strip and the compose picker.
+function formatBytes(n: number): string {
+  if (!n || n < 0) return "0 B";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
 function initials(name: string): string {
   const parts = name.split(/[\s@.]+/).filter(Boolean);
   if (parts.length === 0) return "?";
@@ -90,7 +100,13 @@ export default function EmailPage() {
   const [composeOpen, setComposeOpen] = useState(false);
   const [gmailSettingsOpen, setGmailSettingsOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [compose, setCompose] = useState({ to: "", subject: "", body: "" });
+  const [compose, setCompose] = useState<{
+    to: string;
+    subject: string;
+    body: string;
+    attachments: Array<{ filename: string; mimeType: string; size: number; dataBase64: string }>;
+  }>({ to: "", subject: "", body: "", attachments: [] });
+  const composeFileRef = useRef<HTMLInputElement | null>(null);
   const [gmailInput, setGmailInput] = useState("");
   const [liveSelectedId, setLiveSelectedId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -186,15 +202,96 @@ export default function EmailPage() {
 
   // ── Send (real Gmail) ────────────────────────────────────────────────
   const sendViaGmailLive = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/gmail/send", { to: compose.to, subject: compose.subject, body: compose.body }),
+    mutationFn: () => apiRequest("POST", "/api/gmail/send", {
+      to: compose.to,
+      subject: compose.subject,
+      body: compose.body,
+      attachments: compose.attachments.map(a => ({
+        filename: a.filename, mimeType: a.mimeType, dataBase64: a.dataBase64,
+      })),
+    }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] });
       setComposeOpen(false);
-      setCompose({ to: "", subject: "", body: "" });
+      setCompose({ to: "", subject: "", body: "", attachments: [] });
       toast({ title: "Email sent", description: `Delivered via Gmail (${gmailStatus?.email || "your account"})` });
     },
     onError: (e: any) => toast({ title: "Send failed", description: String(e?.message || e), variant: "destructive" }),
   });
+
+  // ── Attachment picker (browser side) ────────────────────────────────
+  //   Reads each selected file into a base64 string and stashes it on
+  //   `compose.attachments`. We cap the running total at 25 MB (Gmail's own
+  //   limit) so the send never fails server-side for size.
+  const ATTACH_LIMIT = 25 * 1024 * 1024;
+  const readFileAsBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      // FileReader returns a data URL: "data:mime;base64,XXXX". Strip prefix.
+      const idx = result.indexOf(",");
+      resolve(idx >= 0 ? result.slice(idx + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+  const onPickFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    let running = compose.attachments.reduce((n, a) => n + a.size, 0);
+    const next = [...compose.attachments];
+    for (const file of Array.from(files)) {
+      if (running + file.size > ATTACH_LIMIT) {
+        toast({
+          title: "Attachment too large",
+          description: `Skipped ${file.name} — total would exceed Gmail's 25 MB limit.`,
+          variant: "destructive",
+        });
+        continue;
+      }
+      try {
+        const dataBase64 = await readFileAsBase64(file);
+        next.push({
+          filename: file.name,
+          mimeType: file.type || "application/octet-stream",
+          size: file.size,
+          dataBase64,
+        });
+        running += file.size;
+      } catch (e: any) {
+        toast({ title: "Could not read file", description: `${file.name}: ${e?.message || e}`, variant: "destructive" });
+      }
+    }
+    setCompose(c => ({ ...c, attachments: next }));
+    if (composeFileRef.current) composeFileRef.current.value = ""; // allow re-pick same file
+  };
+  const removeAttachment = (idx: number) =>
+    setCompose(c => ({ ...c, attachments: c.attachments.filter((_, i) => i !== idx) }));
+
+  // ── Attachment download (from a message reading pane) ────────────────
+  //   Streams raw bytes through the server so we don't have to hand Gmail's
+  //   base64url decoding to the browser. Auth via same-origin session cookies.
+  const downloadAttachment = async (
+    messageId: string,
+    att: { attachmentId: string; filename: string; mimeType: string },
+  ) => {
+    const p = new URLSearchParams({ filename: att.filename, mimeType: att.mimeType });
+    const url = `/api/gmail/messages/${messageId}/attachments/${att.attachmentId}?${p.toString()}`;
+    try {
+      const res = await fetch(url, { credentials: "same-origin" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = att.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (e: any) {
+      toast({ title: "Download failed", description: String(e?.message || e), variant: "destructive" });
+    }
+  };
 
   // ── Actions: star / archive / mark-unread / trash ────────────────────
   //   All four go through /api/gmail/messages/:id/modify (or /trash) and
@@ -408,7 +505,7 @@ export default function EmailPage() {
         else if (key === "s") toggleStar(row);
         else if (key === "r") {
           const fromAddr = parseSender(row.from).email;
-          setCompose({ to: fromAddr, subject: `Re: ${row.subject}`, body: "" });
+          setCompose({ to: fromAddr, subject: `Re: ${row.subject}`, body: "", attachments: [] });
           setComposeOpen(true);
         }
       }
@@ -640,17 +737,69 @@ export default function EmailPage() {
                       onChange={e => setCompose(f => ({ ...f, body: e.target.value }))}
                     />
                   </div>
+                  {/* Attachments strip — only rendered when the user has
+                       actually attached something. Empty state stays clean. */}
+                  {compose.attachments.length > 0 && (
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">
+                        Attachments ({compose.attachments.length}) —{" "}
+                        {formatBytes(compose.attachments.reduce((n, a) => n + a.size, 0))} of 25 MB
+                      </Label>
+                      <ul className="space-y-1">
+                        {compose.attachments.map((a, i) => (
+                          <li
+                            key={i}
+                            className="flex items-center gap-2 px-2 py-1.5 rounded-md border bg-neutral-50 dark:bg-neutral-900"
+                          >
+                            <FileIcon className="w-4 h-4 text-neutral-500 shrink-0" />
+                            <span className="text-xs flex-1 min-w-0 truncate">{a.filename}</span>
+                            <span className="text-xs text-neutral-500 shrink-0">{formatBytes(a.size)}</span>
+                            <button
+                              data-testid={`button-remove-attachment-${i}`}
+                              onClick={() => removeAttachment(i)}
+                              className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 shrink-0"
+                              aria-label={`Remove ${a.filename}`}
+                              type="button"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <input
+                    ref={composeFileRef}
+                    data-testid="input-attach-file"
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => onPickFiles(e.target.files)}
+                  />
                   <div className="flex gap-2">
                     {gmailLive ? (
-                      <Button
-                        data-testid="button-send-gmail-live"
-                        className="flex-1 bg-[#c5221f] hover:bg-[#a01a17] text-white"
-                        onClick={() => sendViaGmailLive.mutate()}
-                        disabled={sendViaGmailLive.isPending || !compose.to}
-                      >
-                        <Send className="w-4 h-4 mr-2" />
-                        {sendViaGmailLive.isPending ? "Sending…" : "Send"}
-                      </Button>
+                      <>
+                        <Button
+                          data-testid="button-send-gmail-live"
+                          className="flex-1 bg-[#c5221f] hover:bg-[#a01a17] text-white"
+                          onClick={() => sendViaGmailLive.mutate()}
+                          disabled={sendViaGmailLive.isPending || !compose.to}
+                        >
+                          <Send className="w-4 h-4 mr-2" />
+                          {sendViaGmailLive.isPending ? "Sending…" : "Send"}
+                        </Button>
+                        <Button
+                          data-testid="button-attach-file"
+                          type="button"
+                          variant="outline"
+                          className="gap-2"
+                          onClick={() => composeFileRef.current?.click()}
+                          title="Attach files"
+                        >
+                          <Paperclip className="w-4 h-4" />
+                          Attach
+                        </Button>
+                      </>
                     ) : (
                       <>
                         <Button
@@ -799,6 +948,7 @@ export default function EmailPage() {
                       to: fromAddr,
                       subject: `Re: ${liveDetail.subject}`,
                       body: `\n\nOn ${liveDetail.date}, ${liveDetail.from} wrote:\n> ${(liveDetail.body || "").replace(/<[^>]+>/g, "").split("\n").slice(0, 20).join("\n> ")}`,
+                      attachments: [],
                     });
                     setComposeOpen(true);
                   }}
@@ -815,6 +965,7 @@ export default function EmailPage() {
                     starred: liveDetail.starred,
                   })}
                   starred={!!liveDetail.starred}
+                  onDownloadAttachment={(att) => downloadAttachment(liveDetail.id, att)}
                 />
               ) : (
                 <EmptyPane message="Could not load this message." />
@@ -834,6 +985,7 @@ export default function EmailPage() {
                   to: selected.from,
                   subject: `Re: ${selected.subject}`,
                   body: `\n\n--- Original Message ---\nFrom: ${selected.from}\n${selected.body}`,
+                  attachments: [],
                 });
                 setComposeOpen(true);
               }}
@@ -1036,6 +1188,7 @@ function GmailList({
 
 function GmailDetail({
   detail, onBack, onReply, onArchive, onTrash, onMarkUnread, onToggleStar, starred,
+  onDownloadAttachment,
 }: {
   detail: any;
   onBack: () => void;
@@ -1045,9 +1198,17 @@ function GmailDetail({
   onMarkUnread: () => void;
   onToggleStar: () => void;
   starred: boolean;
+  onDownloadAttachment: (att: { attachmentId: string; filename: string; mimeType: string }) => void;
 }) {
   const sender = parseSender(detail.from || "");
   const isHtml = /<[a-z][\s\S]*>/i.test(detail.body || "");
+  // Inline images (referenced from HTML with cid:) are already visible in the
+  // body. Skip them in the chip strip so we don't double-show them; keep
+  // inline PDFs and other non-image inlines around because most HTML bodies
+  // don't actually render those.
+  const attachments: Array<{
+    attachmentId: string; filename: string; mimeType: string; size: number; inline?: boolean;
+  }> = (detail.attachments || []).filter((a: any) => !(a.inline && /^image\//i.test(a.mimeType)));
   return (
     <div className="max-w-4xl mx-auto p-6">
       {/* Action bar */}
@@ -1164,6 +1325,41 @@ function GmailDetail({
           </div>
         )}
       </div>
+
+      {/* Attachment chip strip — Gmail-style. Each chip is clickable and
+           downloads the file through the /attachments endpoint. */}
+      {attachments.length > 0 && (
+        <div className="border-t pt-4">
+          <p className="text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-2 flex items-center gap-1.5">
+            <Paperclip className="w-3.5 h-3.5" />
+            {attachments.length} attachment{attachments.length === 1 ? "" : "s"}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {attachments.map((a) => (
+              <button
+                key={a.attachmentId}
+                data-testid={`attachment-${a.attachmentId}`}
+                onClick={() => onDownloadAttachment(a)}
+                className="group flex items-center gap-2 px-3 py-2 rounded-lg border bg-neutral-50 dark:bg-neutral-900 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-left min-w-[220px] max-w-[320px]"
+                title={`Download ${a.filename}`}
+              >
+                <div className="w-9 h-9 rounded-md bg-neutral-200 dark:bg-neutral-800 grid place-items-center shrink-0">
+                  <FileIcon className="w-4 h-4 text-neutral-600 dark:text-neutral-300" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium text-neutral-800 dark:text-neutral-100 truncate">{a.filename}</p>
+                  <p className="text-[11px] text-neutral-500 truncate">
+                    {a.size ? formatBytes(a.size) : ""}
+                    {a.size && a.mimeType ? " · " : ""}
+                    {a.mimeType?.split("/")[1]?.toUpperCase() || a.mimeType}
+                  </p>
+                </div>
+                <Download className="w-4 h-4 text-neutral-500 opacity-0 group-hover:opacity-100 shrink-0" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="pt-4 border-t">
         <Button

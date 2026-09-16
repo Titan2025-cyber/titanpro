@@ -594,13 +594,48 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
       const headers = (msg.data.payload?.headers || []).reduce((acc: any, h: any) => {
         acc[h.name.toLowerCase()] = h.value; return acc;
       }, {});
-      // Extract a text/plain or text/html body from the payload tree.
+      // Extract text body AND every attachment part from the payload tree.
+      // Gmail nests parts as a tree (multipart/mixed → multipart/alternative →
+      // text/plain + text/html, plus siblings for each attachment). We walk
+      // it once, keep the first plain/html body, and collect every part that
+      // has a filename or a Content-Disposition of attachment/inline.
       const decode = (data?: string | null) => data ? Buffer.from(data, "base64").toString("utf8") : "";
       let body = "";
+      let bodyIsHtml = false;
+      const attachments: Array<{
+        attachmentId: string;
+        filename: string;
+        mimeType: string;
+        size: number;
+        inline: boolean;
+        contentId?: string;
+      }> = [];
       const walk = (part: any): void => {
         if (!part) return;
-        if (part.mimeType === "text/plain" && part.body?.data && !body) body = decode(part.body.data);
-        else if (part.mimeType === "text/html" && part.body?.data && !body) body = decode(part.body.data);
+        // Body: prefer HTML when present, else plain.
+        if (part.mimeType === "text/html" && part.body?.data && !bodyIsHtml) {
+          body = decode(part.body.data);
+          bodyIsHtml = true;
+        } else if (part.mimeType === "text/plain" && part.body?.data && !body) {
+          body = decode(part.body.data);
+        }
+        // Attachment: any part with a filename that has an attachmentId.
+        // Inline parts (referenced from an HTML body via cid:) still count so
+        // downloadable inline PDFs / images show up in the strip.
+        const filename = part.filename || "";
+        const attachmentId = part.body?.attachmentId || "";
+        if (filename && attachmentId) {
+          const disp = (part.headers || []).find((h: any) => (h.name || "").toLowerCase() === "content-disposition");
+          const cid = (part.headers || []).find((h: any) => (h.name || "").toLowerCase() === "content-id");
+          attachments.push({
+            attachmentId,
+            filename,
+            mimeType: part.mimeType || "application/octet-stream",
+            size: Number(part.body?.size) || 0,
+            inline: /inline/i.test(disp?.value || ""),
+            contentId: cid?.value?.replace(/[<>]/g, ""),
+          });
+        }
         (part.parts || []).forEach(walk);
       };
       walk(msg.data.payload);
@@ -609,6 +644,7 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
         from: headers.from || "", to: headers.to || "",
         subject: headers.subject || "(no subject)", date: headers.date || "",
         body,
+        attachments,
       });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "Failed to load message." });
@@ -616,37 +652,163 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
   });
 
   // ── SEND: send a real email as the current employee ────────────────────────
-  // body: { to, subject, body, cc?, bcc? }
+  // body: {
+  //   to, subject, body, cc?, bcc?,
+  //   attachments?: Array<{ filename, mimeType, dataBase64 }>
+  // }
+  //
+  // When no attachments are provided we build a simple text/plain message
+  // (same as before). When attachments are provided we build a multipart/
+  // mixed message: alternative(text/plain) + one part per attachment. Gmail
+  // caps outbound at 25 MB total; we enforce it here too so the API doesn't
+  // just error out mid-send.
+  const GMAIL_SEND_LIMIT = 25 * 1024 * 1024;
+
+  function b64url(buf: Buffer): string {
+    return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  // MIME wants base64 wrapped at 76 chars per line.
+  function b64wrap(str: string): string {
+    return str.match(/.{1,76}/g)?.join("\r\n") || str;
+  }
+  // A safe filename for the Content-Disposition header. Non-ASCII names
+  // switch to RFC 2231 encoding so they round-trip through Gmail correctly.
+  function encodeFilename(name: string): string {
+    if (/^[\x20-\x7E]+$/.test(name) && !/["\\]/.test(name)) {
+      return `"${name}"`;
+    }
+    return `"file"; filename*=UTF-8''${encodeURIComponent(name)}`;
+  }
+
   app.post("/api/gmail/send", requireStaffAuth, async (req: any, res) => {
     if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
     const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
     if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
 
-    const { to, subject, body, cc, bcc } = req.body || {};
+    const { to, subject, body, cc, bcc, attachments } = req.body || {};
     if (!to || !String(to).trim()) return res.status(400).json({ error: "Recipient (to) is required." });
+
+    // Validate attachments up front so we never build a truncated MIME blob.
+    const atts: Array<{ filename: string; mimeType: string; buf: Buffer }> = [];
+    if (Array.isArray(attachments)) {
+      let total = 0;
+      for (const a of attachments) {
+        if (!a?.filename || !a?.dataBase64) {
+          return res.status(400).json({ error: "Each attachment needs filename and dataBase64." });
+        }
+        const buf = Buffer.from(String(a.dataBase64), "base64");
+        total += buf.length;
+        if (total > GMAIL_SEND_LIMIT) {
+          return res.status(413).json({ error: "Attachments exceed Gmail's 25 MB send limit." });
+        }
+        atts.push({
+          filename: String(a.filename),
+          mimeType: String(a.mimeType || "application/octet-stream"),
+          buf,
+        });
+      }
+    }
 
     try {
       const from = (sqlite.prepare("SELECT gmail_email FROM employees WHERE id = ?").get(req.employee.id) as any)?.gmail_email || "";
-      // Build a raw RFC-2822 message.
-      const lines = [
+      const commonHeaders = [
         `To: ${to}`,
         cc ? `Cc: ${cc}` : "",
         bcc ? `Bcc: ${bcc}` : "",
         from ? `From: ${from}` : "",
         `Subject: ${encodeSubjectHeader(subject || "(no subject)")}`,
-        "Content-Type: text/plain; charset=UTF-8",
         "MIME-Version: 1.0",
-        "",
-        body || "",
       ].filter(Boolean);
-      const raw = Buffer.from(lines.join("\r\n"))
-        .toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
+      let mime: string;
+      if (atts.length === 0) {
+        mime = [
+          ...commonHeaders,
+          "Content-Type: text/plain; charset=UTF-8",
+          "",
+          body || "",
+        ].join("\r\n");
+      } else {
+        // Multipart/mixed boundary. Must be unique per message and not appear
+        // inside any body part; a random hex string is safe for both.
+        const boundary = `titanpro_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+        const parts: string[] = [];
+        // Body first — text/plain wrapped in the boundary.
+        parts.push([
+          `--${boundary}`,
+          "Content-Type: text/plain; charset=UTF-8",
+          "Content-Transfer-Encoding: 7bit",
+          "",
+          body || "",
+        ].join("\r\n"));
+        for (const a of atts) {
+          parts.push([
+            `--${boundary}`,
+            `Content-Type: ${a.mimeType}; name=${encodeFilename(a.filename)}`,
+            `Content-Disposition: attachment; filename=${encodeFilename(a.filename)}`,
+            "Content-Transfer-Encoding: base64",
+            "",
+            b64wrap(a.buf.toString("base64")),
+          ].join("\r\n"));
+        }
+        parts.push(`--${boundary}--`);
+        mime = [
+          ...commonHeaders,
+          `Content-Type: multipart/mixed; boundary="${boundary}"`,
+          "",
+          parts.join("\r\n"),
+        ].join("\r\n");
+      }
+
+      const raw = b64url(Buffer.from(mime, "utf8"));
       const gmail = google.gmail({ version: "v1", auth: oauth2 });
       const sent = await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
-      res.json({ success: true, id: sent.data.id, threadId: sent.data.threadId });
+      res.json({
+        success: true,
+        id: sent.data.id,
+        threadId: sent.data.threadId,
+        attachmentCount: atts.length,
+      });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "Failed to send email." });
+    }
+  });
+
+  // ── ATTACHMENT DOWNLOAD ───────────────────────────────────────────────
+  //   Streams a single attachment as a real file download. Requires the
+  //   caller to supply the filename & mime-type it saw in the message-detail
+  //   response — Gmail's attachments endpoint returns raw bytes only, no
+  //   name. This is the same pattern the Gmail web app uses when it hits
+  //   /attachment?id=...&filename=....
+  app.get("/api/gmail/messages/:id/attachments/:attId", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+
+    const filename = String(req.query.filename || "attachment");
+    const mimeType = String(req.query.mimeType || "application/octet-stream");
+
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      const att = await gmail.users.messages.attachments.get({
+        userId: "me",
+        messageId: req.params.id,
+        id: req.params.attId,
+      });
+      const data = att.data.data || "";
+      // Gmail returns base64url, not standard base64.
+      const b64 = data.replace(/-/g, "+").replace(/_/g, "/");
+      const buf = Buffer.from(b64, "base64");
+      res.setHeader("Content-Type", mimeType);
+      // RFC 5987 for non-ASCII filenames — modern browsers respect filename*.
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename.replace(/["\\]/g, "")}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      );
+      res.setHeader("Content-Length", String(buf.length));
+      res.end(buf);
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to download attachment." });
     }
   });
 
