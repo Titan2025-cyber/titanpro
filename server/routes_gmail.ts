@@ -562,6 +562,7 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
         const headers = (msg.data.payload?.headers || []).reduce((acc: any, h: any) => {
           acc[h.name.toLowerCase()] = h.value; return acc;
         }, {});
+        const labelIds = msg.data.labelIds || [];
         return {
           id: msg.data.id,
           threadId: msg.data.threadId,
@@ -570,7 +571,10 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
           to: headers.to || "",
           subject: headers.subject || "(no subject)",
           date: headers.date || "",
-          unread: (msg.data.labelIds || []).includes("UNREAD"),
+          unread: labelIds.includes("UNREAD"),
+          starred: labelIds.includes("STARRED"),
+          important: labelIds.includes("IMPORTANT"),
+          labels: labelIds,
         };
       }));
       res.json({ messages });
@@ -657,6 +661,69 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "Failed to update message." });
+    }
+  });
+
+  // ── MODIFY: generic label-add / label-remove for one message. ───────────────
+  //   Body: { add?: string[]; remove?: string[] }
+  //   Any Gmail label id is accepted, including system labels:
+  //     STARRED  — the star flag Gmail shows in the UI
+  //     UNREAD   — the unread flag (also handled by /read for backward compat)
+  //     INBOX    — remove this to archive the message
+  //     TRASH    — add this to soft-delete (Gmail keeps it 30 days)
+  //   This one endpoint powers the star, archive, mark-unread and trash
+  //   actions the client uses, so we don't have to add four near-identical
+  //   routes. Google returns the modified message; we relay just the labels
+  //   so the client can optimistically reconcile.
+  app.post("/api/gmail/messages/:id/modify", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+
+    const rawAdd = Array.isArray(req.body?.add) ? req.body.add : [];
+    const rawRemove = Array.isArray(req.body?.remove) ? req.body.remove : [];
+    // Only accept a small allow-list of system labels. Custom user labels
+    // aren't supported here yet — we do not want a client bug or a
+    // compromised session flipping arbitrary labels on someone's mailbox.
+    const ALLOWED = new Set(["STARRED", "UNREAD", "INBOX", "TRASH", "IMPORTANT"]);
+    const add = rawAdd.filter((l: any) => typeof l === "string" && ALLOWED.has(l));
+    const remove = rawRemove.filter((l: any) => typeof l === "string" && ALLOWED.has(l));
+    if (add.length === 0 && remove.length === 0) {
+      return res.status(400).json({ error: "Nothing to change (add/remove empty or contained only disallowed labels)." });
+    }
+
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      const out = await gmail.users.messages.modify({
+        userId: "me",
+        id: req.params.id,
+        requestBody: { addLabelIds: add, removeLabelIds: remove },
+      });
+      res.json({
+        success: true,
+        id: out.data.id,
+        labels: out.data.labelIds || [],
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to update message." });
+    }
+  });
+
+  // ── TRASH shortcut ────────────────────────────────────────────────────────
+  //   Uses Gmail's dedicated trash endpoint (equivalent to "Delete" in the
+  //   Gmail UI — message is retained in Trash for ~30 days). We surface this
+  //   separately from /modify because it uses a different API method and
+  //   because "delete" is a distinct user intent from "add TRASH label."
+  app.post("/api/gmail/messages/:id/trash", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      await gmail.users.messages.trash({ userId: "me", id: req.params.id });
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to move message to Trash." });
     }
   });
 }
