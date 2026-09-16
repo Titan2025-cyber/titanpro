@@ -158,7 +158,11 @@ export default function CompanyDocuments() {
       }
       const url = editing ? `/api/company-documents/${editing.id}` : "/api/company-documents";
       const method = editing ? "PATCH" : "POST";
-      const r = await apiRequest(url, { method, body: JSON.stringify(payload) });
+      const r = await apiRequest(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
       return r.json();
     },
     onSuccess: () => {

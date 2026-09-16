@@ -63,6 +63,25 @@ export async function apiRequest(
     const init = urlOrOptions as RequestInit;
     method = (init.method ?? "GET").toUpperCase();
     options = init;
+    // Callers pass JSON-stringified bodies without a Content-Type header all
+    // over the codebase (e.g. CompanyDocuments upload). Without the header
+    // express.json() refuses to parse the body, req.body is {}, and the
+    // endpoint responds 400 for missing required fields — which looks like
+    // a broken upload to the user. Default the header when the body is a
+    // string and the caller didn't already set one.
+    if (typeof init.body === "string") {
+      const h: Record<string, string> = {};
+      if (init.headers) {
+        // Normalize whatever the caller passed — array-of-tuples, Headers
+        // instance, or plain object — into a plain object we can merge
+        // safely (the later spread-merge with auth headers requires this).
+        new Headers(init.headers as any).forEach((v, k) => { h[k] = v; });
+      }
+      if (!Object.keys(h).some(k => k.toLowerCase() === "content-type")) {
+        h["Content-Type"] = "application/json";
+      }
+      options = { ...init, headers: h };
+    }
   } else {
     // GET shorthand: apiRequest("/api/jobs")
     url = methodOrUrl;
