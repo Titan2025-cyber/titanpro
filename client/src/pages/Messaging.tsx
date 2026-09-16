@@ -2,13 +2,15 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { UserSelect } from "@/components/UserSelect";
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
-import { Plus, Send, Hash, Briefcase, MapPin, FileText, Check, Sparkles, ArrowRight } from "lucide-react";
+import { Plus, Send, Hash, Briefcase, MapPin, FileText, Check, Sparkles, ArrowRight, UserPlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Channel, Message, Job } from "@shared/schema";
@@ -188,6 +190,382 @@ function CreateJobDialog({
   );
 }
 
+/** New Lead dialog: dedicated form to enter a complete lead/job from Dispatch.
+ *  On submit it POSTs a contact (if new customer) then a job, which fires the
+ *  server-side `notifyNewJob` — that already drops a bell notification into
+ *  every active employee's inbox AND posts an announcement to #general.
+ *  Also posts a summary message into the currently-active channel so the
+ *  Dispatch feed shows the new lead in real time. */
+function NewLeadDialog({
+  channelId, open, onOpenChange,
+}: {
+  channelId: number | undefined;
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+}) {
+  const { toast } = useToast();
+  const [, navigate] = useLocation();
+  const initial = {
+    // Customer
+    customerName: "",
+    customerPhone: "",
+    altPhone: "",
+    customerEmail: "",
+    address: "",
+    // Loss
+    lossType: "water",
+    division: "mitigation",
+    market: "",
+    description: "",
+    // Insurance
+    insuranceCarrier: "",
+    claimNumber: "",
+    policyNumber: "",
+    adjusterName: "",
+    adjusterPhone: "",
+    adjusterEmail: "",
+    // Assignment / source
+    assignedTech: "",
+    leadSource: "",
+    leadSourceDetail: "",
+  };
+  const [form, setForm] = useState(initial);
+  const set = (k: keyof typeof initial, v: string) => setForm(f => ({ ...f, [k]: v }));
+
+  // Reset on close so the next open is fresh.
+  useEffect(() => { if (!open) setForm(initial); /* eslint-disable-next-line */ }, [open]);
+
+  const submit = useMutation({
+    mutationFn: async () => {
+      const trimmed = form.customerName.trim();
+      if (!trimmed) throw new Error("Customer name is required");
+
+      // Step 1 — Reuse an existing customer contact when the name matches
+      // (case-insensitive), otherwise create a new one. Same pattern as
+      // parse-job so we do not duplicate customer records on repeat leads.
+      const contactsRes = await apiRequest("GET", "/api/contacts");
+      const contacts = (await contactsRes.json()) as Array<{ id: number; name: string; type?: string }>;
+      let contactId: number | null = null;
+      const existing = contacts.find(c =>
+        (c.type === "customer" || !c.type) &&
+        c.name.toLowerCase() === trimmed.toLowerCase()
+      );
+      if (existing) {
+        contactId = existing.id;
+      } else {
+        const newContactRes = await apiRequest("POST", "/api/contacts", {
+          name: trimmed,
+          type: "customer",
+          email: form.customerEmail.trim() || null,
+          phone: form.customerPhone.trim() || null,
+          address: form.address.trim() || null,
+        });
+        const nc = await newContactRes.json();
+        contactId = nc?.id ?? null;
+      }
+
+      // Step 2 — Build the job payload. Empty strings coerced to null so
+      // SQLite doesn't reject text-column bindings.
+      const nn = (v: string) => (v.trim() === "" ? null : v.trim());
+      const jobPayload: Record<string, any> = {
+        contactId,
+        lossType: form.lossType || "water",
+        division: form.division || "mitigation",
+        status: "new",
+        progressStage: "pending_sale",
+        address: nn(form.address),
+        description: nn(form.description) || `${trimmed}${form.market ? " \u2014 " + form.market : ""}`,
+        insuranceCarrier: nn(form.insuranceCarrier),
+        claimNumber: nn(form.claimNumber),
+        policyNumber: nn(form.policyNumber),
+        adjusterName: nn(form.adjusterName),
+        adjusterPhone: nn(form.adjusterPhone),
+        adjusterEmail: nn(form.adjusterEmail),
+        assignedTech: nn(form.assignedTech),
+        leadSource: nn(form.leadSource),
+        leadSourceDetail: nn(form.leadSourceDetail),
+      };
+
+      const jobRes = await apiRequest("POST", "/api/jobs", jobPayload);
+      const job = await jobRes.json();
+
+      // Step 3 — Announce in the current Dispatch channel (best-effort).
+      // The server-side notifyNewJob already handles the team-wide bell +
+      // #general announcement; this extra post keeps the current channel
+      // conversation aware too.
+      if (channelId) {
+        const lines: string[] = [`\ud83c\udd95 New lead entered: ${job.jobNumber}`];
+        lines.push(`Customer: ${trimmed}`);
+        if (jobPayload.address) lines.push(`Address: ${jobPayload.address}`);
+        lines.push(`Loss: ${(jobPayload.lossType || "").charAt(0).toUpperCase() + (jobPayload.lossType || "").slice(1)}`);
+        if (form.market) lines.push(`Market: ${form.market}`);
+        if (jobPayload.assignedTech) lines.push(`Assigned: ${jobPayload.assignedTech}`);
+        if (jobPayload.insuranceCarrier || jobPayload.claimNumber) {
+          lines.push(`Insurance: ${[jobPayload.insuranceCarrier, jobPayload.claimNumber && `Claim ${jobPayload.claimNumber}`].filter(Boolean).join(" \u00b7 ")}`);
+        }
+        try {
+          await apiRequest("POST", `/api/channels/${channelId}/messages`, {
+            author: "Titan Pro",
+            body: lines.join("\n"),
+          });
+        } catch { /* non-fatal */ }
+      }
+
+      return job;
+    },
+    onSuccess: (job: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/contacts"] });
+      if (channelId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/channels", channelId, "messages"] });
+      }
+      toast({ title: "Lead created", description: `${job.jobNumber} \u00b7 team notified` });
+      onOpenChange(false);
+      if (job?.id) navigate(`/jobs/${job.id}`);
+    },
+    onError: (e: any) => toast({
+      title: "Could not create lead",
+      description: e?.message || "Please check the form and try again.",
+      variant: "destructive",
+    }),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl max-h-[90vh] p-0 gap-0 flex flex-col">
+        <DialogHeader className="px-6 pt-6 pb-3 border-b shrink-0">
+          <DialogTitle className="flex items-center gap-2">
+            <UserPlus className="w-5 h-5 text-[hsl(var(--titan-red))]" />
+            New Lead
+          </DialogTitle>
+          <p className="text-xs text-muted-foreground">
+            Enter as much as you know. The whole team is notified the moment you save.
+          </p>
+        </DialogHeader>
+
+        <ScrollArea className="flex-1 overflow-y-auto px-6 py-4">
+          <div className="space-y-6">
+            {/* --- Customer --- */}
+            <section className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Customer</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="sm:col-span-2">
+                  <Label className="text-xs">Full name *</Label>
+                  <Input
+                    value={form.customerName}
+                    onChange={e => set("customerName", e.target.value)}
+                    placeholder="Jane Homeowner"
+                    data-testid="input-lead-name"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Phone</Label>
+                  <Input
+                    value={form.customerPhone}
+                    onChange={e => set("customerPhone", e.target.value)}
+                    placeholder="(706) 555-0100"
+                    data-testid="input-lead-phone"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Alt. phone</Label>
+                  <Input
+                    value={form.altPhone}
+                    onChange={e => set("altPhone", e.target.value)}
+                    placeholder="(706) 555-0101"
+                    data-testid="input-lead-altphone"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <Label className="text-xs">Email</Label>
+                  <Input
+                    type="email"
+                    value={form.customerEmail}
+                    onChange={e => set("customerEmail", e.target.value)}
+                    placeholder="jane@example.com"
+                    data-testid="input-lead-email"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <Label className="text-xs">Property address</Label>
+                  <Input
+                    value={form.address}
+                    onChange={e => set("address", e.target.value)}
+                    placeholder="929 Earle St, Thomson, GA 30824"
+                    data-testid="input-lead-address"
+                  />
+                </div>
+              </div>
+            </section>
+
+            {/* --- Loss --- */}
+            <section className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Loss</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <Label className="text-xs">Loss type</Label>
+                  <Select value={form.lossType} onValueChange={v => set("lossType", v)}>
+                    <SelectTrigger data-testid="select-lead-losstype"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="water">Water</SelectItem>
+                      <SelectItem value="fire">Fire</SelectItem>
+                      <SelectItem value="mold">Mold</SelectItem>
+                      <SelectItem value="storm">Storm</SelectItem>
+                      <SelectItem value="biohazard">Biohazard</SelectItem>
+                      <SelectItem value="reconstruction">Reconstruction</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Division</Label>
+                  <Select value={form.division} onValueChange={v => set("division", v)}>
+                    <SelectTrigger data-testid="select-lead-division"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mitigation">Mitigation</SelectItem>
+                      <SelectItem value="reconstruction">Reconstruction</SelectItem>
+                      <SelectItem value="both">Both</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Market</Label>
+                  <Input
+                    value={form.market}
+                    onChange={e => set("market", e.target.value)}
+                    placeholder="Augusta, GA"
+                    data-testid="input-lead-market"
+                  />
+                </div>
+                <div className="sm:col-span-3">
+                  <Label className="text-xs">Description of loss</Label>
+                  <Textarea
+                    className="min-h-[80px]"
+                    value={form.description}
+                    onChange={e => set("description", e.target.value)}
+                    placeholder="Drain leak under home, water damage to bathroom floor..."
+                    data-testid="input-lead-description"
+                  />
+                </div>
+              </div>
+            </section>
+
+            {/* --- Insurance --- */}
+            <section className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Insurance</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">Carrier</Label>
+                  <Input
+                    value={form.insuranceCarrier}
+                    onChange={e => set("insuranceCarrier", e.target.value)}
+                    placeholder="State Farm"
+                    data-testid="input-lead-carrier"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Claim #</Label>
+                  <Input
+                    value={form.claimNumber}
+                    onChange={e => set("claimNumber", e.target.value)}
+                    data-testid="input-lead-claim"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Policy #</Label>
+                  <Input
+                    value={form.policyNumber}
+                    onChange={e => set("policyNumber", e.target.value)}
+                    data-testid="input-lead-policy"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Adjuster name</Label>
+                  <Input
+                    value={form.adjusterName}
+                    onChange={e => set("adjusterName", e.target.value)}
+                    data-testid="input-lead-adjuster-name"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Adjuster phone</Label>
+                  <Input
+                    value={form.adjusterPhone}
+                    onChange={e => set("adjusterPhone", e.target.value)}
+                    data-testid="input-lead-adjuster-phone"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Adjuster email</Label>
+                  <Input
+                    type="email"
+                    value={form.adjusterEmail}
+                    onChange={e => set("adjusterEmail", e.target.value)}
+                    data-testid="input-lead-adjuster-email"
+                  />
+                </div>
+              </div>
+            </section>
+
+            {/* --- Assignment / Source --- */}
+            <section className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Assignment & Source</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">Assigned tech</Label>
+                  <Input
+                    value={form.assignedTech}
+                    onChange={e => set("assignedTech", e.target.value)}
+                    placeholder="Kalobe Hedden"
+                    data-testid="input-lead-tech"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Lead source</Label>
+                  <Input
+                    value={form.leadSource}
+                    onChange={e => set("leadSource", e.target.value)}
+                    placeholder="Referral, Google, Repeat, etc."
+                    data-testid="input-lead-source"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <Label className="text-xs">Source detail</Label>
+                  <Input
+                    value={form.leadSourceDetail}
+                    onChange={e => set("leadSourceDetail", e.target.value)}
+                    placeholder="e.g. Nick @ Universal, walk-in, etc."
+                    data-testid="input-lead-source-detail"
+                  />
+                </div>
+              </div>
+            </section>
+          </div>
+        </ScrollArea>
+
+        <DialogFooter className="px-6 py-4 border-t shrink-0 bg-muted/30">
+          <Button
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+            data-testid="button-lead-cancel"
+          >
+            Cancel
+          </Button>
+          <Button
+            className="bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red)/0.85)] text-white"
+            disabled={submit.isPending || !form.customerName.trim()}
+            onClick={() => submit.mutate()}
+            data-testid="button-lead-submit"
+          >
+            <Check className="w-4 h-4 mr-1" />
+            {submit.isPending ? "Creating..." : "Create lead & notify team"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function Messaging() {
   const [activeChannelId, setActiveChannelId] = useState<number | null>(null);
   const [msgText, setMsgText] = useState("");
@@ -195,6 +573,7 @@ export default function Messaging() {
   const [newChannelOpen, setNewChannelOpen] = useState(false);
   const [channelName, setChannelName] = useState("");
   const [jobDialogMsg, setJobDialogMsg] = useState<Message | null>(null);
+  const [newLeadOpen, setNewLeadOpen] = useState(false);
 
   const [, navigate] = useLocation();
   const { data: channels = [] } = useQuery<Channel[]>({ queryKey: ["/api/channels"] });
@@ -273,10 +652,19 @@ export default function Messaging() {
           <p className="font-semibold">{activeChannel?.name || "general"}</p>
           {activeChannel?.description && <p className="text-sm text-muted-foreground hidden sm:block">— {activeChannel.description}</p>}
           {jobChannel && (
-            <Badge className="ml-auto bg-[hsl(var(--titan-red))]/10 text-[hsl(var(--titan-red))] border-[hsl(var(--titan-red))]/30">
+            <Badge className="ml-2 bg-[hsl(var(--titan-red))]/10 text-[hsl(var(--titan-red))] border-[hsl(var(--titan-red))]/30">
               <MapPin className="w-3 h-3 mr-1" />{marketFor(activeChannel?.name)}
             </Badge>
           )}
+          <Button
+            size="sm"
+            className="ml-auto bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red)/0.85)] text-white h-8"
+            onClick={() => setNewLeadOpen(true)}
+            data-testid="button-new-lead"
+          >
+            <UserPlus className="w-4 h-4 mr-1.5" />
+            New Lead
+          </Button>
         </div>
 
         {/* Intake helper banner for job channels */}
@@ -359,6 +747,12 @@ export default function Messaging() {
           </div>
         </div>
       </div>
+
+      <NewLeadDialog
+        channelId={channelId}
+        open={newLeadOpen}
+        onOpenChange={setNewLeadOpen}
+      />
 
       {jobDialogMsg && channelId && (
         <CreateJobDialog
