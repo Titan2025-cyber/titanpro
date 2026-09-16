@@ -1,7 +1,7 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useParams, Link, useLocation } from "wouter";
 import { useState, lazy, Suspense, useEffect, useRef } from "react";
-import { ArrowLeft, MapPin, Phone, Mail, Shield, FileText, Receipt, Droplets, Camera, FolderOpen, TrendingUp, StickyNote, Lock, Globe, Pencil, Trash2, Plus, Check, X, Wrench, MessageSquare, Star, Send, KeyRound, Copy, RefreshCw, ExternalLink, ShieldCheck, HandCoins, Upload, Paperclip, Mic, MicOff, DollarSign, FlaskConical } from "lucide-react";
+import { ArrowLeft, MapPin, Phone, Mail, Shield, FileText, Receipt, Droplets, Camera, FolderOpen, TrendingUp, StickyNote, Lock, Globe, Pencil, Trash2, Plus, Check, X, Wrench, Star, KeyRound, Copy, RefreshCw, ExternalLink, ShieldCheck, HandCoins, Upload, Paperclip, Mic, MicOff, DollarSign, FlaskConical } from "lucide-react";
 import UploadExternalDocDialog from "@/components/UploadExternalDocDialog";
 import { CarrierSelect } from "@/components/CarrierSelect";
 import { StageSelector, DateManager, PROGRESS_STAGES } from "@/components/JobPipeline";
@@ -56,77 +56,6 @@ import { WarrantyCallPanel } from "@/components/WarrantyCallPanel";
 import { ReferralPayoutPanel } from "@/components/ReferralPayoutPanel";
 import { fmtDate, fmtDateShort } from "@/lib/dates";
 
-// ── Per-Job SMS Thread ───────────────────────────────────────────────────────
-function JobSMSThread({ jobId, contactPhone }: { jobId: number; contactPhone?: string }) {
-  const { toast } = useToast();
-  const [body, setBody] = useState("");
-  const [to, setTo] = useState(contactPhone || "");
-
-  const { data: messages = [], isLoading, refetch } = useQuery<any[]>({
-    queryKey: ["/api/jobs", jobId, "sms"],
-    queryFn: () => apiRequest("GET", `/api/jobs/${jobId}/sms`).then(r => r.json()),
-  });
-
-  const sendMutation = useMutation({
-    mutationFn: () => apiRequest("POST", `/api/jobs/${jobId}/sms`, { to, body, direction: "outbound" }).then(r => r.json()),
-    onSuccess: () => { setBody(""); refetch(); toast({ title: "SMS sent" }); },
-    onError: () => toast({ title: "Error", description: "Failed to send SMS", variant: "destructive" }),
-  });
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <Input
-          placeholder="Phone number (e.g. 7065551234)"
-          value={to}
-          onChange={e => setTo(e.target.value)}
-          className="w-48"
-          data-testid="input-sms-to"
-        />
-        <span className="text-xs text-muted-foreground">From: Titan Restoration (706-922-0154)</span>
-      </div>
-      <div className="border rounded-lg divide-y max-h-80 overflow-y-auto">
-        {isLoading ? (
-          <div className="p-4 text-center text-muted-foreground text-sm">Loading...</div>
-        ) : messages.length === 0 ? (
-          <div className="p-6 text-center text-muted-foreground text-sm">
-            <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-30" />
-            No messages yet
-          </div>
-        ) : messages.map((msg: any) => (
-          <div key={msg.id} className={`p-3 flex gap-3 ${msg.direction === "outbound" ? "bg-blue-50 dark:bg-blue-950/20" : ""}`} data-testid={`sms-msg-${msg.id}`}>
-            <div className={`w-2 h-2 rounded-full mt-2 shrink-0 ${msg.direction === "outbound" ? "bg-[hsl(var(--titan-blue))]" : "bg-green-500"}`} />
-            <div className="flex-1">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">{msg.direction === "outbound" ? "Titan" : "Homeowner"}</span>
-                <span className="text-xs text-muted-foreground">{msg.created_at ? new Date(msg.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}</span>
-              </div>
-              <p className="text-sm mt-0.5">{msg.body}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="flex gap-2">
-        <Textarea
-          value={body}
-          onChange={e => setBody(e.target.value)}
-          placeholder="Type a message..."
-          rows={2}
-          data-testid="input-sms-body"
-          className="flex-1"
-        />
-        <Button
-          onClick={() => sendMutation.mutate()}
-          disabled={!body.trim() || !to.trim() || sendMutation.isPending}
-          className="bg-[hsl(var(--titan-blue))] hover:bg-[hsl(var(--titan-blue-dark))] text-white self-end"
-          data-testid="button-send-sms"
-        >
-          <Send className="w-4 h-4" />
-        </Button>
-      </div>
-    </div>
-  );
-}
 
 // ── Review Request Button ────────────────────────────────────────────────────
 function ReviewRequestButton({ jobId, jobStatus }: { jobId: number; jobStatus: string }) {
@@ -1777,7 +1706,6 @@ export default function JobDetail() {
           {jobScope !== "reconstruction" && <TabsTrigger value="dry-report">Dry Report</TabsTrigger>}
           <TabsTrigger value="warranty"><Wrench className="w-3 h-3 mr-1 inline-block" />Warranty Calls</TabsTrigger>
           {hasReferralPartner && <TabsTrigger value="referral-payout"><HandCoins className="w-3 h-3 mr-1 inline-block" />Referral Payout</TabsTrigger>}
-          <TabsTrigger value="sms-thread"><MessageSquare className="w-3 h-3 mr-1 inline-block" />SMS Thread</TabsTrigger>
           <TabsTrigger value="lien-waivers"><ShieldCheck className="w-3 h-3 mr-1 inline-block" />Lien Waivers</TabsTrigger>
         </TabsList>
 
@@ -2476,9 +2404,6 @@ export default function JobDetail() {
             />
           </TabsContent>
         )}
-        <TabsContent value="sms-thread" className="mt-4">
-          <JobSMSThread jobId={Number(id)} contactPhone={contact?.phone ?? undefined} />
-        </TabsContent>
       </Tabs>
 
       {/* External-doc upload dialogs (mounted once, opened from the tab headers) */}
