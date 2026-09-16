@@ -1,7 +1,7 @@
-import { useState } from "react";
-import { UserSelect } from "@/components/UserSelect";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useAuth } from "@/lib/auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,10 +16,22 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 
 export default function TimeClock() {
   const { toast } = useToast();
+  const { user } = useAuth();
+  // Every user is locked to themselves — the clock-in row is bound to the
+  // session on the server, so there is no way to clock someone else in
+  // from this screen. Managers who need to backfill a missed punch use
+  // the manual edit / delete controls on the entries list below.
   const [selectedEmployee, setSelectedEmployee] = useState("");
   const [selectedJob, setSelectedJob] = useState("");
   const [geoError, setGeoError] = useState("");
   const [clockingIn, setClockingIn] = useState(false);
+
+  // Once the logged-in user loads, default the picker to them. Non-managers
+  // have the picker hidden, but this state still drives the mutation and
+  // toast text.
+  useEffect(() => {
+    if (user?.name && !selectedEmployee) setSelectedEmployee(user.name);
+  }, [user?.name, selectedEmployee]);
 
   const { data: entries = [], refetch } = useQuery<any[]>({
     queryKey: ["/api/time-clock"],
@@ -191,12 +203,16 @@ export default function TimeClock() {
           <CardContent className="space-y-3">
             <div>
               <Label>Employee</Label>
-              <UserSelect
-                value={selectedEmployee}
-                onChange={setSelectedEmployee}
-                placeholder="Select employee..."
-                testId="select-employee"
-              />
+              <div
+                className="h-10 px-3 flex items-center rounded-md border bg-muted text-sm"
+                data-testid="locked-employee"
+              >
+                {user?.name || "—"}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                You can only clock yourself in. Managers: use Edit on an
+                entry below to backfill someone else's missed punch.
+              </p>
             </div>
             <div>
               <Label>Job (optional)</Label>

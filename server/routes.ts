@@ -6756,7 +6756,7 @@ cody@titanrestorationllc.com`;
   }
 
   // ── Suite 5 Routes ──────────────────────────────────────────────────────────────
-  registerSuite5Routes(app, sqlite, { requireRole });
+  registerSuite5Routes(app, sqlite, { requireRole, requireStaffAuth });
   registerSuite6Routes(app, sqlite);
   registerAIAgentRoutes(app, sqlite);
   registerCompanyDocsRoutes(app, sqlite);

@@ -2,12 +2,21 @@ import type { Express, RequestHandler } from "express";
 import type { Database } from "better-sqlite3";
 import { sendEventTagEmails, newlyAddedAttendees } from "./notify_tags";
 
-type SuiteAuth = { requireRole: (...roles: string[]) => RequestHandler };
+type SuiteAuth = {
+  requireRole: (...roles: string[]) => RequestHandler;
+  requireStaffAuth?: RequestHandler;
+};
 const suite5Passthrough: RequestHandler = (_req, _res, next) => next();
 
 export function registerSuite5Routes(app: Express, sqlite: Database, auth?: SuiteAuth) {
   // Manager-level gate for lien waivers, QB sync, and other back-office mutations.
   const requireManage: RequestHandler = auth ? auth.requireRole("owner", "admin", "office", "general_manager") : suite5Passthrough;
+  // Every staff member — attaches req.employee. Used by the GPS time clock so
+  // the clock-in row is bound to the SESSION user, not whatever name the
+  // client puts in the body (that was the 'Justin clocks in as Blake' bug).
+  const requireStaff: RequestHandler = auth?.requireStaffAuth || suite5Passthrough;
+  // Manager-or-self gate for time-clock edits.
+  const requireManagerRoles: RequestHandler = auth ? auth.requireRole("owner", "admin", "office", "general_manager") : suite5Passthrough;
 
   // ── Create Suite 5 tables ──────────────────────────────────────────────────
   sqlite.exec(`CREATE TABLE IF NOT EXISTS qb_sync_log (
@@ -351,26 +360,48 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
     } catch { res.json([]); }
   });
 
-  app.post("/api/time-clock/clock-in", (req, res) => {
+  app.post("/api/time-clock/clock-in", requireStaff, (req: any, res) => {
     try {
-      const { employeeId, employeeName, jobId, lat, lng, notes } = req.body;
-      // Auto-close any open entry for this employee
-      const open = sqlite.prepare("SELECT id FROM time_clock WHERE employee_name=? AND clock_out_at IS NULL").get(employeeName) as any;
+      // IDENTITY IS FROM THE SESSION, NOT THE REQUEST BODY.
+      //
+      // Prior behavior trusted req.body.employeeName which meant one tech
+      // could clock in / out on behalf of another (accidentally, if the
+      // UI dropdown defaulted to a different person; or maliciously).
+      // The session is the only trustworthy identifier here.
+      //
+      // Managers who need to punch someone else in still can — they use
+      // the manual edit endpoint (PATCH /api/time-clock/:id) which is
+      // gated on manager roles and auditable.
+      const emp = req.employee;
+      if (!emp?.id) return res.status(401).json({ error: "Authentication required." });
+
+      const { jobId, lat, lng, notes } = req.body || {};
+      // Auto-close any open entry for THIS employee (by id — authoritative —
+      // or fall back to name for pre-migration rows that lack employee_id).
+      const open = sqlite.prepare(
+        "SELECT id FROM time_clock WHERE (employee_id = ? OR (employee_id IS NULL AND employee_name = ?)) AND clock_out_at IS NULL"
+      ).get(emp.id, emp.name) as any;
       if (open) {
-        sqlite.prepare("UPDATE time_clock SET clock_out_at=? WHERE id=?").run(new Date().toISOString(), open.id);
+        sqlite.prepare("UPDATE time_clock SET clock_out_at=? WHERE id=?")
+          .run(new Date().toISOString(), open.id);
       }
       const now = new Date().toISOString();
       const row = sqlite.prepare(
         "INSERT INTO time_clock (employee_id, employee_name, job_id, clock_in_at, clock_in_lat, clock_in_lng, notes, created_at) VALUES (?,?,?,?,?,?,?,?) RETURNING *"
-      ).get(employeeId || null, employeeName, jobId || null, now, lat || null, lng || null, notes || null, now);
+      ).get(emp.id, emp.name, jobId || null, now, lat || null, lng || null, notes || null, now);
       res.json(row);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/time-clock/clock-out", (req, res) => {
+  app.post("/api/time-clock/clock-out", requireStaff, (req: any, res) => {
     try {
-      const { employeeName, lat, lng } = req.body;
-      const open = sqlite.prepare("SELECT * FROM time_clock WHERE employee_name=? AND clock_out_at IS NULL ORDER BY clock_in_at DESC LIMIT 1").get(employeeName) as any;
+      const emp = req.employee;
+      if (!emp?.id) return res.status(401).json({ error: "Authentication required." });
+      const { lat, lng } = req.body || {};
+      // Match on employee_id first (authoritative), fall back to name for legacy rows.
+      const open = sqlite.prepare(
+        "SELECT * FROM time_clock WHERE (employee_id = ? OR (employee_id IS NULL AND employee_name = ?)) AND clock_out_at IS NULL ORDER BY clock_in_at DESC LIMIT 1"
+      ).get(emp.id, emp.name) as any;
       if (!open) return res.status(404).json({ error: "No open clock-in found" });
       const now = new Date();
       const clockIn = new Date(open.clock_in_at);
@@ -383,10 +414,8 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
       // map doesn't show stale positions. The tech_locations table is a
       // "currently on shift" cache, not a history log.
       try {
-        if (open.employee_id) {
-          sqlite.prepare("DELETE FROM tech_locations WHERE employee_id = ?").run(open.employee_id);
-        }
-        sqlite.prepare("DELETE FROM tech_locations WHERE employee_name = ?").run(open.employee_name);
+        sqlite.prepare("DELETE FROM tech_locations WHERE employee_id = ?").run(emp.id);
+        sqlite.prepare("DELETE FROM tech_locations WHERE employee_name = ?").run(emp.name);
       } catch(_) {}
 
       res.json(row);
