@@ -65,6 +65,10 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
   const [activeFilter, setActiveFilter] = useState("all");
   const [lightbox, setLightbox] = useState<Photo | null>(null);
   const lightboxScrollRef = useRef<HTMLDivElement | null>(null);
+  // The inner image-row scroll container — what actually scrolls when the
+  // user pinch-zooms or double-taps to zoom. Wheel + PageUp/Dn / Space
+  // scrolling routes here, not to the outer flex column.
+  const lightboxImageRef = useRef<HTMLDivElement | null>(null);
   // Ref for the touch-swipe tracking on the lightbox image. Populated by
   // handleTouchStart, consumed by handleTouchEnd. Kept in a ref so we don't
   // trigger re-renders on every touchmove event.
@@ -393,13 +397,24 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
   const showPrev = () => { if (canPrev) setLightbox(filtered[lightboxIndex - 1]); };
   const showNext = () => { if (canNext) setLightbox(filtered[lightboxIndex + 1]); };
 
-  // Snap the lightbox overlay back to the top each time a new photo is
-  // opened (initial open OR prev/next nav). Otherwise, if the previous
-  // photo’s metadata panel had been scrolled, the next one appears mid-
-  // page instead of at the top of its own image.
+  // Reset the image-row scroll on every new photo so a photo the user
+  // previously zoomed / panned doesn't leak its scroll offset onto the
+  // next one they navigate to.
   useEffect(() => {
-    if (lightbox && lightboxScrollRef.current) {
-      lightboxScrollRef.current.scrollTop = 0;
+    const el = lightboxImageRef.current;
+    if (lightbox && el) {
+      el.scrollTop = 0;
+      el.scrollLeft = 0;
+      // Also drop any inline double-tap-zoom sizing that was applied to
+      // the previous <img>.
+      const img = el.querySelector("img");
+      if (img) {
+        img.style.width = "";
+        img.style.height = "";
+        img.style.maxWidth = "";
+        img.style.maxHeight = "";
+        delete (img as any).dataset.zoomed;
+      }
     }
   }, [lightbox?.id]);
 
@@ -417,37 +432,38 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
       else if (e.key === "ArrowRight") { e.preventDefault(); showNext(); }
       else if (e.key === "Escape") { setLightbox(null); }
       else if (e.key === "PageDown" || e.key === " ") {
-        // Space / PageDown — jump one screen down inside the lightbox.
-        if (lightboxScrollRef.current) {
+        // Space / PageDown — jump one screen down inside the (zoomed)
+        // image. When the image is at fit-to-viewport this is a no-op,
+        // which is fine.
+        if (lightboxImageRef.current) {
           e.preventDefault();
-          lightboxScrollRef.current.scrollBy({ top: window.innerHeight * 0.85, behavior: "smooth" });
+          lightboxImageRef.current.scrollBy({ top: window.innerHeight * 0.85, behavior: "smooth" });
         }
       }
       else if (e.key === "PageUp") {
-        if (lightboxScrollRef.current) {
+        if (lightboxImageRef.current) {
           e.preventDefault();
-          lightboxScrollRef.current.scrollBy({ top: -window.innerHeight * 0.85, behavior: "smooth" });
+          lightboxImageRef.current.scrollBy({ top: -window.innerHeight * 0.85, behavior: "smooth" });
         }
       }
     };
     window.addEventListener("keydown", onKey);
 
-    // Belt-and-suspenders wheel routing: whenever the wheel fires while the
-    // lightbox is open, forward the delta to the lightbox scroll container.
-    // This makes desktop mouse-wheel work even if the wheel event target is
-    // an image / button inside the modal that would otherwise not propagate
-    // scroll up to the container (e.g. some browsers suppress default wheel
-    // scroll on <button> and <img> elements). Listener is `passive: false`
-    // so we can preventDefault the underlying page scroll while we're open.
+    // Desktop mouse-wheel forwarding: forward wheel events to the image
+    // row so scroll works even when the wheel target is the <img> itself
+    // (Chrome sometimes suppresses default wheel scroll on <img>). This
+    // only matters when the image is zoomed above fit-to-viewport size.
     const onWheel = (e: WheelEvent) => {
       const root = lightboxScrollRef.current;
-      if (!root) return;
-      // Only handle wheel events that landed inside our modal — anything
-      // else can bubble normally.
+      const imgRow = lightboxImageRef.current;
+      if (!root || !imgRow) return;
       if (!root.contains(e.target as Node)) return;
+      // If the wheel landed inside the metadata panel, don't hijack it —
+      // let the meta panel scroll normally.
+      if (!imgRow.contains(e.target as Node)) return;
       e.preventDefault();
-      root.scrollTop += e.deltaY;
-      root.scrollLeft += e.deltaX;
+      imgRow.scrollTop += e.deltaY;
+      imgRow.scrollLeft += e.deltaX;
     };
     window.addEventListener("wheel", onWheel, { passive: false });
     return () => {
@@ -1082,25 +1098,44 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
           no longer closes on tap, so a tech scrolling a tall portrait
           photo can't accidentally dismiss the viewer. */}
       {lightbox && (
+        // ── Lightbox root ───────────────────────────────────────────────
+        //
+        // Full-viewport flex column with THREE rows:
+        //   [toolbar]  fixed height, safe-area top
+        //   [image]    flex-1 min-h-0 — the ONLY row that can grow
+        //   [meta]     capped max-h-[40vh], scrolls internally if it overflows
+        //
+        // The image row is its own scroll container with
+        //   touch-action: pinch-zoom  — native two-finger zoom on iOS/Android
+        //   overflow: auto            — lets the user pan a zoomed image
+        // and the <img> uses `max-w-full max-h-full object-contain` so a
+        // photo of any aspect ratio always fits inside that row on load,
+        // and pinching / two-finger-scroll lets techs inspect detail
+        // without the whole viewer scrolling behind them.
+        //
+        // Uses 100dvh (dynamic viewport height) so mobile browser chrome
+        // showing / hiding never cuts the image off. Falls back to 100vh.
         <div
           ref={lightboxScrollRef}
-          className="fixed inset-0 z-50 bg-black/95 overflow-y-scroll overscroll-contain"
-          style={{ WebkitOverflowScrolling: "touch" as any }}
+          className="fixed inset-0 z-50 bg-black/95 flex flex-col overscroll-contain"
+          style={{
+            height: "100dvh",
+            maxHeight: "100dvh",
+            WebkitOverflowScrolling: "touch" as any,
+          }}
           data-testid="lightbox-root"
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
           onClick={e => {
             // Clicking the black backdrop area (not the content column)
-            // closes the viewer. We use event delegation here so we don't
-            // need a separate absolutely-positioned button eating scroll
-            // gestures on desktop.
+            // closes the viewer.
             if (e.target === e.currentTarget) setLightbox(null);
           }}
         >
-          {/* Sticky top toolbar: prev/next + counter + close.
-              `sticky top-0` keeps it pinned during scroll on iOS where a
-              nested flex-1 + overflow-y often drops the pin. Uses
-              env(safe-area-inset-top) so the notch never eats the buttons. */}
+          {/* Fixed-height top toolbar: prev/next + counter + close.
+              Safe-area top padding so the notch never eats the buttons. */}
           <div
-            className="sticky top-0 z-10 flex items-center justify-between px-3 py-2 border-b border-white/10 bg-black/70 backdrop-blur-sm"
+            className="flex-shrink-0 flex items-center justify-between px-3 py-2 border-b border-white/10 bg-black/70 backdrop-blur-sm"
             style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))" }}
           >
             <div className="flex items-center gap-2">
@@ -1138,14 +1173,19 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
             </button>
           </div>
 
-          {/* Image row — takes all remaining vertical space between the
-              toolbar (above) and the metadata panel (below). The image is
-              constrained to the full width and height of this row and
-              rendered with object-contain so the entire photo is visible
-              at any aspect ratio. No zoom, no crop, no scroll. */}
+          {/* Image row — takes ALL remaining vertical space between the
+              toolbar (above) and the metadata panel (below). Its own
+              scroll container: touch-action:pinch-zoom gives iOS/Android
+              native two-finger zoom, overflow:auto lets the user pan a
+              zoomed image. The <img> fits the row exactly on load
+              (object-contain, max-w/h full) regardless of aspect ratio. */}
           <div
-            className="flex-1 min-h-0 flex items-center justify-center px-3"
+            ref={lightboxImageRef}
+            className="flex-1 min-h-0 min-w-0 overflow-auto flex items-center justify-center px-2 py-1"
+            style={{ touchAction: "pinch-zoom" }}
             onClick={e => {
+              // Only close if the click landed on the empty scroll area,
+              // not on the image itself.
               if (e.target === e.currentTarget) setLightbox(null);
             }}
           >
@@ -1153,18 +1193,40 @@ export default function JobPhotos({ jobId, readOnly = false, phase }: Props) {
               src={lightbox.dataUrl}
               alt={lightbox.caption || lightbox.filename}
               className="max-w-full max-h-full w-auto h-auto object-contain select-none rounded-lg"
-              style={{ touchAction: "manipulation" }}
               draggable={false}
+              onDoubleClick={e => {
+                // Double-click / double-tap toggles a 2x zoom by cycling
+                // the intrinsic image size on the <img>. Native pinch on
+                // touch devices still works independently.
+                const img = e.currentTarget;
+                if (img.dataset.zoomed === "1") {
+                  img.style.width = "";
+                  img.style.height = "";
+                  img.style.maxWidth = "100%";
+                  img.style.maxHeight = "100%";
+                  img.dataset.zoomed = "0";
+                } else {
+                  img.style.maxWidth = "none";
+                  img.style.maxHeight = "none";
+                  img.style.width = `${img.naturalWidth}px`;
+                  img.style.height = `${img.naturalHeight}px`;
+                  img.dataset.zoomed = "1";
+                }
+              }}
               onClick={e => e.stopPropagation()}
             />
           </div>
 
           {/* Metadata + action row — fixed at the bottom of the flex column,
               scrolls internally if the caption/actions get long. Bottom
-              padding respects the iOS home indicator. */}
+              padding respects the iOS home indicator. Capped at 40dvh so
+              it never eats the image row on shorter screens. */}
           <div
-            className="flex-shrink-0 max-w-3xl w-full mx-auto px-4 pt-3 max-h-[45vh] overflow-y-auto"
-            style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" }}
+            className="flex-shrink-0 max-w-3xl w-full mx-auto px-4 pt-3 overflow-y-auto"
+            style={{
+              maxHeight: "40dvh",
+              paddingBottom: "calc(1rem + env(safe-area-inset-bottom))",
+            }}
             onClick={e => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
