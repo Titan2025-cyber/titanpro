@@ -549,8 +549,9 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
       const labelIds = [String(req.query.labelIds || "INBOX")];
       const maxResults = Math.min(Number(req.query.max || 25), 50);
       const q = req.query.q ? String(req.query.q) : undefined;
+      const pageToken = req.query.pageToken ? String(req.query.pageToken) : undefined;
 
-      const list = await gmail.users.messages.list({ userId: "me", labelIds, maxResults, q });
+      const list = await gmail.users.messages.list({ userId: "me", labelIds, maxResults, q, pageToken });
       const ids = (list.data.messages || []).map((m) => m.id!).filter(Boolean);
 
       // Fetch metadata for each message (parallel, capped by maxResults above).
@@ -577,7 +578,7 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
           labels: labelIds,
         };
       }));
-      res.json({ messages });
+      res.json({ messages, nextPageToken: list.data.nextPageToken || null, resultSizeEstimate: list.data.resultSizeEstimate ?? null });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "Failed to load messages." });
     }
@@ -594,6 +595,14 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
       const headers = (msg.data.payload?.headers || []).reduce((acc: any, h: any) => {
         acc[h.name.toLowerCase()] = h.value; return acc;
       }, {});
+      // Reply headers surfaced to the client so Reply All / Forward can
+      // build the correct outgoing thread membership + In-Reply-To chain.
+      const messageId = headers["message-id"] || "";
+      const inReplyTo = headers["in-reply-to"] || "";
+      const references = headers["references"] || "";
+      const cc = headers["cc"] || "";
+      const bcc = headers["bcc"] || "";
+      const replyTo = headers["reply-to"] || "";
       // Extract text body AND every attachment part from the payload tree.
       // Gmail nests parts as a tree (multipart/mixed → multipart/alternative →
       // text/plain + text/html, plus siblings for each attachment). We walk
@@ -645,6 +654,7 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
         subject: headers.subject || "(no subject)", date: headers.date || "",
         body,
         attachments,
+              messageId, inReplyTo, references, cc, bcc, replyTo,
       });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "Failed to load message." });
@@ -685,7 +695,7 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
     const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
     if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
 
-    const { to, subject, body, cc, bcc, attachments } = req.body || {};
+    const { to, subject, body, html, cc, bcc, attachments, threadId, inReplyTo, references, replyTo } = req.body || {};
     if (!to || !String(to).trim()) return res.status(400).json({ error: "Recipient (to) is required." });
 
     // Validate attachments up front so we never build a truncated MIME blob.
@@ -711,39 +721,69 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
 
     try {
       const from = (sqlite.prepare("SELECT gmail_email FROM employees WHERE id = ?").get(req.employee.id) as any)?.gmail_email || "";
+      // Threading headers wire the outgoing message into an existing Gmail
+      // conversation. Gmail also needs `threadId` in the request body, but
+      // In-Reply-To + References are what other MUAs (Outlook, Apple Mail,
+      // etc.) actually thread on.
+      const threadHeaders: string[] = [];
+      if (inReplyTo) threadHeaders.push(`In-Reply-To: ${inReplyTo}`);
+      if (references) threadHeaders.push(`References: ${references}`);
       const commonHeaders = [
         `To: ${to}`,
         cc ? `Cc: ${cc}` : "",
         bcc ? `Bcc: ${bcc}` : "",
         from ? `From: ${from}` : "",
+        replyTo ? `Reply-To: ${replyTo}` : "",
         `Subject: ${encodeSubjectHeader(subject || "(no subject)")}`,
+        ...threadHeaders,
         "MIME-Version: 1.0",
       ].filter(Boolean);
+
+      // Body can arrive as `html` (rich compose), `body` (legacy plain
+      // text), or both. We always send multipart/alternative so recipients
+      // that reject HTML still get a readable fallback.
+      const textPart = body || (html ? html.replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, "") : "");
+      const htmlPart = html || (body ? `<pre style="font-family:inherit;white-space:pre-wrap">${body.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>` : "");
+      const altBoundary = `alt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      const alternativeBlock = [
+        `--${altBoundary}`,
+        "Content-Type: text/plain; charset=UTF-8",
+        "Content-Transfer-Encoding: 7bit",
+        "",
+        textPart,
+        "",
+        `--${altBoundary}`,
+        "Content-Type: text/html; charset=UTF-8",
+        "Content-Transfer-Encoding: 7bit",
+        "",
+        htmlPart,
+        "",
+        `--${altBoundary}--`,
+        "",
+      ].join("\r\n");
 
       let mime: string;
       if (atts.length === 0) {
         mime = [
           ...commonHeaders,
-          "Content-Type: text/plain; charset=UTF-8",
+          `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
           "",
-          body || "",
+          alternativeBlock,
         ].join("\r\n");
       } else {
-        // Multipart/mixed boundary. Must be unique per message and not appear
-        // inside any body part; a random hex string is safe for both.
-        const boundary = `titanpro_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+        // multipart/mixed with a nested multipart/alternative for body + a
+        // sibling part for each attachment.
+        const mixedBoundary = `mix_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
         const parts: string[] = [];
-        // Body first — text/plain wrapped in the boundary.
         parts.push([
-          `--${boundary}`,
-          "Content-Type: text/plain; charset=UTF-8",
-          "Content-Transfer-Encoding: 7bit",
+          `--${mixedBoundary}`,
+          `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
           "",
-          body || "",
+          alternativeBlock,
         ].join("\r\n"));
         for (const a of atts) {
           parts.push([
-            `--${boundary}`,
+            `--${mixedBoundary}`,
             `Content-Type: ${a.mimeType}; name=${encodeFilename(a.filename)}`,
             `Content-Disposition: attachment; filename=${encodeFilename(a.filename)}`,
             "Content-Transfer-Encoding: base64",
@@ -751,10 +791,10 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
             b64wrap(a.buf.toString("base64")),
           ].join("\r\n"));
         }
-        parts.push(`--${boundary}--`);
+        parts.push(`--${mixedBoundary}--`);
         mime = [
           ...commonHeaders,
-          `Content-Type: multipart/mixed; boundary="${boundary}"`,
+          `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
           "",
           parts.join("\r\n"),
         ].join("\r\n");
@@ -762,7 +802,11 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
 
       const raw = b64url(Buffer.from(mime, "utf8"));
       const gmail = google.gmail({ version: "v1", auth: oauth2 });
-      const sent = await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
+      // Gmail keeps the message on the same conversation when we pass a
+      // threadId in the request body (not the MIME).
+      const requestBody: any = { raw };
+      if (threadId) requestBody.threadId = threadId;
+      const sent = await gmail.users.messages.send({ userId: "me", requestBody });
       res.json({
         success: true,
         id: sent.data.id,
@@ -772,6 +816,22 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "Failed to send email." });
     }
+  });
+
+  // ── SIGNATURE ──────────────────────────────────────────────────────────
+  // Each employee has their own HTML signature block that the client
+  // pre-fills into every new compose. Storage is a simple text column so
+  // the same signature is available from every browser they sign in on.
+  app.get("/api/gmail/signature", requireStaffAuth, (req: any, res) => {
+    const row: any = sqlite.prepare("SELECT email_signature FROM employees WHERE id = ?").get(req.employee.id);
+    res.json({ signature: row?.email_signature || "" });
+  });
+  app.put("/api/gmail/signature", requireStaffAuth, (req: any, res) => {
+    const sig = typeof req.body?.signature === "string" ? req.body.signature : "";
+    // Cap at 8 KB to prevent someone pasting a giant HTML page.
+    if (sig.length > 8192) return res.status(413).json({ error: "Signature is too long (8 KB max)." });
+    sqlite.prepare("UPDATE employees SET email_signature = ? WHERE id = ?").run(sig, req.employee.id);
+    res.json({ ok: true, signature: sig });
   });
 
   // ── ATTACHMENT DOWNLOAD ───────────────────────────────────────────────

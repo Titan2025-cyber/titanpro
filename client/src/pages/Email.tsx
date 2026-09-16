@@ -1,11 +1,15 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Plus, Send, Inbox, Send as SendIcon, FileText, Mail, ExternalLink,
   Settings, CheckCircle, Trash2, Link2, LogOut, RefreshCw, Search,
-  Star, Archive, MailOpen, ArrowLeft, X, Reply, HelpCircle, Paperclip,
-  File as FileIcon, Download,
+  Star, Archive, MailOpen, ArrowLeft, X, Reply, ReplyAll, Forward,
+  HelpCircle, Paperclip, File as FileIcon, Download, ChevronDown, Tag,
+  MoreVertical, Undo2, Pen,
 } from "lucide-react";
+import { RichTextEditor } from "@/components/RichTextEditor";
+import { Checkbox } from "@/components/ui/checkbox";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
@@ -102,10 +106,28 @@ export default function EmailPage() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [compose, setCompose] = useState<{
     to: string;
+    cc: string;
+    bcc: string;
     subject: string;
-    body: string;
+    body: string;   // plain-text fallback (auto-derived from html)
+    html: string;   // rich-text body
     attachments: Array<{ filename: string; mimeType: string; size: number; dataBase64: string }>;
-  }>({ to: "", subject: "", body: "", attachments: [] });
+    threadId?: string;
+    inReplyTo?: string;
+    references?: string;
+    mode: "new" | "reply" | "replyAll" | "forward";
+  }>({
+    to: "", cc: "", bcc: "", subject: "", body: "", html: "", attachments: [], mode: "new",
+  });
+  const [showCcBcc, setShowCcBcc] = useState(false);
+  // Pagination cursor for the message list (Gmail's nextPageToken).
+  const [pageTokens, setPageTokens] = useState<string[]>([]); // history stack
+  const [pageToken, setPageToken] = useState<string | undefined>(undefined);
+  // Bulk-select checkboxes in the list.
+  const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
+  // Undo Send buffer: after send succeeds we hold the request for 10s so
+  // the toast can cancel it. If the user hits Undo we call gmail.trash.
+  const [pendingUndoId, setPendingUndoId] = useState<string | null>(null);
   const composeFileRef = useRef<HTMLInputElement | null>(null);
   const [gmailInput, setGmailInput] = useState("");
   const [liveSelectedId, setLiveSelectedId] = useState<string | null>(null);
@@ -130,6 +152,26 @@ export default function EmailPage() {
   });
   const gmailLive = !!(gmailStatus?.configured && gmailStatus?.connected);
 
+  // ── Signature (per employee, editable in Settings) ────────────────────
+  const { data: sigData, refetch: refetchSig } = useQuery<{ signature: string }>({
+    queryKey: ["/api/gmail/signature"],
+    queryFn: () => apiRequest("GET", "/api/gmail/signature").then(r => r.json()),
+    enabled: gmailLive,
+  });
+  const signatureHtml = sigData?.signature || "";
+  const [signatureEditing, setSignatureEditing] = useState(false);
+  const [signatureDraft, setSignatureDraft] = useState("");
+  useEffect(() => { setSignatureDraft(signatureHtml); }, [signatureHtml]);
+  const saveSignature = useMutation({
+    mutationFn: () => apiRequest("PUT", "/api/gmail/signature", { signature: signatureDraft }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/signature"] });
+      setSignatureEditing(false);
+      toast({ title: "Signature saved" });
+    },
+    onError: (e: any) => toast({ title: "Save failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
   // ── Message list ──────────────────────────────────────────────────────
   // The `starred` folder is a client-side filter on top of a broader Gmail
   // query. Gmail's own "Starred" view is served by the `STARRED` label; the
@@ -149,13 +191,14 @@ export default function EmailPage() {
     isLoading: gmailLoading,
     refetch: refetchGmail,
     isFetching: gmailFetching,
-  } = useQuery<{ messages: GmailRow[] }>({
+  } = useQuery<{ messages: GmailRow[]; nextPageToken?: string | null; resultSizeEstimate?: number | null }>({
     // The committed search query is part of the key so switching between
     // "" and a query re-fetches instead of showing stale results.
-    queryKey: ["/api/gmail/messages", gmailLabel, searchQuery],
+    queryKey: ["/api/gmail/messages", gmailLabel, searchQuery, pageToken || ""],
     queryFn: () => {
       const p = new URLSearchParams({ labelIds: gmailLabel, max: "40" });
       if (searchQuery) p.set("q", searchQuery);
+      if (pageToken) p.set("pageToken", pageToken);
       return apiRequest("GET", `/api/gmail/messages?${p.toString()}`).then(r => r.json());
     },
     enabled: gmailLive,
@@ -167,6 +210,13 @@ export default function EmailPage() {
     refetchOnWindowFocus: true,
   });
   const liveMessages: GmailRow[] = gmailData?.messages || [];
+  const nextPageToken = gmailData?.nextPageToken || null;
+  // Reset pagination + selection when the label or search changes.
+  useEffect(() => {
+    setPageToken(undefined);
+    setPageTokens([]);
+    setSelectedRows(new Set());
+  }, [gmailLabel, searchQuery]);
 
   const { data: liveDetail, isLoading: liveDetailLoading } = useQuery<any>({
     queryKey: ["/api/gmail/messages", liveSelectedId],
@@ -207,23 +257,189 @@ export default function EmailPage() {
   });
 
   // ── Send (real Gmail) ────────────────────────────────────────────────
+  // Build final HTML by concatenating the user body + signature block.
+  // Signature is only appended once; we don't want a signature to accumulate
+  // across replies. If the user already deleted it inline they're free to
+  // send without it.
+  const composeHtmlWithSig = (bodyHtml: string) => {
+    if (!signatureHtml) return bodyHtml;
+    if (bodyHtml.includes("data-titan-signature")) return bodyHtml;
+    const sig = `<br><br><div data-titan-signature style="color:#5f6368;font-size:13px;font-family:Arial,sans-serif">${signatureHtml}</div>`;
+    return bodyHtml + sig;
+  };
   const sendViaGmailLive = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/gmail/send", {
-      to: compose.to,
-      subject: compose.subject,
-      body: compose.body,
-      attachments: compose.attachments.map(a => ({
-        filename: a.filename, mimeType: a.mimeType, dataBase64: a.dataBase64,
-      })),
-    }),
-    onSuccess: () => {
+    mutationFn: async () => {
+      const finalHtml = composeHtmlWithSig(compose.html || compose.body || "");
+      const res = await apiRequest("POST", "/api/gmail/send", {
+        to: compose.to,
+        cc: compose.cc || undefined,
+        bcc: compose.bcc || undefined,
+        subject: compose.subject,
+        html: finalHtml,
+        body: compose.body || undefined,
+        threadId: compose.threadId,
+        inReplyTo: compose.inReplyTo,
+        references: compose.references,
+        attachments: compose.attachments.map(a => ({
+          filename: a.filename, mimeType: a.mimeType, dataBase64: a.dataBase64,
+        })),
+      });
+      return res.json();
+    },
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] });
       setComposeOpen(false);
-      setCompose({ to: "", subject: "", body: "", attachments: [] });
-      toast({ title: "Email sent", description: `Delivered via Gmail (${gmailStatus?.email || "your account"})` });
+      setCompose({ to: "", cc: "", bcc: "", subject: "", body: "", html: "", attachments: [], mode: "new" });
+      setShowCcBcc(false);
+      // Undo Send: keep the message id around for 10 seconds so the toast's
+      // Undo button can trash it. Gmail's own Undo Send is really "delay,
+      // don't send yet"; this is a lighter version that trashes after the
+      // fact, which is what most third-party Gmail clients do.
+      const undoId = data?.id || null;
+      setPendingUndoId(undoId);
+      const t = window.setTimeout(() => setPendingUndoId(cur => cur === undoId ? null : cur), 10000);
+      toast({
+        title: "Email sent",
+        description: `Delivered via Gmail (${gmailStatus?.email || "your account"})`,
+      });
+      // Cleanup timer if unmounted early.
+      return () => window.clearTimeout(t);
     },
     onError: (e: any) => toast({ title: "Send failed", description: String(e?.message || e), variant: "destructive" }),
   });
+
+  // Undo Send: trash the just-sent message. Gmail doesn't expose a true
+  // "unsend" so we do the next best thing — move it out of Sent into Trash
+  // within the undo window.
+  const undoSend = useMutation({
+    mutationFn: (id: string) => apiRequest("POST", `/api/gmail/messages/${id}/trash`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] });
+      setPendingUndoId(null);
+      toast({ title: "Send undone", description: "Message moved to Trash." });
+    },
+    onError: (e: any) => toast({ title: "Undo failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
+  // ── Reply / Reply All / Forward prefill ──────────────────────────────
+  // Builds the compose state from a Gmail message detail. All three modes
+  // share the same quote block and threading headers; only the recipient
+  // set changes:
+  //   reply:     To = original From
+  //   replyAll:  To = original From; Cc = (original To + original Cc) − self
+  //   forward:   To = empty; carry the attachments through
+  const myEmail = (gmailStatus?.email || "").toLowerCase();
+  const buildReplyCompose = (
+    detail: any,
+    mode: "reply" | "replyAll" | "forward",
+  ) => {
+    const parsed = parseSender(detail.from || "");
+    const fromAddr = parsed.email || detail.from || "";
+    // Gmail returns a bare list of email addresses in these headers.
+    const splitAddrs = (raw: string) =>
+      String(raw || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .filter((a) => a.toLowerCase() !== myEmail && a.toLowerCase() !== fromAddr.toLowerCase());
+
+    // Quoted body. Gmail wraps the quote in a class="gmail_quote" div; other
+    // MUAs walk that DOM to collapse it. We use the same class so replies to
+    // us also fold cleanly.
+    const dateStr = detail.date || "";
+    const attribution = `On ${dateStr}, ${escapeHtml(detail.from || "")} wrote:`;
+    const bodyHtml: string = detail.bodyHtml || detail.body || "";
+    const quoted =
+      `<br><br><div class="gmail_quote">` +
+      `<div>${attribution}</div>` +
+      `<blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex;color:#5f6368">` +
+      bodyHtml +
+      `</blockquote></div>`;
+
+    const subjectPrefix = mode === "forward" ? "Fwd: " : "Re: ";
+    const cleanSubject = String(detail.subject || "").replace(/^(re:|fwd:)\s*/i, "").trim();
+    const nextSubject = `${subjectPrefix}${cleanSubject}`;
+
+    // Only reply modes carry threading headers — Forward starts a new
+    // conversation on the recipient's side.
+    const isReplyMode = mode === "reply" || mode === "replyAll";
+    const references = [detail.references, detail.messageId].filter(Boolean).join(" ");
+
+    setCompose({
+      mode,
+      to: mode === "forward" ? "" : fromAddr,
+      cc: mode === "replyAll"
+        ? [...splitAddrs(detail.to || ""), ...splitAddrs(detail.cc || "")].join(", ")
+        : "",
+      bcc: "",
+      subject: nextSubject,
+      body: "",
+      html: quoted,
+      attachments: mode === "forward" ? (detail.attachments || []).map((a: any) => ({
+        filename: a.filename,
+        mimeType: a.mimeType,
+        size: a.size,
+        dataBase64: a.dataBase64 || "",
+      })) : [],
+      threadId: isReplyMode ? detail.threadId : undefined,
+      inReplyTo: isReplyMode && detail.messageId ? detail.messageId : undefined,
+      references: isReplyMode && references ? references : undefined,
+    });
+    if (mode === "replyAll") setShowCcBcc(true);
+    setComposeOpen(true);
+  };
+  // Escape user-provided text before inserting into HTML quote blocks.
+  function escapeHtml(s: string) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // ── Bulk actions ────────────────────────────────────────────────────
+  const toggleRow = (id: string) => {
+    setSelectedRows(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const toggleAllRows = () => {
+    setSelectedRows(prev => {
+      const allSelected = liveMessages.length > 0 && liveMessages.every(m => prev.has(m.id));
+      return allSelected ? new Set() : new Set(liveMessages.map(m => m.id));
+    });
+  };
+  // Bulk endpoints are just repeated single-message calls. Small cost
+  // vs. adding a whole new server route; keeps this diff tight.
+  const bulkModify = async (opts: { addLabelIds?: string[]; removeLabelIds?: string[] }, trash = false) => {
+    const ids = Array.from(selectedRows);
+    if (ids.length === 0) return;
+    await Promise.all(ids.map(id => trash
+      ? apiRequest("POST", `/api/gmail/messages/${id}/trash`)
+      : apiRequest("POST", `/api/gmail/messages/${id}/modify`, opts),
+    ));
+    queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] });
+    setSelectedRows(new Set());
+  };
+  const bulkArchive = () => bulkModify({ removeLabelIds: ["INBOX"] }).then(() => toast({ title: `Archived ${selectedRows.size}` }));
+  const bulkTrash = () => bulkModify({}, true).then(() => toast({ title: `Moved to Trash: ${selectedRows.size}` }));
+  const bulkMarkRead = () => bulkModify({ removeLabelIds: ["UNREAD"] }).then(() => toast({ title: `Marked as read: ${selectedRows.size}` }));
+  const bulkMarkUnread = () => bulkModify({ addLabelIds: ["UNREAD"] }).then(() => toast({ title: `Marked as unread: ${selectedRows.size}` }));
+
+  // ── Pagination ──────────────────────────────────────────────────────
+  const goNextPage = () => {
+    if (!nextPageToken) return;
+    setPageTokens(prev => [...prev, pageToken || ""]);
+    setPageToken(nextPageToken);
+  };
+  const goPrevPage = () => {
+    setPageTokens(prev => {
+      if (prev.length === 0) return prev;
+      const stack = [...prev];
+      const restore = stack.pop() || "";
+      setPageToken(restore || undefined);
+      return stack;
+    });
+  };
 
   // ── Attachment picker (browser side) ────────────────────────────────
   //   Reads each selected file into a base64 string and stashes it on
@@ -419,7 +635,7 @@ export default function EmailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/emails"] });
       setComposeOpen(false);
-      setCompose({ to: "", subject: "", body: "" });
+      setCompose({ to: "", cc: "", bcc: "", subject: "", body: "", html: "", attachments: [], mode: "new" });
       toast({ title: "Email saved", description: `Saved from ${fromAddress}` });
     },
   });
@@ -511,7 +727,7 @@ export default function EmailPage() {
         else if (key === "s") toggleStar(row);
         else if (key === "r") {
           const fromAddr = parseSender(row.from).email;
-          setCompose({ to: fromAddr, subject: `Re: ${row.subject}`, body: "", attachments: [] });
+          setCompose({ to: fromAddr, cc: "", bcc: "", subject: `Re: ${row.subject}`, body: "", html: "", attachments: [], mode: "reply" });
           setComposeOpen(true);
         }
       }
@@ -680,6 +896,52 @@ export default function EmailPage() {
                   </Button>
                 </div>
 
+                {gmailLive && (
+                  <div className="space-y-2 border-t pt-4">
+                    <Label className="flex items-center gap-2">
+                      <Pen className="w-3.5 h-3.5" /> Email signature
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      Auto-appended to every new email and reply. Basic HTML is supported
+                      (bold, italic, links).
+                    </p>
+                    <Textarea
+                      data-testid="input-email-signature"
+                      className="font-mono text-xs min-h-[120px]"
+                      value={signatureDraft}
+                      onChange={(e) => setSignatureDraft(e.target.value)}
+                      placeholder='<strong>Cody Brantley</strong><br>Titan Restoration LLC<br><a href="mailto:cody@titanaugusta.com">cody@titanaugusta.com</a>'
+                    />
+                    <div className="flex gap-2 justify-end">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSignatureDraft(signatureHtml)}
+                        disabled={signatureDraft === signatureHtml}
+                      >
+                        Reset
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="bg-[#c5221f] hover:bg-[#a01a17] text-white"
+                        onClick={() => saveSignature.mutate()}
+                        disabled={saveSignature.isPending || signatureDraft === signatureHtml}
+                      >
+                        {saveSignature.isPending ? "Saving…" : "Save signature"}
+                      </Button>
+                    </div>
+                    {signatureHtml && (
+                      <div className="rounded-md border bg-neutral-50 dark:bg-neutral-900 p-3">
+                        <p className="text-[11px] text-muted-foreground mb-1">Preview</p>
+                        <div
+                          className="text-sm text-neutral-700 dark:text-neutral-200 [&_a]:text-[#1a73e8] [&_a]:underline"
+                          dangerouslySetInnerHTML={{ __html: signatureHtml }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {isPrivileged && (
                   <div className="border-t pt-4">
                     <p className="text-xs text-muted-foreground">
@@ -717,15 +979,46 @@ export default function EmailPage() {
                     From: <span className="font-medium text-foreground">{fromAddress}</span>
                     {gmailLive && <Badge variant="secondary" className="ml-auto text-xs">Gmail</Badge>}
                   </div>
-                  <div>
-                    <Label>To</Label>
-                    <Input
-                      data-testid="input-email-to"
-                      value={compose.to}
-                      onChange={e => setCompose(f => ({ ...f, to: e.target.value }))}
-                      placeholder="recipient@email.com"
-                    />
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1">
+                      <Label>To</Label>
+                      <Input
+                        data-testid="input-email-to"
+                        value={compose.to}
+                        onChange={e => setCompose(f => ({ ...f, to: e.target.value }))}
+                        placeholder="recipient@email.com"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowCcBcc(v => !v)}
+                      className="text-xs text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 mt-6 shrink-0"
+                    >
+                      {showCcBcc ? "Hide Cc/Bcc" : "Cc/Bcc"}
+                    </button>
                   </div>
+                  {showCcBcc && (
+                    <>
+                      <div>
+                        <Label>Cc</Label>
+                        <Input
+                          data-testid="input-email-cc"
+                          value={compose.cc}
+                          onChange={e => setCompose(f => ({ ...f, cc: e.target.value }))}
+                          placeholder="comma-separated"
+                        />
+                      </div>
+                      <div>
+                        <Label>Bcc</Label>
+                        <Input
+                          data-testid="input-email-bcc"
+                          value={compose.bcc}
+                          onChange={e => setCompose(f => ({ ...f, bcc: e.target.value }))}
+                          placeholder="comma-separated"
+                        />
+                      </div>
+                    </>
+                  )}
                   <div>
                     <Label>Subject</Label>
                     <Input
@@ -736,12 +1029,22 @@ export default function EmailPage() {
                   </div>
                   <div>
                     <Label>Message</Label>
-                    <Textarea
-                      data-testid="input-email-body"
-                      className="min-h-[220px]"
-                      value={compose.body}
-                      onChange={e => setCompose(f => ({ ...f, body: e.target.value }))}
+                    <RichTextEditor
+                      html={compose.html}
+                      onChange={(h) => setCompose(f => ({ ...f, html: h }))}
                     />
+                    {signatureHtml && (
+                      <p className="text-[11px] text-neutral-500 mt-1">
+                        Your signature will be appended automatically.{" "}
+                        <button
+                          type="button"
+                          className="underline hover:text-neutral-800 dark:hover:text-neutral-200"
+                          onClick={() => { setComposeOpen(false); setGmailSettingsOpen(true); }}
+                        >
+                          Edit
+                        </button>
+                      </p>
+                    )}
                   </div>
                   {/* Attachments strip — only rendered when the user has
                        actually attached something. Empty state stays clean. */}
@@ -919,6 +1222,17 @@ export default function EmailPage() {
               onTrash={trashRow}
               searchQuery={searchQuery}
               onClearSearch={clearSearch}
+              selectedRows={selectedRows}
+              onToggleRow={toggleRow}
+              onToggleAll={toggleAllRows}
+              onBulkArchive={bulkArchive}
+              onBulkTrash={bulkTrash}
+              onBulkMarkRead={bulkMarkRead}
+              onBulkMarkUnread={bulkMarkUnread}
+              hasNextPage={!!nextPageToken}
+              hasPrevPage={pageTokens.length > 0}
+              onNextPage={goNextPage}
+              onPrevPage={goPrevPage}
             />
           ) : (
             <LegacyList
@@ -948,16 +1262,9 @@ export default function EmailPage() {
                 <GmailDetail
                   detail={liveDetail}
                   onBack={() => setLiveSelectedId(null)}
-                  onReply={() => {
-                    const fromAddr = parseSender(liveDetail.from || "").email;
-                    setCompose({
-                      to: fromAddr,
-                      subject: `Re: ${liveDetail.subject}`,
-                      body: `\n\nOn ${liveDetail.date}, ${liveDetail.from} wrote:\n> ${(liveDetail.body || "").replace(/<[^>]+>/g, "").split("\n").slice(0, 20).join("\n> ")}`,
-                      attachments: [],
-                    });
-                    setComposeOpen(true);
-                  }}
+                  onReply={() => buildReplyCompose(liveDetail, "reply")}
+                  onReplyAll={() => buildReplyCompose(liveDetail, "replyAll")}
+                  onForward={() => buildReplyCompose(liveDetail, "forward")}
                   onArchive={() => archiveRow(liveDetail.id)}
                   onTrash={() => trashRow(liveDetail.id)}
                   onMarkUnread={() => { markUnreadRow(liveDetail.id); setLiveSelectedId(null); }}
@@ -989,9 +1296,13 @@ export default function EmailPage() {
               onReply={() => {
                 setCompose({
                   to: selected.from,
+                  cc: "",
+                  bcc: "",
                   subject: `Re: ${selected.subject}`,
                   body: `\n\n--- Original Message ---\nFrom: ${selected.from}\n${selected.body}`,
+                  html: "",
                   attachments: [],
+                  mode: "reply",
                 });
                 setComposeOpen(true);
               }}
@@ -1013,6 +1324,31 @@ export default function EmailPage() {
       </div>
 
       {/* ── Keyboard-shortcuts help dialog ─────────────────────────────── */}
+      {/* ── Undo Send toast ──────────────────────────────────────────────
+           Persistent at the bottom of the screen for 10s after every send.
+           Clicking Undo trashes the just-sent message. */}
+      {pendingUndoId && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-neutral-900 dark:bg-neutral-800 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg">
+          <CheckCircle className="w-4 h-4 text-green-400" />
+          <span>Message sent</span>
+          <button
+            data-testid="button-undo-send"
+            onClick={() => undoSend.mutate(pendingUndoId)}
+            disabled={undoSend.isPending}
+            className="underline text-blue-300 hover:text-blue-200 flex items-center gap-1 disabled:opacity-50"
+          >
+            <Undo2 className="w-3.5 h-3.5" /> Undo
+          </button>
+          <button
+            onClick={() => setPendingUndoId(null)}
+            className="text-neutral-400 hover:text-white ml-1"
+            aria-label="Dismiss"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -1069,6 +1405,8 @@ function EmptyPane({ message, sub }: { message: string; sub?: string }) {
 function GmailList({
   rows, loading, folder, selectedId, onOpen, onToggleStar, onArchive, onTrash,
   searchQuery, onClearSearch,
+  selectedRows, onToggleRow, onToggleAll, onBulkArchive, onBulkTrash, onBulkMarkRead, onBulkMarkUnread,
+  hasNextPage, hasPrevPage, onNextPage, onPrevPage,
 }: {
   rows: GmailRow[];
   loading: boolean;
@@ -1080,37 +1418,109 @@ function GmailList({
   onTrash: (id: string) => void;
   searchQuery: string;
   onClearSearch: () => void;
+  selectedRows: Set<string>;
+  onToggleRow: (id: string) => void;
+  onToggleAll: () => void;
+  onBulkArchive: () => void;
+  onBulkTrash: () => void;
+  onBulkMarkRead: () => void;
+  onBulkMarkUnread: () => void;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+  onNextPage: () => void;
+  onPrevPage: () => void;
 }) {
+  const allChecked = rows.length > 0 && rows.every(r => selectedRows.has(r.id));
+  const someChecked = rows.some(r => selectedRows.has(r.id));
+  const bulkCount = selectedRows.size;
+  const bulkBar = (
+    <div className="flex items-center gap-1 px-2 h-10 border-b bg-neutral-50 dark:bg-neutral-900">
+      <Checkbox
+        checked={allChecked ? true : someChecked ? "indeterminate" : false}
+        onCheckedChange={onToggleAll}
+        aria-label="Select all on this page"
+        data-testid="checkbox-select-all"
+      />
+      {bulkCount > 0 ? (
+        <>
+          <span className="text-xs text-neutral-600 dark:text-neutral-300 ml-2">{bulkCount} selected</span>
+          <div className="w-px h-4 bg-neutral-300 dark:bg-neutral-700 mx-1" />
+          <button onClick={onBulkArchive} className="p-1.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300" title="Archive" data-testid="button-bulk-archive">
+            <Archive className="w-4 h-4" />
+          </button>
+          <button onClick={onBulkTrash} className="p-1.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300" title="Trash" data-testid="button-bulk-trash">
+            <Trash2 className="w-4 h-4" />
+          </button>
+          <button onClick={onBulkMarkRead} className="p-1.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300" title="Mark as read" data-testid="button-bulk-read">
+            <MailOpen className="w-4 h-4" />
+          </button>
+          <button onClick={onBulkMarkUnread} className="p-1.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300" title="Mark as unread" data-testid="button-bulk-unread">
+            <Mail className="w-4 h-4" />
+          </button>
+        </>
+      ) : (
+        <span className="text-[11px] text-neutral-500 ml-2">Select messages to bulk-manage</span>
+      )}
+      <div className="ml-auto flex items-center gap-1">
+        <button
+          onClick={onPrevPage}
+          disabled={!hasPrevPage}
+          className="p-1.5 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300 disabled:opacity-40 disabled:hover:bg-transparent"
+          title="Previous page"
+          data-testid="button-prev-page"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={onNextPage}
+          disabled={!hasNextPage}
+          className="p-1.5 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300 disabled:opacity-40 disabled:hover:bg-transparent"
+          title="Next page"
+          data-testid="button-next-page"
+        >
+          <ArrowLeft className="w-3.5 h-3.5 rotate-180" />
+        </button>
+      </div>
+    </div>
+  );
   if (loading) {
     return (
-      <div className="p-3 space-y-3">
-        {[0, 1, 2, 3, 4].map(i => (
-          <div key={i} className="space-y-1.5 animate-pulse">
-            <div className="h-3 bg-neutral-200 dark:bg-neutral-800 rounded w-2/3" />
-            <div className="h-2.5 bg-neutral-200 dark:bg-neutral-800 rounded w-full" />
-          </div>
-        ))}
-      </div>
+      <>
+        {bulkBar}
+        <div className="p-3 space-y-3">
+          {[0, 1, 2, 3, 4].map(i => (
+            <div key={i} className="space-y-1.5 animate-pulse">
+              <div className="h-3 bg-neutral-200 dark:bg-neutral-800 rounded w-2/3" />
+              <div className="h-2.5 bg-neutral-200 dark:bg-neutral-800 rounded w-full" />
+            </div>
+          ))}
+        </div>
+      </>
     );
   }
   if (rows.length === 0) {
     return (
-      <div className="h-full grid place-items-center">
-        <div className="text-center text-neutral-500 max-w-xs px-4">
-          <p className="text-sm">
-            {searchQuery ? `No results for “${searchQuery}”` : `No messages in ${folder}`}
-          </p>
-          {searchQuery && (
-            <button onClick={onClearSearch} className="text-xs mt-2 underline text-[#c5221f]">
-              Clear search
-            </button>
-          )}
+      <>
+        {bulkBar}
+        <div className="h-full grid place-items-center">
+          <div className="text-center text-neutral-500 max-w-xs px-4">
+            <p className="text-sm">
+              {searchQuery ? `No results for “${searchQuery}”` : `No messages in ${folder}`}
+            </p>
+            {searchQuery && (
+              <button onClick={onClearSearch} className="text-xs mt-2 underline text-[#c5221f]">
+                Clear search
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      </>
     );
   }
   return (
-    <ul className="flex-1 overflow-y-auto" role="list">
+    <div className="flex-1 flex flex-col overflow-hidden">
+      {bulkBar}
+      <ul className="flex-1 overflow-y-auto" role="list">
       {rows.map(m => {
         const sender = parseSender(folder === "sent" ? m.to : m.from);
         const active = m.id === selectedId;
@@ -1127,6 +1537,14 @@ function GmailList({
             onClick={() => onOpen(m.id)}
             data-testid={`gmail-row-${m.id}`}
           >
+            <div onClick={(ev) => ev.stopPropagation()} className="shrink-0 pl-0.5">
+              <Checkbox
+                checked={selectedRows.has(m.id)}
+                onCheckedChange={() => onToggleRow(m.id)}
+                aria-label="Select message"
+                data-testid={`checkbox-row-${m.id}`}
+              />
+            </div>
             <button
               onClick={(ev) => { ev.stopPropagation(); onToggleStar(m); }}
               className="p-1 shrink-0"
@@ -1156,6 +1574,16 @@ function GmailList({
                 <span className={`truncate ${m.unread ? "font-semibold text-neutral-900 dark:text-neutral-100" : "text-neutral-600 dark:text-neutral-400"}`}>
                   {m.subject}
                 </span>
+                {(m.labels || []).filter(l => !SYSTEM_LABELS.has(l)).slice(0, 3).map(l => (
+                  <span
+                    key={l}
+                    className="px-1.5 py-0.5 rounded-sm text-[10px] font-medium shrink-0"
+                    style={{ backgroundColor: avatarColor(l) + "22", color: avatarColor(l) }}
+                    title={l}
+                  >
+                    {l.replace(/^CATEGORY_/, "").toLowerCase()}
+                  </span>
+                ))}
                 <span className="text-neutral-400 dark:text-neutral-500 truncate">— {m.snippet}</span>
               </div>
             </div>
@@ -1188,17 +1616,28 @@ function GmailList({
           </li>
         );
       })}
-    </ul>
+      </ul>
+    </div>
   );
 }
 
+// Gmail system label ids that we hide from the row chip strip (INBOX/UNREAD
+// etc. are covered by the styling; category labels + IMPORTANT etc. are
+// distracting when shown on every row).
+const SYSTEM_LABELS = new Set([
+  "INBOX", "UNREAD", "STARRED", "IMPORTANT", "SENT", "DRAFT", "TRASH", "SPAM", "CHAT",
+  "CATEGORY_PERSONAL", "CATEGORY_SOCIAL", "CATEGORY_PROMOTIONS", "CATEGORY_UPDATES", "CATEGORY_FORUMS",
+]);
+
 function GmailDetail({
-  detail, onBack, onReply, onArchive, onTrash, onMarkUnread, onToggleStar, starred,
+  detail, onBack, onReply, onReplyAll, onForward, onArchive, onTrash, onMarkUnread, onToggleStar, starred,
   onDownloadAttachment,
 }: {
   detail: any;
   onBack: () => void;
   onReply: () => void;
+  onReplyAll: () => void;
+  onForward: () => void;
   onArchive: () => void;
   onTrash: () => void;
   onMarkUnread: () => void;
@@ -1277,6 +1716,24 @@ function GmailDetail({
           title="Reply (r)"
         >
           <Reply className="w-4 h-4" />
+        </button>
+        <button
+          data-testid="button-reply-all-top"
+          onClick={onReplyAll}
+          className="p-2 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"
+          aria-label="Reply all"
+          title="Reply all (a)"
+        >
+          <ReplyAll className="w-4 h-4" />
+        </button>
+        <button
+          data-testid="button-forward-top"
+          onClick={onForward}
+          className="p-2 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"
+          aria-label="Forward"
+          title="Forward (f)"
+        >
+          <Forward className="w-4 h-4" />
         </button>
       </div>
 
@@ -1367,7 +1824,7 @@ function GmailDetail({
         </div>
       )}
 
-      <div className="pt-4 border-t">
+      <div className="pt-4 border-t flex flex-wrap gap-2">
         <Button
           data-testid="button-reply-bottom"
           variant="outline"
@@ -1375,6 +1832,22 @@ function GmailDetail({
           className="gap-2 rounded-full border-neutral-300 dark:border-neutral-700"
         >
           <Reply className="w-4 h-4" /> Reply
+        </Button>
+        <Button
+          data-testid="button-reply-all-bottom"
+          variant="outline"
+          onClick={onReplyAll}
+          className="gap-2 rounded-full border-neutral-300 dark:border-neutral-700"
+        >
+          <ReplyAll className="w-4 h-4" /> Reply all
+        </Button>
+        <Button
+          data-testid="button-forward-bottom"
+          variant="outline"
+          onClick={onForward}
+          className="gap-2 rounded-full border-neutral-300 dark:border-neutral-700"
+        >
+          <Forward className="w-4 h-4" /> Forward
         </Button>
       </div>
     </div>

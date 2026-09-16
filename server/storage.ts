@@ -858,6 +858,13 @@ if (!jobCols.includes("contacted_at")) {
   sqlite.exec(`ALTER TABLE jobs ADD COLUMN contacted_at TEXT`);
 }
 
+// employees.email_signature: HTML block automatically appended to outgoing
+// email from this employee's Gmail account. Editable from Email > Settings.
+const empCols = (sqlite.prepare("PRAGMA table_info(employees)").all() as any[]).map((c: any) => c.name);
+if (!empCols.includes("email_signature")) {
+  sqlite.exec(`ALTER TABLE employees ADD COLUMN email_signature TEXT`);
+}
+
 // ── Object storage columns ────────────────────────────────────────────────
 // Backfill storage_key columns onto every table that previously held image
 // or file blobs as base64 data URLs. When Railway object storage is
