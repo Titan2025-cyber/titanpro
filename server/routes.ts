@@ -1586,6 +1586,152 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Surgical shift restore. Reads shifts rows from a backup snapshot, finds
+  // ones missing from the live DB (matched by shift_date + tech_name + start_time
+  // + job_id — the natural dispatch key), and re-INSERTs them into live. Does
+  // NOT touch any other table — unlike /api/admin/backups/restore which swaps
+  // the whole DB file (and would revert every non-shift row created after the
+  // snapshot). Owner-only. Two modes:
+  //   - GET  → dry-run report only, nothing written
+  //   - POST → actually insert the missing rows
+  // Body/query params (both accept them):
+  //   file      — explicit backup filename (matches /^data-.*\.db$/); default = most recent
+  //   fromDate  — only consider shifts on/after this shift_date (ISO YYYY-MM-DD); default = 30 days back
+  //   toDate    — only consider shifts on/before this shift_date; default = today+30
+  async function handleRestoreShifts(req: any, res: any, apply: boolean) {
+    try {
+      const fs = await import("fs");
+      const path = await import("path");
+      const dbPath = process.env.DATABASE_PATH || "data.db";
+      const backupDir = process.env.BACKUP_DIR || path.join(path.dirname(dbPath), "backups");
+      if (!fs.existsSync(backupDir)) return res.status(404).json({ error: "No backup directory" });
+
+      const q = { ...(req.query || {}), ...(req.body || {}) };
+      let file = String(q.file || "").trim();
+      if (file && !/^data-[A-Za-z0-9._:-]+\.db$/.test(file)) {
+        return res.status(400).json({ error: "Invalid backup file name" });
+      }
+      if (!file) {
+        const candidates = fs.readdirSync(backupDir)
+          .filter((f: string) => /^data-.*\.db$/.test(f))
+          .map((f: string) => ({ f, t: fs.statSync(path.join(backupDir, f)).mtimeMs }))
+          .sort((a: any, b: any) => b.t - a.t);
+        if (!candidates.length) return res.status(404).json({ error: "No backups on disk" });
+        file = candidates[0].f;
+      }
+      const src = path.join(backupDir, file);
+      if (!fs.existsSync(src)) return res.status(404).json({ error: "Backup not found" });
+
+      const today = new Date().toISOString().slice(0, 10);
+      const fromDate = String(q.fromDate || "").trim() ||
+        new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
+      const toDate = String(q.toDate || "").trim() ||
+        new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10);
+
+      const probe = new BetterSqlite3(src, { readonly: true });
+      let backupShifts: any[] = [];
+      try {
+        backupShifts = probe.prepare(
+          "SELECT * FROM shifts WHERE shift_date >= ? AND shift_date <= ? ORDER BY shift_date, tech_name, start_time"
+        ).all(fromDate, toDate) as any[];
+      } finally { probe.close(); }
+
+      // Build a lookup of what's already in live so we skip duplicates.
+      // Key: `${shift_date}|${tech_name}|${start_time||""}|${job_id||""}`.
+      const liveKeys = new Set<string>();
+      const liveRows = sqlite.prepare(
+        "SELECT shift_date, tech_name, start_time, job_id FROM shifts WHERE shift_date >= ? AND shift_date <= ?"
+      ).all(fromDate, toDate) as any[];
+      for (const r of liveRows) {
+        liveKeys.add(`${r.shift_date}|${(r.tech_name || "").toLowerCase().trim()}|${r.start_time || ""}|${r.job_id ?? ""}`);
+      }
+
+      const missing = backupShifts.filter((r: any) =>
+        !liveKeys.has(`${r.shift_date}|${(r.tech_name || "").toLowerCase().trim()}|${r.start_time || ""}|${r.job_id ?? ""}`)
+      );
+
+      // Preview payload identical for dry-run and apply.
+      const preview = missing.slice(0, 500).map((r: any) => ({
+        origId: r.id,
+        shiftDate: r.shift_date,
+        techName: r.tech_name,
+        startTime: r.start_time,
+        endTime: r.end_time,
+        jobId: r.job_id,
+        title: r.title,
+        notes: r.notes,
+      }));
+
+      if (!apply) {
+        return res.json({
+          mode: "dry-run",
+          fromBackup: file,
+          backupPath: src,
+          window: { fromDate, toDate },
+          backupShiftCount: backupShifts.length,
+          liveShiftCount: liveRows.length,
+          missingCount: missing.length,
+          preview,
+        });
+      }
+
+      // Actually insert. Use a transaction so a partial failure doesn't leave
+      // half the schedule reinserted. Note: we intentionally DO NOT preserve
+      // the backup's shift.id — live may have handed those ids out to newer
+      // rows in the last 24h. Let AUTOINCREMENT allocate fresh ids.
+      const insert = sqlite.prepare(
+        "INSERT INTO shifts (job_id, tech_name, shift_date, start_time, end_time, title, notes, notification_sent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      );
+      const restoredIds: number[] = [];
+      const tx = sqlite.transaction((rows: any[]) => {
+        for (const r of rows) {
+          const info = insert.run(
+            r.job_id ?? null,
+            r.tech_name,
+            r.shift_date,
+            r.start_time ?? null,
+            r.end_time ?? null,
+            r.title ?? null,
+            r.notes ?? null,
+            0,
+            r.created_at || new Date().toISOString()
+          );
+          restoredIds.push(Number(info.lastInsertRowid));
+        }
+      });
+      tx(missing);
+
+      // Audit line so this operation is itself traceable.
+      try {
+        const who = (req as any).user?.name || (req as any).employee?.name || "unknown";
+        const whoId = (req as any).user?.id ?? (req as any).employee?.id ?? null;
+        sqlite.prepare(
+          "INSERT INTO audit_log (employee_id, employee_name, action, entity, entity_id, detail, ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        ).run(
+          whoId, who, "shifts.restore", "shifts", null,
+          JSON.stringify({ fromBackup: file, window: { fromDate, toDate }, restoredCount: restoredIds.length }),
+          (req.headers["x-forwarded-for"] as string) || (req as any).ip || null,
+          new Date().toISOString()
+        );
+      } catch {}
+
+      res.json({
+        mode: "applied",
+        fromBackup: file,
+        backupPath: src,
+        window: { fromDate, toDate },
+        backupShiftCount: backupShifts.length,
+        restoredCount: restoredIds.length,
+        restoredIds,
+        preview,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  }
+  app.get("/api/admin/restore-shifts-from-backup", requireRole("owner"), (req, res) => handleRestoreShifts(req, res, false));
+  app.post("/api/admin/restore-shifts-from-backup", requireRole("owner"), (req, res) => handleRestoreShifts(req, res, true));
+
   // Diagnostic: report the geocode status of every active job. Useful when
   // pins aren't dropping to see whether the row has an address, has been
   // geocoded, or has a numeric-but-invalid lat/lng from a bad import.
@@ -3114,7 +3260,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Dispatcher-only.
     const scope = resolveCallerScope(req);
     if (scope.isTech) return res.status(403).json({ error: "Only dispatchers can delete shifts." });
-    storage.deleteShift(Number(req.params.id));
+    const id = Number(req.params.id);
+    // Capture the row BEFORE deleting so the audit line preserves who/when/what
+    // (job, tech, date). Deletes had no trail before — a schedule wipe was
+    // silently unrecoverable. Now every delete lands in Railway logs AND in
+    // audit_log so anyone can grep for "[shifts] DELETE" or query action='shift.delete'.
+    let pre: any = null;
+    try { pre = sqlite.prepare("SELECT * FROM shifts WHERE id = ?").get(id); } catch {}
+    const who = (req as any).user?.name || (req as any).employee?.name || "unknown";
+    const whoId = (req as any).user?.id ?? (req as any).employee?.id ?? null;
+    console.warn("[shifts] DELETE id=%d by=%s pre=%j", id, who, pre);
+    storage.deleteShift(id);
+    try {
+      sqlite.prepare(
+        "INSERT INTO audit_log (employee_id, employee_name, action, entity, entity_id, detail, ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run(
+        whoId, who, "shift.delete", "shift", String(id),
+        JSON.stringify(pre || {}),
+        (req.headers["x-forwarded-for"] as string) || (req as any).ip || null,
+        new Date().toISOString()
+      );
+    } catch (e: any) { console.warn("[shifts] audit_log write failed:", e?.message); }
     res.json({ success: true });
   });
 
