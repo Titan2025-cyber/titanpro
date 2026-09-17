@@ -174,6 +174,15 @@ export default function Calendar() {
   const [mobileAnchorDate, setMobileAnchorDate] = useState<Date>(() => new Date());
   const useMobileMonth = isMobile && currentView === "dayGridMonth";
 
+  // When the viewport becomes mobile, force any timeGrid* / listWeek /
+  // timeGridFourDay view back to a supported one — those FC views render
+  // as vertical-stack junk at narrow widths.
+  useEffect(() => {
+    if (!isMobile) return;
+    if (currentView === "dayGridMonth" || currentView === "listMonth") return;
+    setCurrentView("dayGridMonth");
+  }, [isMobile, currentView]);
+
   // Data --------------------------------------------------------------------
   // Widen the visible range by ±60 days when fetching so that list views
   // (which report a narrow 7–31 day range in datesSet) still surface
@@ -443,16 +452,28 @@ export default function Calendar() {
           </Select>
         </div>
 
-        {/* View switcher */}
+        {/* View switcher — on mobile we only expose Month (hand-rolled grid)
+           and Agenda (native list). FullCalendar’s timeGridWeek/timeGridDay
+           and 4-day/week-list all collapse to unreadable vertical stacks at
+           narrow widths (same measurement-inline-widths problem as the old
+           month view). Rather than ship broken screens, we hide them and
+           auto-route away when the viewport is mobile. */}
         <div className="flex border rounded-md overflow-hidden text-xs">
-          {[
-            { key: "dayGridMonth" as const, label: "Month" },
-            { key: "timeGridWeek" as const, label: "Week" },
-            { key: "timeGridDay" as const, label: "Day" },
-            { key: "timeGridFourDay" as const, label: "4 day" },
-            { key: "listWeek" as const, label: "Week list" },
-            { key: "listMonth" as const, label: "Agenda" },
-          ].map(v => (
+          {(
+            isMobile
+              ? [
+                  { key: "dayGridMonth" as const, label: "Month" },
+                  { key: "listMonth" as const, label: "Agenda" },
+                ]
+              : [
+                  { key: "dayGridMonth" as const, label: "Month" },
+                  { key: "timeGridWeek" as const, label: "Week" },
+                  { key: "timeGridDay" as const, label: "Day" },
+                  { key: "timeGridFourDay" as const, label: "4 day" },
+                  { key: "listWeek" as const, label: "Week list" },
+                  { key: "listMonth" as const, label: "Agenda" },
+                ]
+          ).map(v => (
             <button
               key={v.key}
               type="button"
