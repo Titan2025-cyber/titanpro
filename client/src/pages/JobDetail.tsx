@@ -1330,6 +1330,9 @@ export default function JobDetail() {
   });
 
   // Generic patch for any editable job field (jobNumber, yearBuilt, squareFeet).
+  // Handles the server's 409 DUPLICATE_JOB_NUMBER response with an explicit
+  // toast so operators renaming a job to an already-taken number get a clear
+  // message (rather than the generic "Update failed").
   const updateJob = useMutation({
     mutationFn: (patch: Record<string, any>) =>
       apiRequest("PATCH", `/api/jobs/${id}`, patch),
@@ -1337,7 +1340,26 @@ export default function JobDetail() {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       queryClient.invalidateQueries({ queryKey: [`/api/jobs/${id}`] });
     },
-    onError: (e: any) => toast({ title: "Update failed", description: e?.message || "Try again.", variant: "destructive" }),
+    onError: (e: any) => {
+      const msg = String(e?.message || "");
+      const m = msg.match(/^409:\s*(\{[\s\S]*\})\s*$/);
+      if (m) {
+        try {
+          const body = JSON.parse(m[1]);
+          if (body?.code === "DUPLICATE_JOB_NUMBER") {
+            toast({
+              title: `Job number ${body.jobNumber} is already in use`,
+              description:
+                (body.existingCustomer ? `Assigned to ${body.existingCustomer}. ` : "") +
+                (body.suggestedNext ? `Next available: ${body.suggestedNext}.` : "Pick a different number."),
+              variant: "destructive",
+            });
+            return;
+          }
+        } catch { /* fall through */ }
+      }
+      toast({ title: "Update failed", description: msg || "Try again.", variant: "destructive" });
+    },
   });
 
   // Contact patch — identical shape, hits /api/contacts/:id. Used by the

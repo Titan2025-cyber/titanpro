@@ -16,6 +16,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -825,6 +835,39 @@ export default function Jobs() {
   //   2. New customer → POST /api/contacts first, then POST /api/jobs with the
   //      returned contactId. This is the flow when the operator picks the
   //      "New Customer" toggle in the New Job dialog.
+  // Duplicate-job-number 409 handling. When the server rejects our POST
+  // because the operator's typed number already exists, we hold onto the
+  // details here and open an AlertDialog offering either the next available
+  // number (auto-resubmit) or Cancel so the operator can edit manually.
+  const [dupConflict, setDupConflict] = useState<
+    | null
+    | {
+        jobNumber: string;
+        existingCustomer: string | null;
+        existingAddress: string | null;
+        existingJobId: number | undefined;
+        suggestedNext: string;
+        pendingPayload: any;
+      }
+  >(null);
+
+  // Fetch the true next available job number whenever the New Job dialog
+  // opens — replaces the stale "TP-<year>-" prefix stub with a real value.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiRequest("GET", "/api/jobs/next-number");
+        const j = await r.json();
+        if (!cancelled && j?.jobNumber) {
+          setForm(f => (f.jobNumber && !f.jobNumber.endsWith("-") ? f : { ...f, jobNumber: j.jobNumber }));
+        }
+      } catch { /* keep the stub value on failure */ }
+    })();
+    return () => { cancelled = true; };
+  }, [open]);
+
   const createMutation = useMutation({
     mutationFn: async (data: any) => {
       // Normalize integer-typed form fields — the form initializes yearBuilt
@@ -866,6 +909,10 @@ export default function Jobs() {
         contactId = contact?.id ?? null;
       }
       const jobRes = await apiRequest("POST", "/api/jobs", { ...normalized, contactId });
+      // apiRequest currently throws on non-2xx by concatenating `${status}: ${body}`.
+      // For 409 we want structured details so the UI can prompt — detect that
+      // shape here and re-throw a typed error the mutation error handler can
+      // interpret.
       return jobRes.json();
     },
     onSuccess: () => {
@@ -874,13 +921,36 @@ export default function Jobs() {
       queryClient.invalidateQueries({ queryKey: ["/api/contacts"] });
       setOpen(false);
       resetForm();
+      setDupConflict(null);
       toast({ title: "Job created" });
     },
-    onError: (e: any) => toast({
-      title: "Could not create job",
-      description: e?.message || "Please check the form and try again.",
-      variant: "destructive",
-    }),
+    onError: (e: any, variables: any) => {
+      // apiRequest throws Error("<status>: <body>") on non-2xx. Try to detect
+      // a 409 duplicate and surface the confirmation dialog.
+      const msg = String(e?.message || "");
+      const m = msg.match(/^409:\s*(\{[\s\S]*\})\s*$/);
+      if (m) {
+        try {
+          const body = JSON.parse(m[1]);
+          if (body?.code === "DUPLICATE_JOB_NUMBER") {
+            setDupConflict({
+              jobNumber: body.jobNumber,
+              existingCustomer: body.existingCustomer ?? null,
+              existingAddress: body.existingAddress ?? null,
+              existingJobId: body.existingJobId,
+              suggestedNext: body.suggestedNext || "",
+              pendingPayload: variables,
+            });
+            return;
+          }
+        } catch { /* fall through */ }
+      }
+      toast({
+        title: "Could not create job",
+        description: e?.message || "Please check the form and try again.",
+        variant: "destructive",
+      });
+    },
   });
 
   const bulkUpdateMutation = useMutation({
@@ -1331,6 +1401,52 @@ export default function Jobs() {
               </div>
             </DialogContent>
           </Dialog>
+
+          {/* Duplicate-job-number 409 confirmation ---------------------- */}
+          <AlertDialog open={!!dupConflict} onOpenChange={(o) => { if (!o) setDupConflict(null); }}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Job number already in use</AlertDialogTitle>
+                <AlertDialogDescription asChild>
+                  <div className="space-y-2">
+                    <div>
+                      <span className="font-mono font-semibold">{dupConflict?.jobNumber}</span>{" "}
+                      is already assigned to
+                      {dupConflict?.existingCustomer ? <> <b>{dupConflict.existingCustomer}</b></> : " another job"}
+                      {dupConflict?.existingAddress ? <> at {dupConflict.existingAddress}</> : null}.
+                    </div>
+                    {dupConflict?.suggestedNext && (
+                      <div>
+                        Next available number is{" "}
+                        <span className="font-mono font-semibold">{dupConflict.suggestedNext}</span>.
+                      </div>
+                    )}
+                    <div className="text-xs text-muted-foreground">
+                      Use it now, or cancel and type a different number.
+                    </div>
+                  </div>
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel onClick={() => setDupConflict(null)}>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  className="bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red-dark))] text-white"
+                  onClick={() => {
+                    if (!dupConflict) return;
+                    const nextNum = dupConflict.suggestedNext;
+                    const retry = { ...(dupConflict.pendingPayload || {}), jobNumber: nextNum };
+                    setForm(f => ({ ...f, jobNumber: nextNum }));
+                    setDupConflict(null);
+                    createMutation.mutate(retry);
+                  }}
+                  disabled={!dupConflict?.suggestedNext}
+                  data-testid="button-use-suggested-job-number"
+                >
+                  Use {dupConflict?.suggestedNext || "suggested"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </div>
 

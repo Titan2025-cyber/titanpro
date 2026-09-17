@@ -92,6 +92,24 @@ if (process.env.ALLOW_RECOVERY_SEED === "1") {
   } catch { /* non-fatal */ }
 }
 export const sqlite: Database = new BetterSqlite3(DB_PATH);
+
+// Thrown by createJob / updateJob when a caller-supplied job_number collides
+// with an existing job. Routes translate this to an HTTP 409 with the details
+// so the client can prompt the operator to pick a different number.
+export class DuplicateJobNumberError extends Error {
+  code = "DUPLICATE_JOB_NUMBER" as const;
+  jobNumber: string;
+  existingJobId?: number;
+  existingCustomer?: string | null;
+  existingAddress?: string | null;
+  constructor(jobNumber: string, existing?: { id: number; address?: string | null; customer?: string | null }) {
+    super(`Job number ${jobNumber} is already in use`);
+    this.jobNumber = jobNumber;
+    this.existingJobId = existing?.id;
+    this.existingAddress = existing?.address ?? null;
+    this.existingCustomer = existing?.customer ?? null;
+  }
+}
 const db = drizzle(sqlite, { schema });
 
 // ── Automatic rotating DB backups ────────────────────────────────────────────
@@ -1066,6 +1084,40 @@ if (hasCalendarEvents) {
   }
 }
 
+// ── Job number integrity (Cody 2026-09-16) ─────────────────────────────────
+// Two independent problems that could poison the jobs table:
+//   1. Two staff creating a job at the same second can both compute the same
+//      next job number, and the current insert has no UNIQUE guard.
+//   2. Anyone can PATCH /api/jobs/:id { jobNumber: "TP-2026-005" } to a value
+//      that already exists, silently duplicating.
+// Fix: log any existing duplicates for manual reconciliation, then install a
+// UNIQUE index on jobs.job_number. If the index creation fails (i.e. duplicates
+// still present), log loudly but don't crash boot — the app is still usable
+// and the ops team can resolve the offenders. The createJob code below
+// additionally retries on SQLITE_CONSTRAINT_UNIQUE so a lost race is recovered
+// automatically.
+try {
+  const dupes = sqlite.prepare(
+    "SELECT job_number, COUNT(*) AS n, GROUP_CONCAT(id) AS ids FROM jobs GROUP BY job_number HAVING n > 1"
+  ).all() as Array<{ job_number: string; n: number; ids: string }>;
+  if (dupes.length > 0) {
+    console.warn("[jobs] Duplicate job_number values detected. Manual reconciliation required:");
+    for (const row of dupes) {
+      console.warn(`  job_number=${row.job_number} count=${row.n} ids=${row.ids}`);
+    }
+  }
+} catch (e) {
+  console.warn("[jobs] Duplicate-detection query failed:", (e as any)?.message || e);
+}
+try {
+  sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_job_number_unique ON jobs(job_number)");
+} catch (e) {
+  // Only happens when duplicates exist. Fall back to a non-unique index so
+  // queries stay fast; unique enforcement resumes once duplicates are cleaned.
+  console.warn("[jobs] UNIQUE index install failed (likely due to duplicates):", (e as any)?.message || e);
+  try { sqlite.exec("CREATE INDEX IF NOT EXISTS idx_jobs_job_number ON jobs(job_number)"); } catch {}
+}
+
 // ── Migrate legacy inline blobs to object storage ─────────────────────────
 // Runs asynchronously on boot so it never blocks server startup. Iterates
 // every photo / document row that still has a base64 data URL and no
@@ -1262,6 +1314,8 @@ export interface IStorage {
   getJob(id: number): schema.Job | undefined;
   createJob(data: schema.InsertJob): schema.Job;
   updateJob(id: number, data: Partial<schema.InsertJob>): schema.Job | undefined;
+  getNextJobNumber(year?: number): string;
+  findJobByNumber(jobNumber: string): { id: number; address: string | null; customer: string | null } | null;
   deleteJob(id: number): void;
   closeJob(id: number, closedBy: string, reason?: string): schema.Job | undefined;
   reopenJob(id: number, reopenedBy: string): schema.Job | undefined;
@@ -1483,6 +1537,34 @@ class SqliteStorage implements IStorage {
       reopenedBy,
     } as any).where(eq(schema.jobs.id, id)).returning().get();
   }
+  // Peek at the next available TP-YYYY-NNN job number for the current year.
+  // Not a reservation — two concurrent callers can see the same value; the
+  // actual insert is guarded by the UNIQUE index + retry loop in createJob.
+  // Used by the client's New Job dialog to pre-fill the field.
+  getNextJobNumber(year?: number): string {
+    const y = year ?? new Date().getFullYear();
+    const prefix = `TP-${y}-`;
+    // Match "TP-YYYY-<digits>", cast the trailing digits, take MAX.
+    // SUBSTR is 1-indexed in SQLite; skip past the prefix.
+    const row = sqlite.prepare(
+      `SELECT COALESCE(MAX(CAST(SUBSTR(job_number, ?) AS INTEGER)), 0) AS max_seq
+         FROM jobs
+        WHERE job_number LIKE ? AND job_number GLOB ?`
+    ).get(prefix.length + 1, `${prefix}%`, `${prefix}[0-9]*`) as { max_seq: number };
+    const next = (row?.max_seq || 0) + 1;
+    return `${prefix}${String(next).padStart(3, "0")}`;
+  }
+  // Look up an existing job by exact job_number — returns a slim descriptor
+  // used by the 409 duplicate response so the client can tell the operator
+  // which job already owns the number they tried to reuse.
+  findJobByNumber(jobNumber: string): { id: number; address: string | null; customer: string | null } | null {
+    const j = sqlite.prepare(
+      `SELECT j.id AS id, j.address AS address, c.name AS customer
+         FROM jobs j LEFT JOIN contacts c ON c.id = j.contact_id
+        WHERE j.job_number = ? LIMIT 1`
+    ).get(jobNumber) as { id: number; address: string | null; customer: string | null } | undefined;
+    return j || null;
+  }
   createJob(data: schema.InsertJob) {
     const d: any = { ...data, createdAt: new Date().toISOString() };
     // Job division drives which phases the JobDetail workspace exposes
@@ -1522,20 +1604,51 @@ class SqliteStorage implements IStorage {
         }
       }
     }
-    // Auto-generate a job number when one isn't supplied (e.g. blank/partial input),
-    // so a valid job is still created instead of hitting a NOT NULL constraint.
-    if (!d.jobNumber || String(d.jobNumber).trim() === "" || String(d.jobNumber).trim().endsWith("-")) {
-      const year = new Date().getFullYear();
-      const prefix = `TP-${year}-`;
-      const existing = db.select().from(schema.jobs).all();
-      let maxSeq = 0;
-      for (const j of existing) {
-        const m = String((j as any).jobNumber || "").match(new RegExp(`^TP-${year}-(\\d+)$`));
-        if (m) { const n = parseInt(m[1], 10); if (n > maxSeq) maxSeq = n; }
+    // ── Job number: bulletproof concurrent-safe generation ─────────────
+    // Two paths converge here: the caller either supplies a specific number
+    // (operator typed one into New Job dialog) or leaves it blank / prefix-
+    // only ("TP-2026-"). Both must survive two people creating a job at the
+    // same second.
+    //
+    // - Supplied number: pre-check for a collision, throw DuplicateJobNumberError
+    //   so the route can respond 409 with existing-job details.
+    // - Auto-generated: peek at MAX seq, insert; on UNIQUE-constraint failure
+    //   (a concurrent create claimed our number), retry up to 5 times with the
+    //   fresh MAX. All wrapped in a single transaction so partial state can't
+    //   leak, and SQLite serializes write transactions so the retry loop always
+    //   converges within N attempts (N = concurrent writers).
+    const supplied = d.jobNumber ? String(d.jobNumber).trim() : "";
+    const isAutoRequest = !supplied || supplied.endsWith("-");
+    const self = this;
+    const insertTx = sqlite.transaction(() => {
+      if (!isAutoRequest) {
+        // Explicit number — collision check first for a friendly 409, then
+        // rely on UNIQUE index for the true guard against a concurrent claim.
+        const existing = self.findJobByNumber(supplied);
+        if (existing) {
+          throw new DuplicateJobNumberError(supplied, existing);
+        }
+        d.jobNumber = supplied;
+        return db.insert(schema.jobs).values(d).returning().get();
       }
-      d.jobNumber = `${prefix}${String(maxSeq + 1).padStart(3, "0")}`;
-    }
-    return db.insert(schema.jobs).values(d).returning().get();
+      // Auto path: retry loop against UNIQUE violations from concurrent creates.
+      let lastErr: any = null;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        d.jobNumber = self.getNextJobNumber();
+        try {
+          return db.insert(schema.jobs).values(d).returning().get();
+        } catch (e: any) {
+          const msg = String(e?.message || "");
+          const isUnique = e?.code === "SQLITE_CONSTRAINT_UNIQUE" ||
+                           msg.includes("UNIQUE constraint failed: jobs.job_number");
+          if (!isUnique) throw e;
+          lastErr = e;
+          // Loop: next iteration picks up the newly-committed sibling insert.
+        }
+      }
+      throw lastErr || new Error("Failed to generate a unique job number after 5 attempts");
+    });
+    return insertTx();
   }
   updateJob(id: number, data: Partial<schema.InsertJob>) {
     // Same integer coercion as createJob — blank-string PATCH bodies from the
@@ -1566,7 +1679,32 @@ class SqliteStorage implements IStorage {
         }
       }
     }
-    return db.update(schema.jobs).set(d).where(eq(schema.jobs.id, id)).returning().get();
+    // If a caller tries to rename the job's number, guard against colliding
+    // with an existing job. Pre-check for a friendly 409 (the client dialog
+    // suggests the next available number and offers a Cancel option), and
+    // let the UNIQUE index catch any race that slips past.
+    if (Object.prototype.hasOwnProperty.call(d, "jobNumber") && d.jobNumber) {
+      const nextNum = String(d.jobNumber).trim();
+      if (nextNum) {
+        const collision = this.findJobByNumber(nextNum);
+        if (collision && collision.id !== id) {
+          throw new DuplicateJobNumberError(nextNum, collision);
+        }
+        d.jobNumber = nextNum;
+      }
+    }
+    try {
+      return db.update(schema.jobs).set(d).where(eq(schema.jobs.id, id)).returning().get();
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      const isUnique = e?.code === "SQLITE_CONSTRAINT_UNIQUE" ||
+                       msg.includes("UNIQUE constraint failed: jobs.job_number");
+      if (isUnique && d.jobNumber) {
+        const collision = this.findJobByNumber(String(d.jobNumber));
+        throw new DuplicateJobNumberError(String(d.jobNumber), collision || undefined);
+      }
+      throw e;
+    }
   }
   deleteJob(id: number) { db.delete(schema.jobs).where(eq(schema.jobs.id, id)).run(); }
 

@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage, sqlite } from "./storage";
+import { storage, sqlite, DuplicateJobNumberError } from "./storage";
 import BetterSqlite3 from "better-sqlite3";
 import crypto from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
@@ -1325,6 +1325,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!j) return res.status(404).json({ error: "Not found" });
     res.json(j);
   });
+  // Preview the next available job number for the current year. Cheap read,
+  // not a reservation: the actual insert is guarded by the UNIQUE index +
+  // retry loop in storage.createJob so two clients seeing the same peek here
+  // still end up with distinct numbers on save.
+  app.get("/api/jobs/next-number", (req, res) => {
+    try {
+      const y = req.query.year ? Number(req.query.year) : undefined;
+      res.json({ jobNumber: storage.getNextJobNumber(Number.isFinite(y as number) ? y : undefined) });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Unable to compute next job number" });
+    }
+  });
   app.post("/api/jobs", (req, res) => {
     try {
       const job = storage.createJob(req.body);
@@ -1337,6 +1349,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (job?.address) geocodeJobInBackground(sqlite, job.id, job.address);
       res.json(job);
     } catch (err: any) {
+      if (err instanceof DuplicateJobNumberError) {
+        // 409 Conflict — client can prompt the operator to pick a different
+        // number (and offer the auto-suggested next available one).
+        return res.status(409).json({
+          error: err.message,
+          code: err.code,
+          jobNumber: err.jobNumber,
+          existingJobId: err.existingJobId,
+          existingCustomer: err.existingCustomer,
+          existingAddress: err.existingAddress,
+          suggestedNext: storage.getNextJobNumber(),
+        });
+      }
       res.status(400).json({ error: err?.message || "Unable to create job" });
     }
   });
@@ -1365,7 +1390,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ error: `Mitigation-only jobs cannot be moved to 'reconstruction'. Change scope to 'both' first.` });
       }
     }
-    const j = storage.updateJob(jobId, req.body);
+    let j;
+    try {
+      j = storage.updateJob(jobId, req.body);
+    } catch (err: any) {
+      if (err instanceof DuplicateJobNumberError) {
+        return res.status(409).json({
+          error: err.message,
+          code: err.code,
+          jobNumber: err.jobNumber,
+          existingJobId: err.existingJobId,
+          existingCustomer: err.existingCustomer,
+          existingAddress: err.existingAddress,
+          suggestedNext: storage.getNextJobNumber(),
+        });
+      }
+      return res.status(400).json({ error: err?.message || "Unable to update job" });
+    }
     if (!j) return res.status(404).json({ error: "Not found" });
     // If the address changed OR we still have no coordinates, (re)geocode.
     const addressChanged = before && before.address !== j.address;
@@ -2635,7 +2676,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     draft.contactId = contactId;
     if (customer && !draft.description) draft.description = customer;
 
-    const job = storage.createJob(draft as any);
+    // Voice-intake previewed a jobNumber above by scanning MAX(seq), but two
+    // dispatchers previewing in the same second would both land on the same
+    // number. To keep intake bulletproof, drop the previewed number here and
+    // let storage.createJob generate one inside a transaction — unless the
+    // dispatcher explicitly typed a specific number, in which case we honor
+    // it and let storage return 409 on collision.
+    if (!providedJobNumber) {
+      delete (draft as any).jobNumber;
+    }
+    let job;
+    try {
+      job = storage.createJob(draft as any);
+    } catch (err: any) {
+      if (err instanceof DuplicateJobNumberError) {
+        return res.status(409).json({
+          error: err.message,
+          code: err.code,
+          jobNumber: err.jobNumber,
+          existingJobId: err.existingJobId,
+          existingCustomer: err.existingCustomer,
+          existingAddress: err.existingAddress,
+          suggestedNext: storage.getNextJobNumber(),
+        });
+      }
+      return res.status(400).json({ error: err?.message || "Unable to create job" });
+    }
     notifyNewJob(job);
     res.json({ ok: true, job, parsed, contactId });
   });
