@@ -1301,6 +1301,42 @@ export function registerGmailRoutes(app: Express, sqlite: Database, deps: AuthDe
     }
   });
 
+  // ── SPAM / NOT-SPAM: Gmail's own SPAM label ────────────────────────
+  //   Adding SPAM removes INBOX automatically; removing SPAM restores INBOX.
+  //   Gmail's own web UI does the same thing via modify.
+  app.post("/api/gmail/messages/:id/spam", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      await gmail.users.messages.modify({
+        userId: "me",
+        id: req.params.id,
+        requestBody: { addLabelIds: ["SPAM"], removeLabelIds: ["INBOX"] },
+      });
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to mark as spam." });
+    }
+  });
+  app.post("/api/gmail/messages/:id/not-spam", requireStaffAuth, async (req: any, res) => {
+    if (!gmailConfigured()) return res.status(400).json({ error: "Gmail not configured.", configured: false });
+    const oauth2 = await getAuthedClientForEmployee(req, req.employee.id);
+    if (!oauth2) return res.status(409).json({ error: "Gmail not connected for this user.", connected: false });
+    try {
+      const gmail = google.gmail({ version: "v1", auth: oauth2 });
+      await gmail.users.messages.modify({
+        userId: "me",
+        id: req.params.id,
+        requestBody: { addLabelIds: ["INBOX"], removeLabelIds: ["SPAM"] },
+      });
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to remove spam mark." });
+    }
+  });
+
   // ── THREADS: full conversation view ────────────────────────────────────────
   //   Gmail groups messages by threadId. This endpoint returns every message
   //   in the thread, in send order, with headers + body + attachments

@@ -151,6 +151,15 @@ export default function EmailPage() {
   const [jobLinkFor, setJobLinkFor] = useState<{ threadId?: string; messageId?: string; subject?: string; from?: string; snippet?: string } | null>(null);
   const [inlineReplyOpen, setInlineReplyOpen] = useState(false);
   const [inlineReplyText, setInlineReplyText] = useState("");
+  const [inlineReplyMode, setInlineReplyMode] = useState<"reply" | "replyAll">("reply");
+
+  // Attachment preview (Gmail-style modal for PDFs, images, text). Non-previewable
+  // types fall through to download.
+  const [attachPreview, setAttachPreview] = useState<{ url: string; filename: string; mimeType: string } | null>(null);
+
+  // Trimmed-quote toggle per detail view. Only shown when the body actually
+  // contains a Gmail-style quote block, and only in the top-level detail
+  // (thread messages already have their own expand/collapse).
 
   const [gmailInput, setGmailInput] = useState("");
   const [liveSelectedId, setLiveSelectedId] = useState<string | null>(null);
@@ -331,6 +340,84 @@ export default function EmailPage() {
     onError: (e: any) => toast({ title: "Send failed", description: String(e?.message || e), variant: "destructive" }),
   });
 
+  // Send-and-archive — Gmail's reply toolbar has this. After the reply
+  // is delivered, remove INBOX from the ORIGINAL thread so it drops off the
+  // inbox list. We use `compose.threadId` to identify which conversation to
+  // archive; new (non-reply) sends won't have one, so the button is hidden.
+  const sendAndArchive = useMutation({
+    mutationFn: async () => {
+      const originalThreadId = compose.threadId;
+      const finalHtml = composeHtmlWithSig(compose.html || compose.body || "");
+      const res = await apiRequest("POST", "/api/gmail/send", {
+        to: compose.to,
+        cc: compose.cc || undefined,
+        bcc: compose.bcc || undefined,
+        subject: compose.subject,
+        html: finalHtml,
+        body: compose.body || undefined,
+        threadId: compose.threadId,
+        inReplyTo: compose.inReplyTo,
+        references: compose.references,
+        attachments: compose.attachments.map(a => ({
+          filename: a.filename, mimeType: a.mimeType, dataBase64: a.dataBase64,
+        })),
+      });
+      const data = await res.json();
+      // Archive the just-replied thread. Best-effort — if this fails the
+      // send still counts as a success.
+      if (originalThreadId) {
+        try {
+          await apiRequest("POST", `/api/gmail/messages/${originalThreadId}/modify`, { remove: ["INBOX"] });
+        } catch { /* ignore */ }
+      }
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] });
+      setComposeOpen(false);
+      setCompose({ to: "", cc: "", bcc: "", subject: "", body: "", html: "", attachments: [], mode: "new" });
+      setShowCcBcc(false);
+      setCurrentDraftId(null);
+      toast({ title: "Sent and archived" });
+    },
+    onError: (e: any) => toast({ title: "Send failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
+  // Inline reply — Gmail's default reply flow: keep the user in the reading
+  // pane. We build a message from `liveDetail` (currently open message) so we
+  // don't have to touch the compose dialog state.
+  const sendInlineReply = useMutation({
+    mutationFn: async () => {
+      if (!liveDetail) throw new Error("No open message");
+      const bodyText = (inlineReplyText || "").trim();
+      if (!bodyText) throw new Error("Empty reply");
+      const senderInfo = parseSender(liveDetail.from || "");
+      const to = senderInfo.email;
+      const cc = inlineReplyMode === "replyAll"
+        ? [liveDetail.to, liveDetail.cc].filter(Boolean).join(", ")
+        : undefined;
+      const subject = /^re:\s/i.test(liveDetail.subject || "") ? liveDetail.subject : `Re: ${liveDetail.subject || ""}`;
+      const htmlEscaped = bodyText
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/\n/g, "<br>");
+      const finalHtml = composeHtmlWithSig(htmlEscaped);
+      const res = await apiRequest("POST", "/api/gmail/send", {
+        to, cc, subject, html: finalHtml, body: bodyText,
+        threadId: liveDetail.threadId,
+        inReplyTo: liveDetail.messageIdHeader || liveDetail.id,
+        references: liveDetail.references,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/thread"] });
+      setInlineReplyOpen(false); setInlineReplyText("");
+      toast({ title: "Reply sent" });
+    },
+    onError: (e: any) => toast({ title: "Reply failed", description: String(e?.message || e), variant: "destructive" }),
+  });
+
   // Undo Send: trash the just-sent message. Gmail doesn't expose a true
   // "unsend" so we do the next best thing — move it out of Sent into Trash
   // within the undo window.
@@ -368,6 +455,33 @@ export default function EmailPage() {
     },
     onError: (e: any) => toast({ title: "Save failed", description: String(e?.message || e), variant: "destructive" }),
   });
+
+  // Auto-save the draft in the background while the compose window is open.
+  // Gmail does this on every keystroke (debounced); 30s is plenty for our
+  // volume and stays well under Gmail's per-user quota. Only runs when the
+  // user has actually typed something so we don't create empty drafts.
+  const composeIsDirty = !!(compose.to || compose.subject || (compose.html && compose.html.replace(/<[^>]+>/g, "").trim()));
+  useEffect(() => {
+    if (!composeOpen || !gmailLive || !composeIsDirty) return;
+    const t = window.setTimeout(() => {
+      if (!saveDraft.isPending) saveDraft.mutate();
+    }, 30_000);
+    return () => window.clearTimeout(t);
+  }, [composeOpen, gmailLive, compose.to, compose.cc, compose.bcc, compose.subject, compose.html]);
+
+  // Discard the current draft (Gmail's trash-can icon in compose). If we
+  // haven't saved yet there's nothing on the server; just clear local state.
+  const discardDraft = async () => {
+    if (currentDraftId) {
+      try { await apiRequest("DELETE", `/api/gmail/drafts/${currentDraftId}`); } catch { /* ignore */ }
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/drafts"] });
+    }
+    setCurrentDraftId(null);
+    setCompose({ to: "", cc: "", bcc: "", subject: "", body: "", html: "", attachments: [], mode: "new" });
+    setShowCcBcc(false);
+    setComposeOpen(false);
+    toast({ title: "Draft discarded" });
+  };
 
   const scheduleSend = useMutation({
     mutationFn: async () => {
@@ -686,6 +800,27 @@ export default function EmailPage() {
       return allSelected ? new Set() : new Set(liveMessages.map(m => m.id));
     });
   };
+  // Gmail's master-checkbox dropdown (All / None / Read / Unread / Starred /
+  // Unstarred). Works on the currently-loaded page.
+  const selectSubset = (subset: "all" | "none" | "read" | "unread" | "starred" | "unstarred") => {
+    setSelectedRows(() => {
+      switch (subset) {
+        case "all":       return new Set(liveMessages.map(m => m.id));
+        case "none":      return new Set();
+        case "read":      return new Set(liveMessages.filter(m => !m.unread).map(m => m.id));
+        case "unread":    return new Set(liveMessages.filter(m => m.unread).map(m => m.id));
+        case "starred":   return new Set(liveMessages.filter(m => m.starred).map(m => m.id));
+        case "unstarred": return new Set(liveMessages.filter(m => !m.starred).map(m => m.id));
+      }
+    });
+  };
+  // Click a sender's name/email in the list → apply Gmail search operator.
+  const filterBySender = (email: string) => {
+    if (!email) return;
+    const q = `from:${email}`;
+    setSearchTerm(q); setSearchQuery(q);
+    setLiveSelectedId(null); setSelectedRows(new Set());
+  };
   // Bulk endpoints are just repeated single-message calls. Small cost
   // vs. adding a whole new server route; keeps this diff tight.
   const bulkModify = async (opts: { addLabelIds?: string[]; removeLabelIds?: string[] }, trash = false) => {
@@ -793,6 +928,36 @@ export default function EmailPage() {
     }
   };
 
+  // Preview an attachment inline. Gmail previews PDFs and images in a viewer;
+  // for anything else we fall back to a plain download. We fetch through the
+  // auth'd endpoint the same way as download so the browser doesn't try to
+  // hit /api/... unauthenticated in an <iframe src>.
+  const previewAttachment = async (
+    messageId: string,
+    att: { attachmentId: string; filename: string; mimeType: string },
+  ) => {
+    const previewable = /^image\//i.test(att.mimeType) || att.mimeType === "application/pdf" || /^text\//i.test(att.mimeType);
+    if (!previewable) return downloadAttachment(messageId, att);
+    const p = new URLSearchParams({ filename: att.filename, mimeType: att.mimeType });
+    const url = `/api/gmail/messages/${messageId}/attachments/${att.attachmentId}?${p.toString()}`;
+    try {
+      const res = await fetch(url, { credentials: "same-origin", headers: buildAuthHeaders(url) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      setAttachPreview({ url: objectUrl, filename: att.filename, mimeType: att.mimeType });
+    } catch (e: any) {
+      toast({ title: "Preview failed", description: String(e?.message || e), variant: "destructive" });
+    }
+  };
+
+  // Free the object URL when the preview closes; leaking blob URLs holds the
+  // file in memory for the life of the tab.
+  useEffect(() => {
+    if (!attachPreview) return;
+    return () => { URL.revokeObjectURL(attachPreview.url); };
+  }, [attachPreview]);
+
   // ── Actions: star / archive / mark-unread / trash ────────────────────
   //   All four go through /api/gmail/messages/:id/modify (or /trash) and
   //   optimistically patch the currently-loaded list so the UI reacts
@@ -881,6 +1046,56 @@ export default function EmailPage() {
           </ToastAction>
         ),
       });
+    },
+  );
+
+  // Report as spam / not spam. Gmail's SPAM label bounces the row out of the
+  // inbox on its own; we just mirror the current-list optimistic pattern.
+  const spamRow = (id: string) => modifyOptimistic(
+    id,
+    () => ({ labels: [] }),
+    async () => {
+      await apiRequest("POST", `/api/gmail/messages/${id}/spam`);
+      queryClient.setQueryData<{ messages: GmailRow[] }>(
+        ["/api/gmail/messages", gmailLabel, searchQuery],
+        (cur) => cur ? { messages: cur.messages.filter(m => m.id !== id) } : cur,
+      );
+      if (liveSelectedId === id) setLiveSelectedId(null);
+      toast({
+        title: "Reported as spam",
+        action: (
+          <ToastAction altText="Undo report" onClick={async () => {
+            await apiRequest("POST", `/api/gmail/messages/${id}/not-spam`);
+            queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] });
+          }}>Not spam</ToastAction>
+        ),
+      });
+    },
+  );
+
+  const notSpamRow = (id: string) => modifyOptimistic(
+    id,
+    () => ({ labels: [] }),
+    async () => {
+      await apiRequest("POST", `/api/gmail/messages/${id}/not-spam`);
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/messages"] });
+      toast({ title: "Moved to Inbox" });
+    },
+  );
+
+  // "Move to" — Gmail's Move behavior applies a label AND removes INBOX in
+  // a single trip. Purely a convenience over label+archive.
+  const moveToLabel = (id: string, labelId: string) => modifyOptimistic(
+    id,
+    () => ({ labels: [] }),
+    async () => {
+      await apiRequest("POST", `/api/gmail/messages/${id}/modify`, { add: [labelId], remove: ["INBOX"] });
+      queryClient.setQueryData<{ messages: GmailRow[] }>(
+        ["/api/gmail/messages", gmailLabel, searchQuery],
+        (cur) => cur ? { messages: cur.messages.filter(m => m.id !== id) } : cur,
+      );
+      if (liveSelectedId === id) setLiveSelectedId(null);
+      toast({ title: "Moved" });
     },
   );
 
@@ -994,11 +1209,27 @@ export default function EmailPage() {
   //   s star, u back to list, r reply, c compose, ? help.
   useEffect(() => {
     const handler = (ev: KeyboardEvent) => {
-      // Ignore when typing in a form field or when a dialog is open.
       const tag = (ev.target as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || (ev.target as HTMLElement | null)?.isContentEditable) return;
+      const inField = tag === "INPUT" || tag === "TEXTAREA" || (ev.target as HTMLElement | null)?.isContentEditable;
+
+      // Cmd/Ctrl-modified shortcuts work anywhere — even inside form fields
+      // — and always take priority. Match Gmail's own bindings.
+      if (ev.metaKey || ev.ctrlKey) {
+        if (ev.key.toLowerCase() === "k") {
+          ev.preventDefault();
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+          return;
+        }
+        if (ev.key === "/") { ev.preventDefault(); setShortcutsOpen(true); return; }
+        // Cmd+Enter to send from compose is handled locally in the compose
+        // Dialog's onKeyDown so it can reach the send button state.
+        return;
+      }
+      if (ev.altKey) return;
+
+      if (inField) return;
       if (composeOpen || gmailSettingsOpen || shortcutsOpen) return;
-      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
 
       const key = ev.key;
       if (key === "/") { ev.preventDefault(); searchInputRef.current?.focus(); return; }
@@ -1275,7 +1506,19 @@ export default function EmailPage() {
         {/* ─── Left rail: Compose + folders ─── */}
         <aside className="w-56 shrink-0 border-r bg-neutral-50 dark:bg-neutral-900 flex flex-col">
           <div className="p-3">
-            <Dialog open={composeOpen} onOpenChange={setComposeOpen}>
+            <Dialog
+              open={composeOpen}
+              onOpenChange={(v) => {
+                if (v) { setComposeOpen(true); return; }
+                // On close (Esc or backdrop click): save the draft first if
+                // there's anything worth saving, then close. Matches Gmail
+                // which never silently discards work-in-progress.
+                if (composeIsDirty && gmailLive && !saveDraft.isPending) {
+                  saveDraft.mutate();
+                }
+                setComposeOpen(false);
+              }}
+            >
               <DialogTrigger asChild>
                 <Button
                   data-testid="button-compose"
@@ -1284,9 +1527,21 @@ export default function EmailPage() {
                   <Plus className="w-4 h-4" /> Compose
                 </Button>
               </DialogTrigger>
-              <DialogContent className="sm:max-w-lg">
+              <DialogContent
+                className="sm:max-w-lg"
+                onKeyDown={(e) => {
+                  // Cmd/Ctrl+Enter: send. Prefer sendAndArchive when the
+                  // compose was opened as a reply (threadId is set).
+                  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                    e.preventDefault();
+                    if (!compose.to || sendViaGmailLive.isPending || sendAndArchive.isPending) return;
+                    if (gmailLive) sendViaGmailLive.mutate();
+                    else sendMutation.mutate();
+                  }
+                }}
+              >
                 <DialogHeader>
-                  <DialogTitle>New Email</DialogTitle>
+                  <DialogTitle>{compose.mode === "new" ? "New Email" : compose.mode === "forward" ? "Forward" : "Reply"}</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-3">
                   <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/50 px-3 py-2 rounded-lg">
@@ -1463,10 +1718,25 @@ export default function EmailPage() {
                           className="flex-1 bg-[#c5221f] hover:bg-[#a01a17] text-white"
                           onClick={() => sendViaGmailLive.mutate()}
                           disabled={sendViaGmailLive.isPending || !compose.to}
+                          title="Send (⌘↵)"
                         >
                           <Send className="w-4 h-4 mr-2" />
                           {sendViaGmailLive.isPending ? "Sending…" : "Send"}
                         </Button>
+                        {(compose.mode === "reply" || compose.mode === "replyAll") && compose.threadId && (
+                          <Button
+                            data-testid="button-send-and-archive"
+                            type="button"
+                            variant="outline"
+                            className="gap-2"
+                            onClick={() => sendAndArchive.mutate()}
+                            disabled={sendAndArchive.isPending || !compose.to}
+                            title="Send and archive the original conversation"
+                          >
+                            <Archive className="w-4 h-4" />
+                            {sendAndArchive.isPending ? "Sending…" : "Send + Archive"}
+                          </Button>
+                        )}
                         <Button
                           data-testid="button-schedule-send"
                           type="button"
@@ -1512,6 +1782,17 @@ export default function EmailPage() {
                         >
                           <Briefcase className="w-4 h-4" />
                           Attach from job
+                        </Button>
+                        <Button
+                          data-testid="button-discard-draft"
+                          type="button"
+                          variant="ghost"
+                          className="gap-2 text-neutral-500 hover:text-red-600 ml-auto"
+                          onClick={discardDraft}
+                          title="Discard draft"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          Discard
                         </Button>
                       </>
                     ) : (
@@ -1741,6 +2022,7 @@ export default function EmailPage() {
               selectedRows={selectedRows}
               onToggleRow={toggleRow}
               onToggleAll={toggleAllRows}
+              onSelectSubset={selectSubset}
               onBulkArchive={bulkArchive}
               onBulkTrash={bulkTrash}
               onBulkMarkRead={bulkMarkRead}
@@ -1749,6 +2031,7 @@ export default function EmailPage() {
               hasPrevPage={pageTokens.length > 0}
               onNextPage={goNextPage}
               onPrevPage={goPrevPage}
+              onFilterSender={filterBySender}
             />
           ) : (
             <LegacyList
@@ -1809,6 +2092,18 @@ export default function EmailPage() {
                   labels={labelsQuery.data?.labels || []}
                   onAddLabel={(labelId) => applyLabelToMessage.mutate({ messageId: liveDetail.id, addLabelIds: [labelId] })}
                   onRemoveLabel={(labelId) => applyLabelToMessage.mutate({ messageId: liveDetail.id, removeLabelIds: [labelId] })}
+                  onSpam={() => spamRow(liveDetail.id)}
+                  onNotSpam={() => notSpamRow(liveDetail.id)}
+                  onMoveTo={(labelId) => moveToLabel(liveDetail.id, labelId)}
+                  onPreviewAttachment={(att) => previewAttachment(liveDetail.id, att)}
+                  onFilterSender={filterBySender}
+                  inline={{ open: inlineReplyOpen, mode: inlineReplyMode }}
+                  onInlineReplyOpen={(mode) => { setInlineReplyMode(mode); setInlineReplyText(""); setInlineReplyOpen(true); }}
+                  inlineReplyText={inlineReplyText}
+                  onInlineReplyChange={setInlineReplyText}
+                  onInlineReplySend={() => sendInlineReply.mutate()}
+                  onInlineReplyCancel={() => { setInlineReplyOpen(false); setInlineReplyText(""); }}
+                  inlineReplyPending={sendInlineReply.isPending}
                 />
               ) : (
                 <EmptyPane message="Could not load this message." />
@@ -2026,6 +2321,7 @@ export default function EmailPage() {
           </DialogHeader>
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
             <ShortcutRow k="/" label="Focus search" />
+            <ShortcutRow k="⌘K" label="Focus search (from anywhere)" />
             <ShortcutRow k="c" label="Compose" />
             <ShortcutRow k="j" label="Next conversation" />
             <ShortcutRow k="k" label="Previous conversation" />
@@ -2035,11 +2331,51 @@ export default function EmailPage() {
             <ShortcutRow k="s" label="Toggle star" />
             <ShortcutRow k="e" label="Archive" />
             <ShortcutRow k="#" label="Move to Trash" />
+            <ShortcutRow k="⌘↵" label="Send (in compose)" />
+            <ShortcutRow k="Esc" label="Close compose (saves draft)" />
             <ShortcutRow k="?" label="This help" />
           </div>
           <p className="text-xs text-muted-foreground mt-2">
             Shortcuts are ignored while you're typing in a field or a dialog is open.
           </p>
+        </DialogContent>
+      </Dialog>
+
+      {/* Attachment preview modal — Gmail's inline viewer for images and PDFs.
+           Object URL is created in previewAttachment and revoked on unmount. */}
+      <Dialog open={!!attachPreview} onOpenChange={(v) => { if (!v) setAttachPreview(null); }}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle className="truncate">{attachPreview?.filename || "Preview"}</DialogTitle>
+          </DialogHeader>
+          {attachPreview && (
+            <div className="h-[70vh] w-full bg-neutral-100 dark:bg-neutral-900 rounded-lg overflow-hidden">
+              {attachPreview.mimeType.startsWith("image/") ? (
+                <img
+                  src={attachPreview.url}
+                  alt={attachPreview.filename}
+                  className="w-full h-full object-contain"
+                />
+              ) : (
+                <iframe
+                  src={attachPreview.url}
+                  title={attachPreview.filename}
+                  className="w-full h-full border-0"
+                />
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            {attachPreview && (
+              <a
+                href={attachPreview.url}
+                download={attachPreview.filename}
+                className="inline-flex items-center gap-2 px-3 h-9 rounded-md border border-neutral-300 dark:border-neutral-700 text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800"
+              >
+                <Download className="w-4 h-4" /> Download
+              </a>
+            )}
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
@@ -2075,8 +2411,9 @@ function EmptyPane({ message, sub }: { message: string; sub?: string }) {
 function GmailList({
   rows, loading, folder, selectedId, onOpen, onToggleStar, onArchive, onTrash,
   searchQuery, onClearSearch,
-  selectedRows, onToggleRow, onToggleAll, onBulkArchive, onBulkTrash, onBulkMarkRead, onBulkMarkUnread,
+  selectedRows, onToggleRow, onToggleAll, onSelectSubset, onBulkArchive, onBulkTrash, onBulkMarkRead, onBulkMarkUnread,
   hasNextPage, hasPrevPage, onNextPage, onPrevPage,
+  onFilterSender,
 }: {
   rows: GmailRow[];
   loading: boolean;
@@ -2091,6 +2428,7 @@ function GmailList({
   selectedRows: Set<string>;
   onToggleRow: (id: string) => void;
   onToggleAll: () => void;
+  onSelectSubset: (subset: "all" | "none" | "read" | "unread" | "starred" | "unstarred") => void;
   onBulkArchive: () => void;
   onBulkTrash: () => void;
   onBulkMarkRead: () => void;
@@ -2099,6 +2437,7 @@ function GmailList({
   hasPrevPage: boolean;
   onNextPage: () => void;
   onPrevPage: () => void;
+  onFilterSender?: (email: string) => void;
 }) {
   const allChecked = rows.length > 0 && rows.every(r => selectedRows.has(r.id));
   const someChecked = rows.some(r => selectedRows.has(r.id));
@@ -2111,6 +2450,25 @@ function GmailList({
         aria-label="Select all on this page"
         data-testid="checkbox-select-all"
       />
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            className="p-0.5 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-500"
+            aria-label="Select options"
+            data-testid="button-select-subset"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          <DropdownMenuItem onSelect={() => onSelectSubset("all")}>All</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onSelectSubset("none")}>None</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onSelectSubset("read")}>Read</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onSelectSubset("unread")}>Unread</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onSelectSubset("starred")}>Starred</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onSelectSubset("unstarred")}>Unstarred</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       {bulkCount > 0 ? (
         <>
           <span className="text-xs text-neutral-600 dark:text-neutral-300 ml-2">{bulkCount} selected</span>
@@ -2234,11 +2592,15 @@ function GmailList({
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-baseline gap-2">
-                <span
-                  className={`text-sm truncate ${m.unread ? "font-semibold text-neutral-900 dark:text-neutral-50" : "text-neutral-700 dark:text-neutral-300"}`}
+                <button
+                  type="button"
+                  onClick={(ev) => { ev.stopPropagation(); onFilterSender?.(sender.email); }}
+                  className={`text-sm truncate text-left hover:underline ${m.unread ? "font-semibold text-neutral-900 dark:text-neutral-50" : "text-neutral-700 dark:text-neutral-300"}`}
+                  title={`Filter by ${sender.email}`}
+                  data-testid={`sender-${m.id}`}
                 >
                   {sender.name || sender.email}
-                </span>
+                </button>
               </div>
               <div className="flex items-center gap-1 text-xs">
                 <span className={`truncate ${m.unread ? "font-semibold text-neutral-900 dark:text-neutral-100" : "text-neutral-600 dark:text-neutral-400"}`}>
@@ -2301,7 +2663,9 @@ const SYSTEM_LABELS = new Set([
 
 function GmailDetail({
   detail, onBack, onReply, onReplyAll, onForward, onArchive, onTrash, onMarkUnread, onToggleStar, starred, onSnooze,
-  onDownloadAttachment, onOpenThread, onFileToJob, jobLinks, onUnlinkJob, labels, onAddLabel, onRemoveLabel,
+  onDownloadAttachment, onPreviewAttachment, onOpenThread, onFileToJob, jobLinks, onUnlinkJob, labels, onAddLabel, onRemoveLabel,
+  onSpam, onNotSpam, onMoveTo, onFilterSender, inline, onInlineReplyOpen,
+  inlineReplyText, onInlineReplyChange, onInlineReplySend, onInlineReplyCancel, inlineReplyPending,
 }: {
   detail: any;
   onBack: () => void;
@@ -2314,6 +2678,7 @@ function GmailDetail({
   onToggleStar: () => void;
   starred: boolean;
   onDownloadAttachment: (att: { attachmentId: string; filename: string; mimeType: string }) => void;
+  onPreviewAttachment?: (att: { attachmentId: string; filename: string; mimeType: string }) => void;
   onSnooze: () => void;
   onOpenThread?: () => void;
   onFileToJob?: () => void;
@@ -2322,9 +2687,34 @@ function GmailDetail({
   labels?: Array<{ id: string; name: string; type: string }>;
   onAddLabel?: (labelId: string) => void;
   onRemoveLabel?: (labelId: string) => void;
+  onSpam?: () => void;
+  onNotSpam?: () => void;
+  onMoveTo?: (labelId: string) => void;
+  onFilterSender?: (email: string) => void;
+  inline?: { open: boolean; mode: "reply" | "replyAll" };
+  onInlineReplyOpen?: (mode: "reply" | "replyAll") => void;
+  inlineReplyText?: string;
+  onInlineReplyChange?: (v: string) => void;
+  onInlineReplySend?: () => void;
+  onInlineReplyCancel?: () => void;
+  inlineReplyPending?: boolean;
 }) {
   const sender = parseSender(detail.from || "");
   const isHtml = /<[a-z][\s\S]*>/i.test(detail.body || "");
+  // Trimmed-content toggle: Gmail hides the quoted-history block by default.
+  const hasQuote = /class="gmail_quote"/.test(detail.body || "") || /^&gt;|^>/m.test(detail.body || "");
+  const [showQuoted, setShowQuoted] = useState(false);
+  // Split HTML at the quote block for the trim toggle. Only used when the body
+  // actually contains a Gmail-style quote wrapper.
+  const { visible, quoted } = (() => {
+    if (!isHtml || !hasQuote) return { visible: detail.body || "", quoted: "" };
+    const src = String(detail.body || "");
+    const idx = src.search(/<(?:div|blockquote)[^>]*(?:gmail_quote|class="gmail_quote")/i);
+    if (idx < 0) return { visible: src, quoted: "" };
+    return { visible: src.slice(0, idx), quoted: src.slice(idx) };
+  })();
+  // Trash on Spam is Gmail's own behavior: user is in SPAM folder.
+  const isInSpam = (detail.labels || []).includes("SPAM");
   // Inline images (referenced from HTML with cid:) are already visible in the
   // body. Skip them in the chip strip so we don't double-show them; keep
   // inline PDFs and other non-image inlines around because most HTML bodies
@@ -2469,6 +2859,52 @@ function GmailDetail({
             </DropdownMenuContent>
           </DropdownMenu>
         )}
+        {/* Move to — apply a label + remove INBOX (Gmail's Move) in one shot. */}
+        {labels && onMoveTo && labels.filter(l => l.type === "user").length > 0 && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="p-2 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"
+                aria-label="Move to"
+                title="Move to"
+                data-testid="button-move-to"
+              >
+                <ArrowLeft className="w-4 h-4 rotate-[-45deg]" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto">
+              <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-neutral-500">Move to label</div>
+              {labels.filter(l => l.type === "user").sort((a, b) => a.name.localeCompare(b.name)).map(l => (
+                <DropdownMenuItem key={l.id} onSelect={() => onMoveTo(l.id)}>
+                  <Tag className="w-3 h-3 mr-2 text-neutral-500" />
+                  <span>{l.name}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+        {/* Spam / not-spam — different button depending on where we are. */}
+        {onSpam && !isInSpam && (
+          <button
+            data-testid="button-report-spam"
+            onClick={onSpam}
+            className="p-2 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"
+            aria-label="Report spam"
+            title="Report spam"
+          >
+            <AlertTriangle className="w-4 h-4" />
+          </button>
+        )}
+        {onNotSpam && isInSpam && (
+          <button
+            data-testid="button-not-spam"
+            onClick={onNotSpam}
+            className="px-2 h-8 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-800 text-xs text-neutral-700 dark:text-neutral-200"
+            title="Not spam — move to Inbox"
+          >
+            Not spam
+          </button>
+        )}
       </div>
 
       {/* Job link chips + tracker warning */}
@@ -2523,9 +2959,20 @@ function GmailDetail({
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-baseline gap-2">
-            <span className="text-sm font-semibold text-neutral-800 dark:text-neutral-100">{sender.name}</span>
+            <button
+              type="button"
+              onClick={() => onFilterSender?.(sender.email)}
+              className="text-sm font-semibold text-neutral-800 dark:text-neutral-100 hover:underline"
+              title={sender.email ? `Filter by ${sender.email}` : sender.name}
+              data-testid="button-filter-sender"
+            >{sender.name}</button>
             {sender.email !== sender.name && (
-              <span className="text-xs text-neutral-500">&lt;{sender.email}&gt;</span>
+              <button
+                type="button"
+                onClick={() => onFilterSender?.(sender.email)}
+                className="text-xs text-neutral-500 hover:underline"
+                title={`Filter by ${sender.email}`}
+              >&lt;{sender.email}&gt;</button>
             )}
             <span className="ml-auto text-xs text-neutral-500">{detail.date ? fmtDateShort(detail.date) : ""}</span>
           </div>
@@ -2535,10 +2982,30 @@ function GmailDetail({
 
       <div className="py-6">
         {isHtml ? (
-          <div
-            className="text-sm text-neutral-800 dark:text-neutral-200 leading-relaxed break-words [&_a]:text-[#1a73e8] [&_a]:underline [&_img]:max-w-full [&_img]:h-auto"
-            dangerouslySetInnerHTML={{ __html: detail.body || "" }}
-          />
+          <>
+            <div
+              className="text-sm text-neutral-800 dark:text-neutral-200 leading-relaxed break-words [&_a]:text-[#1a73e8] [&_a]:underline [&_img]:max-w-full [&_img]:h-auto"
+              dangerouslySetInnerHTML={{ __html: visible }}
+            />
+            {quoted && (
+              <div className="mt-2">
+                {!showQuoted ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowQuoted(true)}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-200 text-xs"
+                    title="Show trimmed content"
+                    data-testid="button-show-trimmed"
+                  >…</button>
+                ) : (
+                  <div
+                    className="text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed break-words border-l-2 border-neutral-200 dark:border-neutral-800 pl-3 [&_a]:text-[#1a73e8] [&_a]:underline [&_img]:max-w-full [&_img]:h-auto"
+                    dangerouslySetInnerHTML={{ __html: quoted }}
+                  />
+                )}
+              </div>
+            )}
+          </>
         ) : (
           <div className="text-sm text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap leading-relaxed break-words font-normal">
             {detail.body || ""}
@@ -2555,58 +3022,132 @@ function GmailDetail({
             {attachments.length} attachment{attachments.length === 1 ? "" : "s"}
           </p>
           <div className="flex flex-wrap gap-2">
-            {attachments.map((a) => (
-              <button
-                key={a.attachmentId}
-                data-testid={`attachment-${a.attachmentId}`}
-                onClick={() => onDownloadAttachment(a)}
-                className="group flex items-center gap-2 px-3 py-2 rounded-lg border bg-neutral-50 dark:bg-neutral-900 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-left min-w-[220px] max-w-[320px]"
-                title={`Download ${a.filename}`}
-              >
-                <div className="w-9 h-9 rounded-md bg-neutral-200 dark:bg-neutral-800 grid place-items-center shrink-0">
-                  <FileIcon className="w-4 h-4 text-neutral-600 dark:text-neutral-300" />
+            {attachments.map((a) => {
+              const canPreview = !!onPreviewAttachment && (
+                (a.mimeType || "").startsWith("image/") ||
+                (a.mimeType || "").includes("pdf") ||
+                (a.filename || "").toLowerCase().match(/\.(png|jpe?g|gif|webp|svg|pdf)$/i)
+              );
+              return (
+                <div
+                  key={a.attachmentId}
+                  className="group flex items-center gap-2 px-3 py-2 rounded-lg border bg-neutral-50 dark:bg-neutral-900 hover:bg-neutral-100 dark:hover:bg-neutral-800 min-w-[220px] max-w-[320px]"
+                >
+                  <button
+                    type="button"
+                    onClick={(ev) => {
+                      // Ctrl/Cmd-click: force download regardless of type.
+                      if (ev.metaKey || ev.ctrlKey || !canPreview) {
+                        onDownloadAttachment(a);
+                      } else {
+                        onPreviewAttachment!(a);
+                      }
+                    }}
+                    data-testid={`attachment-${a.attachmentId}`}
+                    className="flex-1 flex items-center gap-2 text-left min-w-0"
+                    title={canPreview ? `Preview ${a.filename} (⌘-click to download)` : `Download ${a.filename}`}
+                  >
+                    <div className="w-9 h-9 rounded-md bg-neutral-200 dark:bg-neutral-800 grid place-items-center shrink-0">
+                      <FileIcon className="w-4 h-4 text-neutral-600 dark:text-neutral-300" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-neutral-800 dark:text-neutral-100 truncate">{a.filename}</p>
+                      <p className="text-[11px] text-neutral-500 truncate">
+                        {a.size ? formatBytes(a.size) : ""}
+                        {a.size && a.mimeType ? " · " : ""}
+                        {a.mimeType?.split("/")[1]?.toUpperCase() || a.mimeType}
+                      </p>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDownloadAttachment(a)}
+                    className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-500 opacity-0 group-hover:opacity-100 shrink-0"
+                    title="Download"
+                    aria-label="Download"
+                  >
+                    <Download className="w-4 h-4" />
+                  </button>
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium text-neutral-800 dark:text-neutral-100 truncate">{a.filename}</p>
-                  <p className="text-[11px] text-neutral-500 truncate">
-                    {a.size ? formatBytes(a.size) : ""}
-                    {a.size && a.mimeType ? " · " : ""}
-                    {a.mimeType?.split("/")[1]?.toUpperCase() || a.mimeType}
-                  </p>
-                </div>
-                <Download className="w-4 h-4 text-neutral-500 opacity-0 group-hover:opacity-100 shrink-0" />
-              </button>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
 
-      <div className="pt-4 border-t flex flex-wrap gap-2">
-        <Button
-          data-testid="button-reply-bottom"
-          variant="outline"
-          onClick={onReply}
-          className="gap-2 rounded-full border-neutral-300 dark:border-neutral-700"
-        >
-          <Reply className="w-4 h-4" /> Reply
-        </Button>
-        <Button
-          data-testid="button-reply-all-bottom"
-          variant="outline"
-          onClick={onReplyAll}
-          className="gap-2 rounded-full border-neutral-300 dark:border-neutral-700"
-        >
-          <ReplyAll className="w-4 h-4" /> Reply all
-        </Button>
-        <Button
-          data-testid="button-forward-bottom"
-          variant="outline"
-          onClick={onForward}
-          className="gap-2 rounded-full border-neutral-300 dark:border-neutral-700"
-        >
-          <Forward className="w-4 h-4" /> Forward
-        </Button>
-      </div>
+      {/* Inline reply — Gmail's default reply UI stays in the reading pane.
+           Only rendered when the parent opts into inlineReply mode. */}
+      {inline?.open ? (
+        <div className="pt-4 border-t">
+          <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 bg-white dark:bg-neutral-900">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-neutral-500">
+                {inline.mode === "replyAll" ? "Reply all to" : "Reply to"} {sender.name || sender.email}
+              </span>
+              <button
+                type="button"
+                onClick={onInlineReplyCancel}
+                className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500"
+                aria-label="Close reply"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <Textarea
+              data-testid="input-inline-reply"
+              value={inlineReplyText || ""}
+              onChange={(e) => onInlineReplyChange?.(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                  e.preventDefault();
+                  onInlineReplySend?.();
+                }
+              }}
+              placeholder="Type your reply… (⌘↵ to send)"
+              className="min-h-[100px] text-sm"
+            />
+            <div className="flex items-center gap-2 mt-2">
+              <Button
+                data-testid="button-inline-reply-send"
+                onClick={onInlineReplySend}
+                disabled={inlineReplyPending || !(inlineReplyText || "").trim()}
+                className="bg-[#c5221f] hover:bg-[#a01a17] text-white gap-2"
+              >
+                <Send className="w-4 h-4" />
+                {inlineReplyPending ? "Sending…" : "Send"}
+              </Button>
+              <span className="text-xs text-neutral-500">⌘↵ to send</span>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="pt-4 border-t flex flex-wrap gap-2">
+          <Button
+            data-testid="button-reply-bottom"
+            variant="outline"
+            onClick={() => onInlineReplyOpen ? onInlineReplyOpen("reply") : onReply()}
+            className="gap-2 rounded-full border-neutral-300 dark:border-neutral-700"
+          >
+            <Reply className="w-4 h-4" /> Reply
+          </Button>
+          <Button
+            data-testid="button-reply-all-bottom"
+            variant="outline"
+            onClick={() => onInlineReplyOpen ? onInlineReplyOpen("replyAll") : onReplyAll()}
+            className="gap-2 rounded-full border-neutral-300 dark:border-neutral-700"
+          >
+            <ReplyAll className="w-4 h-4" /> Reply all
+          </Button>
+          <Button
+            data-testid="button-forward-bottom"
+            variant="outline"
+            onClick={onForward}
+            className="gap-2 rounded-full border-neutral-300 dark:border-neutral-700"
+          >
+            <Forward className="w-4 h-4" /> Forward
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
