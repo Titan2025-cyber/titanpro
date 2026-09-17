@@ -217,6 +217,9 @@ export default function Calendar() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [draft, setDraft] = useState({ ...BLANK_DRAFT });
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  // Mobile day drill-down: when a day cell is tapped and there's ≥1 event,
+  // we open a sheet listing every event on that day so nothing is hidden.
+  const [dayDrillDown, setDayDrillDown] = useState<{ iso: string; events: CalendarEvent[] } | null>(null);
 
   function openCreate(preset?: Partial<typeof BLANK_DRAFT>) {
     const today = new Date().toISOString().slice(0, 10);
@@ -521,12 +524,12 @@ export default function Calendar() {
               anchor={mobileAnchorDate}
               events={filtered}
               onDayTap={(iso, dayEvents) => {
-                // Single event on the day → open that event straight away.
-                // Otherwise open Create prefilled to that date; the +N dots
-                // pattern from iOS Calendar collapses the day list into a
-                // create-or-edit flow.
-                if (dayEvents.length === 1) openEdit(dayEvents[0]);
-                else openCreate({ eventDate: iso });
+                // Empty day → straight to Create prefilled to that date.
+                // Any events on the day → open the drill-down sheet so the
+                // user sees every event and can pick one to edit or add a
+                // new one for the same day.
+                if (dayEvents.length === 0) openCreate({ eventDate: iso });
+                else setDayDrillDown({ iso, events: dayEvents });
               }}
               onRangeChange={(startIso, endIso) => {
                 setVisibleRange((prev) =>
@@ -710,6 +713,78 @@ export default function Calendar() {
               data-testid="button-save-event"
             >
               {saveMut.isPending ? "Saving…" : draft.id != null ? "Save" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Mobile day drill-down — a bottom-sheet-ish list showing every event
+         on the tapped day. Reachable only from MobileMonthGrid. Any event
+         row opens the full editor; the "Add event on this day" button opens
+         the create dialog prefilled to that date. */}
+      <Dialog open={dayDrillDown != null} onOpenChange={(o) => { if (!o) setDayDrillDown(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {dayDrillDown
+                ? new Date(dayDrillDown.iso + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })
+                : ""}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-1.5 max-h-[55vh] overflow-y-auto">
+            {dayDrillDown?.events.map((ev) => {
+              const done = !!ev.completedAt;
+              const timeLabel = ev.startTime
+                ? (() => {
+                    const [h, m] = ev.startTime!.split(":").map(Number);
+                    const d = new Date(); d.setHours(h, m, 0, 0);
+                    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+                  })()
+                : "All day";
+              return (
+                <button
+                  key={ev.id}
+                  type="button"
+                  className="w-full text-left rounded-md border p-2.5 hover:bg-muted/50 transition flex items-start gap-2"
+                  onClick={() => { setDayDrillDown(null); openEdit(ev); }}
+                >
+                  <span
+                    className={[
+                      "mt-1 inline-block w-2 h-2 rounded-full shrink-0",
+                      done ? "bg-muted-foreground/40" : "bg-[hsl(var(--titan-blue))]",
+                    ].join(" ")}
+                    style={ev.color && !done ? { background: ev.color } : undefined}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className={["text-sm font-medium truncate", done ? "line-through text-muted-foreground" : ""].join(" ")}>
+                      {ev.title || "(no title)"}
+                    </div>
+                    <div className="text-xs text-muted-foreground truncate">
+                      {timeLabel}
+                      {ev.location ? ` · ${ev.location}` : ""}
+                    </div>
+                    {ev.attendees && ev.attendees.length > 0 ? (
+                      <div className="text-[11px] text-muted-foreground truncate mt-0.5">
+                        {ev.attendees.join(", ")}
+                      </div>
+                    ) : null}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          <DialogFooter className="flex-col sm:flex-col gap-2">
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => {
+                if (!dayDrillDown) return;
+                const iso = dayDrillDown.iso;
+                setDayDrillDown(null);
+                openCreate({ eventDate: iso });
+              }}
+            >
+              <Plus className="w-4 h-4 mr-1" /> Add event on this day
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1057,51 +1132,63 @@ function MobileMonthGrid({
         ))}
       </div>
 
-      {/* 6 rows × 7 cols grid */}
-      <div className="grid grid-cols-7 grid-rows-6" style={{ minHeight: "60vh" }}>
+      {/* 6 rows × 7 cols grid — each cell shows the day number and up to 2
+         event title chips. "+N more" appears when a day has ≥3 events; the
+         day tap opens a bottom-sheet list of every event on that day (see
+         parent's onDayTap). */}
+      <div className="grid grid-cols-7 grid-rows-6" style={{ minHeight: "66vh" }}>
         {cells.map((c) => {
           const dayEvents = byDay.get(c.iso) ?? [];
-          const dotColors = dayEvents.slice(0, 3);
-          const overflow = dayEvents.length > 3 ? dayEvents.length - 3 : 0;
+          const shownEvents = dayEvents.slice(0, 2);
+          const overflow = dayEvents.length > 2 ? dayEvents.length - 2 : 0;
           return (
             <button
               key={c.iso}
               type="button"
               onClick={() => onDayTap(c.iso, dayEvents)}
               className={[
-                "border-r border-b flex flex-col items-center pt-1.5 pb-1 gap-1",
-                "text-xs transition active:bg-muted/60",
+                "border-r border-b flex flex-col items-stretch pt-1 pb-1 gap-0.5",
+                "text-xs transition active:bg-muted/60 overflow-hidden",
                 c.inMonth ? "text-foreground" : "text-muted-foreground/40",
               ].join(" ")}
               data-testid={`mobile-month-day-${c.iso}`}
             >
-              {/* Day number — today pill */}
-              <span
-                className={
-                  c.isToday
-                    ? "inline-flex w-6 h-6 items-center justify-center rounded-full bg-[hsl(var(--titan-red))] text-white text-xs font-semibold"
-                    : "text-sm"
-                }
-              >
-                {c.date.getDate()}
-              </span>
+              {/* Day number — today pill, centered on its own row */}
+              <div className="flex justify-center">
+                <span
+                  className={
+                    c.isToday
+                      ? "inline-flex w-5 h-5 items-center justify-center rounded-full bg-[hsl(var(--titan-red))] text-white text-[11px] font-semibold"
+                      : "text-[13px]"
+                  }
+                >
+                  {c.date.getDate()}
+                </span>
+              </div>
 
-              {/* Event dots */}
-              {dayEvents.length > 0 ? (
-                <div className="flex items-center gap-0.5 flex-wrap justify-center px-0.5">
-                  {dotColors.map((ev) => (
-                    <span
+              {/* Event title chips — up to 2. Chip color mirrors event.color
+                 when set; otherwise Titan blue. Completed events dimmed. */}
+              {shownEvents.length > 0 ? (
+                <div className="flex flex-col gap-0.5 px-0.5">
+                  {shownEvents.map((ev) => (
+                    <div
                       key={ev.id}
+                      title={ev.title}
                       className={[
-                        "inline-block w-1.5 h-1.5 rounded-full",
-                        ev.completedAt ? "bg-muted-foreground/40" : "bg-[hsl(var(--titan-blue))]",
+                        "rounded px-1 text-[9px] leading-[1.15] text-left truncate",
+                        ev.completedAt
+                          ? "bg-muted text-muted-foreground line-through"
+                          : "bg-[hsl(var(--titan-blue))/0.15] text-[hsl(var(--titan-blue))]",
                       ].join(" ")}
-                    />
+                      style={ev.color && !ev.completedAt ? { background: `${ev.color}22`, color: ev.color } : undefined}
+                    >
+                      {ev.title}
+                    </div>
                   ))}
                   {overflow > 0 ? (
-                    <span className="text-[9px] leading-none text-muted-foreground ml-0.5">
-                      +{overflow}
-                    </span>
+                    <div className="text-[9px] leading-none text-muted-foreground text-left pl-1">
+                      +{overflow} more
+                    </div>
                   ) : null}
                 </div>
               ) : null}
