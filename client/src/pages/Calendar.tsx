@@ -183,6 +183,23 @@ export default function Calendar() {
     setCurrentView("dayGridMonth");
   }, [isMobile, currentView]);
 
+  // Imperative sync: when currentView is a FullCalendar-backed view, make
+  // sure the mounted FC instance is actually on that view. Necessary because
+  // toggling from the mobile MobileMonthGrid (FC unmounted) to Agenda (FC
+  // mounts fresh) leaves FC on its initialView until we tell it otherwise.
+  useEffect(() => {
+    if (useMobileMonth) return; // FC isn't rendered right now
+    // Give React a beat to actually mount FullCalendar before poking it.
+    const t = setTimeout(() => {
+      const api = calRef.current?.getApi?.();
+      if (!api) return;
+      if (api.view?.type !== currentView) {
+        try { api.changeView(currentView); } catch { /* view not registered */ }
+      }
+    }, 0);
+    return () => clearTimeout(t);
+  }, [currentView, useMobileMonth]);
+
   // Data --------------------------------------------------------------------
   // Widen the visible range by ±60 days when fetching so that list views
   // (which report a narrow 7–31 day range in datesSet) still surface
@@ -376,11 +393,11 @@ export default function Calendar() {
   }
   function changeView(v: typeof currentView) {
     setCurrentView(v);
-    // On mobile, dayGridMonth uses our custom grid so no FC call needed.
-    // For every other view we still drive FullCalendar.
-    if (!(isMobile && v === "dayGridMonth")) {
-      calRef.current?.getApi()?.changeView(v);
-    }
+    // On mobile, dayGridMonth renders our hand-rolled grid; every other view
+    // renders FullCalendar. The imperative sync (changeView on the FC API)
+    // is handled by the effect below so that when FC only just mounted (e.g.
+    // Month→Agenda toggle where calRef was null while the custom grid was
+    // showing), we still route it to the correct view once the ref exists.
   }
   function goToDate(iso: string) {
     if (useMobileMonth) {
@@ -567,7 +584,10 @@ export default function Calendar() {
             <FullCalendar
               ref={calRef as any}
               plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin] as any}
-              initialView={initialView}
+              /* initialView follows state so a fresh mount (e.g. after
+                 switching away from the mobile custom Month grid) picks
+                 up the intended view with no flash of the wrong view. */
+              initialView={currentView}
               headerToolbar={false /* we render our own */}
               height="calc(100vh - 220px)"
               firstDay={0}
