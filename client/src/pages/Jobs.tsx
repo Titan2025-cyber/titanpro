@@ -1385,8 +1385,9 @@ export default function Jobs() {
                     onChange={(id) => setForm((f) => ({ ...f, referralPartnerId: id }))}
                     type="referral"
                     placeholder="Search referral partners…"
-                    emptyLabel="No referral partners match. Add one from Contacts → Referral."
+                    emptyLabel="No referral partners match."
                     testId="select-referral-partner"
+                    allowCreate
                   />
                 </div>
 

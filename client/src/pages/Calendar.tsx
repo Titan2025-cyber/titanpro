@@ -46,7 +46,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ChevronLeft, ChevronRight, Plus, Trash2, Users, MapPin, X, Calendar as CalIcon, CheckCircle2 } from "lucide-react";
-import { useIsMobile } from "@/hooks/use-mobile";
 
 type CalendarEvent = {
   id: number; title: string; eventDate: string;
@@ -154,30 +153,15 @@ export default function Calendar() {
     };
   });
   const [viewLabel, setViewLabel] = useState<string>("");
-  // Default view: full-month Agenda (list) on phone — the month grid is
-  // FullCalendar’s dayGridMonth which does NOT responsive-collapse on narrow
-  // viewports (it renders as a broken single-column of 40px cells). listMonth
-  // shows every event across the whole visible month as a tappable list.
+  // Default view: month grid (dayGridMonth) on every viewport, including phone.
+  // Earlier this defaulted to listMonth on mobile because dayGridMonth used to
+  // collapse to a broken 40px single-column stack on narrow viewports — the
+  // mobile CSS block at the bottom of the file now sizes rows/day-numbers/event
+  // pills so the grid stays readable at 375px. The Agenda toggle in the
+  // toolbar is still available for anyone who wants the list.
   type CalView = "dayGridMonth" | "timeGridWeek" | "timeGridDay" | "timeGridFourDay" | "listWeek" | "listMonth";
-  const isMobileNow = useIsMobile();
-  const initialView: CalView =
-    typeof window !== "undefined" && window.innerWidth < 768 ? "listMonth" : "dayGridMonth";
+  const initialView: CalView = "dayGridMonth";
   const [currentView, setCurrentView] = useState<CalView>(initialView);
-
-  // Belt-and-suspenders: after FullCalendar mounts, force listMonth on mobile
-  // in case the view was previously persisted, cached, or FC picked its own
-  // default. Runs once on mount + whenever the mobile media query flips.
-  useEffect(() => {
-    if (!isMobileNow) return;
-    const api = calRef.current?.getApi?.();
-    if (!api) return;
-    const active = api.view?.type;
-    if (active === "dayGridMonth" || active === "timeGridWeek" || active === "timeGridDay" || active === "timeGridFourDay") {
-      api.changeView("listMonth");
-      setCurrentView("listMonth");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMobileNow]);
 
   // Data --------------------------------------------------------------------
   // Widen the visible range by ±60 days when fetching so that list views
@@ -713,6 +697,29 @@ export default function Calendar() {
         .fc .fc-list-day-cushion { background: hsl(var(--muted) / 0.3); }
         .fc-direction-ltr .fc-list-event-time { color: hsl(var(--muted-foreground)); }
         .fc .fc-more-link { color: hsl(var(--titan-blue)); font-size: 11px; }
+
+        /* Mobile month grid — keep the 7-column layout readable at 375px.
+           Row height drops so the whole month fits without scrolling; event
+           pills render as tiny dots so ≤10 events per day still fit. Tapping
+           a day opens the editor for that date, tapping a pill opens the
+           event editor — same click handlers as desktop. */
+        @media (max-width: 767px) {
+          .fc .fc-toolbar-title { font-size: 0.95rem; }
+          .fc .fc-col-header-cell-cushion { font-size: 10px; padding: 4px 2px; }
+          .fc .fc-daygrid-day-number { font-size: 11px; padding: 2px 4px; }
+          .fc .fc-daygrid-day-frame { min-height: 56px; }
+          /* Event pills → compact dots. FullCalendar renders one <a.fc-event>
+             per event; we shrink height + hide the text to keep the grid
+             compact without hiding the color signal. The event editor is
+             still reachable via the +N more-link and by tapping the day. */
+          .fc .fc-daygrid-event { padding: 0 3px; margin: 1px 2px; font-size: 10px; line-height: 1.2; }
+          .fc .fc-daygrid-event .gcal-event-inner { gap: 2px; }
+          .fc .fc-daygrid-event .gcal-event-inner > button,
+          .fc .fc-daygrid-event .gcal-event-inner > span:not(:last-child) { display: none; }
+          .fc .fc-daygrid-event .gcal-event-inner > span:last-child { font-size: 10px; }
+          .fc .fc-more-link { font-size: 10px; padding: 0 2px; }
+          .fc .fc-scrollgrid-liquid { height: auto; }
+        }
       `}</style>
     </div>
   );

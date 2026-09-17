@@ -16,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { ContactCombobox } from "@/components/ContactCombobox";
 import type { Channel, Message, Job } from "@shared/schema";
 
 
@@ -231,6 +232,12 @@ function NewLeadDialog({
     assignedTech: "",
     leadSource: "",
     leadSourceDetail: "",
+    // Push 11 — real referral partner attribution. Selecting a partner from
+    // the searchable combobox wires the lead to `jobs.referral_partner_id`
+    // so downstream payouts, dashboards, and partner value roll up cleanly.
+    // Inline-create lets the intaker add a brand-new partner without
+    // leaving the modal when the lead beats the contact record in.
+    referralPartnerId: "",
   };
   const [form, setForm] = useState(initial);
   const set = (k: keyof typeof initial, v: string) => setForm(f => ({ ...f, [k]: v }));
@@ -287,6 +294,9 @@ function NewLeadDialog({
         assignedTech: nn(form.assignedTech),
         leadSource: nn(form.leadSource),
         leadSourceDetail: nn(form.leadSourceDetail),
+        // Push 11 — real partner attribution. Empty string → null so the
+        // FK stays clean when no partner is set.
+        referralPartnerId: form.referralPartnerId ? Number(form.referralPartnerId) : null,
       };
 
       const jobRes = await apiRequest("POST", "/api/jobs", jobPayload);
@@ -530,6 +540,23 @@ function NewLeadDialog({
                     onChange={e => set("leadSource", e.target.value)}
                     placeholder="Referral, Google, Repeat, etc."
                     data-testid="input-lead-source"
+                  />
+                </div>
+                {/* Push 11 — referring partner (searchable + inline-add). Wired
+                    directly to jobs.referral_partner_id so submissions are
+                    tracked to a real contact, not free text. Source detail
+                    below is kept for cases where a caller can't pick a
+                    specific partner ("Walgreens agent, name unknown"). */}
+                <div className="sm:col-span-2">
+                  <Label className="text-xs">Referring partner</Label>
+                  <ContactCombobox
+                    value={form.referralPartnerId}
+                    onChange={(id) => set("referralPartnerId", id)}
+                    type="referral"
+                    placeholder="Search referral partners…"
+                    emptyLabel="No referral partners match."
+                    testId="select-lead-referral-partner"
+                    allowCreate
                   />
                 </div>
                 <div className="sm:col-span-2">
