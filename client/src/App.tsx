@@ -52,6 +52,7 @@ const PhotoSearch = lazy(() => import("@/pages/PhotoSearch"));
 const Analytics = lazy(() => import("@/pages/Analytics"));
 const TrashPage = lazy(() => import("@/pages/Trash"));
 const Scheduling = lazy(() => import("@/pages/Scheduling"));
+const Calendar = lazy(() => import("@/pages/Calendar"));
 const Messaging = lazy(() => import("@/pages/Messaging"));
 const EmailPage = lazy(() => import("@/pages/Email"));
 const Marketing = lazy(() => import("@/pages/Marketing"));
@@ -330,7 +331,12 @@ function AuthenticatedRoutes() {
         {/* Schedule Calendar is a first-class Core route now (was previously a
             tab inside the Scheduling & Dispatch hub). Renders the Scheduling
             page directly so the sidebar entry loads without a redirect hop. */}
-        <Route path="/scheduling" component={() => <Page component={Scheduling} name="Scheduling" />} />
+        {/* /scheduling now shows the Google-Calendar-style Calendar page.
+            The legacy list-style Scheduling view is kept accessible at
+            /scheduling/list in case dispatchers need the shift/time-off
+            breakdown while we iterate on the new calendar. */}
+        <Route path="/scheduling" component={() => <Page component={Calendar} name="Calendar" />} />
+        <Route path="/scheduling/list" component={() => <Page component={Scheduling} name="Scheduling" />} />
         <Route path="/equipment"><Redirect to="/equipment-hub?tab=inventory" /></Route>
         <Route path="/inventory"><Redirect to="/equipment-hub?tab=consumables" /></Route>
         <Route path="/consumables"><Redirect to="/equipment-hub?tab=consumables" /></Route>
