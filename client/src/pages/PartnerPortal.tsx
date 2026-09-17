@@ -31,7 +31,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Contact, PayoutRequest, PayoutMethod, Job } from "@shared/schema";
-import { fmtDate } from "@/lib/dates";
+import { fmtDate as fmtDateLib } from "@/lib/dates";
 
 const PAYOUT_METHODS = ["cashapp", "venmo", "zelle", "direct_deposit"];
 
@@ -73,9 +73,9 @@ const LOSS_ICONS: Record<string, string> = {
 };
 
 function fmt$(n: number) { return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
-function fmtDate(d?: string | null) {
+function fmtDate(d?: string | null, opts?: Intl.DateTimeFormatOptions) {
   if (!d) return "—";
-  return fmtDate(d, { month: "short", day: "numeric", year: "numeric" });
+  return fmtDateLib(d, opts ?? { month: "short", day: "numeric", year: "numeric" });
 }
 
 // ── Job Progress Bar ──────────────────────────────────────────────────────────

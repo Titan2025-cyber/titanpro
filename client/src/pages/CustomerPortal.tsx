@@ -28,11 +28,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Job, Invoice, Contact } from "@shared/schema";
 import { StageExplainer, NextActionPanel, MoistureVisualization, EquipmentTracker, MessageThread, InsuranceAdvocacy } from "./CustomerPortalParts";
-import { fmtDate, fmtDateShort } from "@/lib/dates";
+import { fmtDate as fmtDateLib, fmtDateShort } from "@/lib/dates";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const fmt$ = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(n || 0);
-const fmtDate = (s?: string | null) => s ? fmtDate(s, { month: "short", day: "numeric", year: "numeric" }) : "—";
+const fmtDate = (s?: string | null) => s ? fmtDateLib(s, { month: "short", day: "numeric", year: "numeric" }) : "—";
 
 const STATUS_COLORS: Record<string, string> = {
   new: "bg-blue-100 text-blue-800",

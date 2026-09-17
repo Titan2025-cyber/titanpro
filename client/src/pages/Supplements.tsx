@@ -20,7 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { fmtDate, todayLocalISO } from "@/lib/dates";
+import { fmtDate as fmtDateLib, todayLocalISO } from "@/lib/dates";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -49,7 +49,7 @@ const fmt = (n?: number) =>
 
 const fmtDate = (s?: string) => {
   if (!s) return "—";
-  return fmtDate(s, { month: "short", day: "numeric", year: "numeric" });
+  return fmtDateLib(s, { month: "short", day: "numeric", year: "numeric" });
 };
 
 const isOverdue = (s?: string) => {

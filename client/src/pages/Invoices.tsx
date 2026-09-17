@@ -17,7 +17,7 @@ import PriceListPicker, { type PickedItem } from "@/components/PriceListPicker";
 import RecordPaymentDialog from "@/components/RecordPaymentDialog";
 import JobCombobox from "@/components/JobCombobox";
 import type { Invoice, Job, Contact } from "@shared/schema";
-import { fmtDate, fmtDateShort } from "@/lib/dates";
+import { fmtDate as fmtDateLib, fmtDateShort } from "@/lib/dates";
 import { evalExpr } from "@/lib/mathExpr";
 
 type LineItemRow = { description: string; quantity: string; unitPrice: string };
@@ -35,7 +35,7 @@ function fmtDate(value?: string | null): string {
   if (!value) return "No due date";
   const parsed = Date.parse(value);
   if (isNaN(parsed)) return value;
-  return fmtDate(parsed, { month: "short", day: "numeric", year: "numeric" });
+  return fmtDateLib(parsed, { month: "short", day: "numeric", year: "numeric" });
 }
 
 export default function Invoices() {
