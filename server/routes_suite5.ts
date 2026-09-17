@@ -1,6 +1,7 @@
 import type { Express, RequestHandler } from "express";
 import type { Database } from "better-sqlite3";
 import { sendEventTagEmails, newlyAddedAttendees } from "./notify_tags";
+import { computeOutstanding } from "./lib/ar";
 
 type SuiteAuth = {
   requireRole: (...roles: string[]) => RequestHandler;
@@ -758,6 +759,10 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
       const laborByJob: Record<number, number> = {};
       for (const r of laborRows) laborByJob[r.job_id] = r.total_minutes;
 
+      // Compute per-invoice outstanding once, reuse for outstandingAR total
+      // and per-carrier aging so both numbers stay in lockstep.
+      const invOutstandingBi = computeOutstanding(invoices as any, payments as any);
+
       // Revenue by loss type
       const revByType: Record<string, number> = {};
       for (const job of jobs) {
@@ -774,18 +779,21 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
         statusCount[s] = (statusCount[s] || 0) + 1;
       }
 
-      // Carrier AR aging — closed/complete jobs excluded.
+      // Carrier AR aging — closed/complete jobs excluded. Uses net
+      // per-invoice outstanding (collected + credit memos already subtracted)
+      // so this matches /api/reports/carrier-ar-aging and /api/jobs/financials.
       const carrierAging: Record<string, { total: number; count: number }> = {};
       for (const inv of invoices) {
-        if (inv.status !== "paid") {
-          const job = jobs.find((j: any) => j.id === inv.job_id);
-          const jobStatus = String(job?.status || "").toLowerCase();
-          if (jobStatus === "closed" || jobStatus === "complete") continue;
-          const carrier = job?.insurance_carrier || "Unknown";
-          if (!carrierAging[carrier]) carrierAging[carrier] = { total: 0, count: 0 };
-          carrierAging[carrier].total += (inv.total || 0);
-          carrierAging[carrier].count += 1;
-        }
+        if (inv.status === "paid") continue;
+        const outstanding = invOutstandingBi.get(inv.id) ?? 0;
+        if (outstanding <= 0) continue;
+        const job = jobs.find((j: any) => j.id === inv.job_id);
+        const jobStatus = String(job?.status || "").toLowerCase();
+        if (jobStatus === "closed" || jobStatus === "complete") continue;
+        const carrier = job?.insurance_carrier || "Unknown";
+        if (!carrierAging[carrier]) carrierAging[carrier] = { total: 0, count: 0 };
+        carrierAging[carrier].total += outstanding;
+        carrierAging[carrier].count += 1;
       }
 
       // Monthly revenue (last 6 months)
@@ -813,47 +821,11 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
         totalJobs: jobs.length,
         openJobs: jobs.filter((j: any) => j.status !== "complete").length,
         totalRevenue: paymentsReceived.reduce((s: number, p: any) => s + (p.amount || 0), 0),
-        // Outstanding A/R must net out already-collected receipts and credit
-        // memos per invoice so this figure agrees with /api/jobs/financials
-        // (and therefore with the Jobs page and JobDetail Financial Summary).
-        // Previously summed invoice.total for every non-paid invoice, which
-        // ignored partial payments and bill-downs and inflated the number.
+        // Outstanding A/R uses the shared computeOutstanding() helper so
+        // this figure agrees with /api/jobs/financials, /api/reports/carrier-ar-aging,
+        // and the Dashboard tile.
         outstandingAR: (() => {
-          const openInvoices = invoices.filter((i: any) => i.status !== "paid" && i.status !== "draft");
-          const invPay: Record<number, { collected: number; credit: number }> = {};
-          const jobPay: Record<number, { collected: number; credit: number }> = {};
-          for (const p of payments as any[]) {
-            const amt = Number(p.amount || 0);
-            if (!amt) continue;
-            const isCredit = !!p.credit_memo;
-            const isReceived = p.type === "received";
-            if (!isCredit && !isReceived) continue;
-            if (p.invoice_id) {
-              const b = invPay[p.invoice_id] ||= { collected: 0, credit: 0 };
-              if (isCredit) b.credit += amt; else b.collected += amt;
-            } else if (p.job_id) {
-              const b = jobPay[p.job_id] ||= { collected: 0, credit: 0 };
-              if (isCredit) b.credit += amt; else b.collected += amt;
-            }
-          }
-          const remainingJobPay: Record<number, { collected: number; credit: number }> = JSON.parse(JSON.stringify(jobPay));
-          const openByJob: Record<number, any[]> = {};
-          for (const inv of openInvoices) (openByJob[inv.job_id] ||= []).push(inv);
-          Object.values(openByJob).forEach(arr => arr.sort((a, b) => (a.id || 0) - (b.id || 0)));
-          let total = 0;
-          for (const inv of openInvoices) {
-            const b = invPay[inv.id] || { collected: 0, credit: 0 };
-            let remaining = Number(inv.total || 0) - b.collected - b.credit;
-            const jr = remainingJobPay[inv.job_id];
-            if (jr && remaining > 0) {
-              const useColl = Math.min(jr.collected, remaining);
-              remaining -= useColl; jr.collected -= useColl;
-              const useCred = Math.min(jr.credit, Math.max(0, remaining));
-              remaining -= useCred; jr.credit -= useCred;
-            }
-            total += Math.max(0, remaining);
-          }
-          return total;
+          let t = 0; for (const v of invOutstandingBi.values()) t += v; return t;
         })(),
         avgJobValue: invoices.length ? invoices.reduce((s: number, i: any) => s + (i.total || 0), 0) / invoices.length : 0,
         revenueByLossType: revByType,

@@ -2,6 +2,7 @@
 
 import { Express, RequestHandler } from "express";
 import Database from "better-sqlite3";
+import { computeOutstanding } from "./lib/ar";
 
 type Suite4Auth = { requireRole: (...roles: string[]) => RequestHandler };
 const suite4Passthrough: RequestHandler = (_req, _res, next) => next();
@@ -43,11 +44,20 @@ export function registerSuite4Routes(app: Express, sqlite: InstanceType<typeof D
 
   // AR Aging report: per carrier, buckets 0-30, 31-60, 61-90, 90+
   // Closed/complete jobs excluded — once closed, stop tracking AR.
+  //
+  // Uses computeOutstanding() so amounts here match /api/jobs/financials
+  // and the Dashboard tile. Previously summed inv.total for every non-paid
+  // invoice, which double-counted partial payments and credit memos.
   app.get("/api/reports/carrier-ar-aging", (_req, res) => {
+    // Pull ALL non-paid invoices (open + draft filtered inside computeOutstanding).
     const invoices = sqlite.prepare("SELECT * FROM invoices WHERE status != 'paid'").all() as any[];
+    // Pull ALL payments so credit_memo rows are visible to the AR math.
+    const payments = sqlite.prepare("SELECT * FROM payments").all() as any[];
     const jobs = sqlite.prepare("SELECT id, insurance_carrier, job_number, status FROM jobs").all() as any[];
     const jobMap: Record<number, any> = {};
     jobs.forEach(j => { jobMap[j.id] = j; });
+
+    const invOutstanding = computeOutstanding(invoices, payments);
 
     const now = Date.now();
     const carriers: Record<string, { carrier: string; bucket0: number; bucket30: number; bucket60: number; bucket90: number; total: number; avgDays: number; invoices: number }> = {};
@@ -59,7 +69,10 @@ export function registerSuite4Routes(app: Express, sqlite: InstanceType<typeof D
       const carrier = job?.insurance_carrier || "Direct / Unknown";
       const created = inv.created_at ? new Date(inv.created_at).getTime() : now;
       const daysOut = Math.floor((now - created) / (1000 * 60 * 60 * 24));
-      const amount = inv.total || 0;
+      // Net outstanding, not raw total. Fully-paid or written-off
+      // invoices show 0 here and get dropped from the aging bucket totals.
+      const amount = invOutstanding.get(inv.id) ?? 0;
+      if (amount <= 0) return;
 
       if (!carriers[carrier]) carriers[carrier] = { carrier, bucket0: 0, bucket30: 0, bucket60: 0, bucket90: 0, total: 0, avgDays: 0, invoices: 0 };
       carriers[carrier].total += amount;
@@ -73,9 +86,9 @@ export function registerSuite4Routes(app: Express, sqlite: InstanceType<typeof D
     });
 
     // Also pull historical payment speed per carrier
-    const payments = sqlite.prepare("SELECT p.*, j.insurance_carrier FROM payments p LEFT JOIN jobs j ON p.job_id = j.id WHERE p.type = 'received'").all() as any[];
+    const speedPayments = sqlite.prepare("SELECT p.*, j.insurance_carrier FROM payments p LEFT JOIN jobs j ON p.job_id = j.id WHERE p.type = 'received'").all() as any[];
     const carrierSpeed: Record<string, number[]> = {};
-    payments.forEach((p: any) => {
+    speedPayments.forEach((p: any) => {
       const carrier = p.insurance_carrier || "Direct / Unknown";
       if (!carrierSpeed[carrier]) carrierSpeed[carrier] = [];
       // days from job creation to payment (approx)
