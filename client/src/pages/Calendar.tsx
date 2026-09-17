@@ -22,13 +22,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+// FullCalendar v7 ships React-bundled plugin builds at
+// @fullcalendar/react/{daygrid,timegrid,list,interaction}. The standalone
+// @fullcalendar/daygrid etc. packages are v6 and INCOMPATIBLE with the v7
+// React wrapper — mixing them causes the page to blank on load.
 import FullCalendar from "@fullcalendar/react";
-import type { EventClickArg, EventDropArg, DateSelectArg, EventInput, EventContentArg } from "@fullcalendar/core";
-import type { EventResizeDoneArg } from "@fullcalendar/interaction";
-import dayGridPlugin from "@fullcalendar/daygrid";
-import timeGridPlugin from "@fullcalendar/timegrid";
-import listPlugin from "@fullcalendar/list";
-import interactionPlugin from "@fullcalendar/interaction";
+import type { EventInput } from "@fullcalendar/react";
+import dayGridPlugin from "@fullcalendar/react/daygrid";
+import timeGridPlugin from "@fullcalendar/react/timegrid";
+import listPlugin from "@fullcalendar/react/list";
+import interactionPlugin from "@fullcalendar/react/interaction";
+// v7 re-exports its callback arg types under obfuscated aliases
+// (EventClickInfo, DateSelectInfo, EventDisplayInfo, PluginInput, …), so we
+// use lightweight `any` param types on our handlers. Runtime shape is stable
+// and covered by our own CalendarEvent type on extendedProps.raw.
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -131,7 +138,7 @@ const BLANK_DRAFT = {
 };
 
 export default function Calendar() {
-  const calRef = useRef<FullCalendar | null>(null);
+  const calRef = useRef<any>(null);
   const { toast } = useToast();
 
   // Visible range — recomputed whenever FullCalendar moves. Used to scope
@@ -242,7 +249,7 @@ export default function Calendar() {
   });
 
   // FullCalendar handlers ---------------------------------------------------
-  function handleSelect(arg: DateSelectArg) {
+  function handleSelect(arg: any) {
     // Drag on empty grid → open Create with pre-filled date/time.
     const s = splitDateTime(arg.startStr);
     const e = splitDateTime(arg.endStr);
@@ -254,11 +261,11 @@ export default function Calendar() {
     });
     arg.view.calendar.unselect();
   }
-  function handleEventClick(arg: EventClickArg) {
+  function handleEventClick(arg: any) {
     const raw = arg.event.extendedProps.raw as CalendarEvent | undefined;
     if (raw) openEdit(raw);
   }
-  function handleEventDrop(arg: EventDropArg) {
+  function handleEventDrop(arg: any) {
     const s = splitDateTime(arg.event.startStr);
     const e = arg.event.endStr ? splitDateTime(arg.event.endStr) : null;
     const body: any = {
@@ -268,7 +275,7 @@ export default function Calendar() {
     };
     dragPatch.mutate({ id: Number(arg.event.id), body });
   }
-  function handleEventResize(arg: EventResizeDoneArg) {
+  function handleEventResize(arg: any) {
     const s = splitDateTime(arg.event.startStr);
     const e = arg.event.endStr ? splitDateTime(arg.event.endStr) : null;
     const body: any = {
@@ -441,7 +448,7 @@ export default function Calendar() {
         <div className="rounded-md border bg-background p-2">
           <FullCalendar
             ref={calRef as any}
-            plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]}
+            plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin] as any}
             initialView="dayGridMonth"
             headerToolbar={false /* we render our own */}
             height="calc(100vh - 220px)"
@@ -457,7 +464,7 @@ export default function Calendar() {
             views={{
               timeGridFourDay: { type: "timeGrid", duration: { days: 4 } },
             }}
-            events={fcEvents}
+            events={fcEvents as any}
             select={handleSelect}
             eventClick={handleEventClick}
             eventDrop={handleEventDrop}
@@ -659,7 +666,7 @@ export default function Calendar() {
 // ── Event pill renderer ─────────────────────────────────────────────────────
 // Adds a subtle done-check affordance to each event. Left-click the check to
 // toggle completion without opening the full editor.
-function renderEventContent(arg: EventContentArg, toggleDone: (p: { id: number; completed: boolean }) => void) {
+function renderEventContent(arg: any, toggleDone: (p: { id: number; completed: boolean }) => void) {
   const raw = arg.event.extendedProps.raw as CalendarEvent | undefined;
   const done = !!raw?.completedAt;
   return (

@@ -4428,7 +4428,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     ];
 
     const doneCount = items.filter(i => i.status === "done").length;
-    const total = items.filter(i => i.status !== "optional" || i.status === "done").length;
+    // Total = every REQUIRED item (todo or done) plus any COMPLETED optional
+    // items — optional-but-not-yet-done items don't count against progress.
+    const total = items.filter(i => i.status !== "optional" || (i.status as string) === "done").length;
     // Show the checklist until every non-optional item is done.
     const remainingRequired = items.filter(i => i.status === "todo").length;
     res.json({
@@ -6516,6 +6518,7 @@ cody@titanrestorationllc.com`;
 
       // ── Line item builder ─────────────────────────────────────────────────
       const items: Array<{
+        id?: number;
         description: string; category: string; qty: number;
         unit: string; unitPrice: number; total: number; iicrcRef?: string;
       }> = [];

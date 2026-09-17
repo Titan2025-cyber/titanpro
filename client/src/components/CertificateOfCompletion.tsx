@@ -35,13 +35,16 @@ import type { Job, Contact, JobDocument } from "@shared/schema";
 import { fmtDate, fmtDateShort, todayLocalISO } from "@/lib/dates";
 
 // ─── Brand constants (matches pdfEngine.ts) ──────────────────────────────────
-const RED    = [204, 0, 0]    as const;
-const BLUE   = [30, 90, 180]  as const;
-const DARK   = [20, 20, 20]   as const;
-const GRAY   = [100, 100, 100] as const;
-const LGRAY  = [220, 220, 220] as const;
-const WHITE  = [255, 255, 255] as const;
-const OFFWHITE = [248, 248, 250] as const;
+// jsPDF's TS defs infer color-setter tuples too narrowly to unify across setters
+// when written `as const`. Typed explicitly so every setter accepts them.
+type RGB = [number, number, number];
+const RED: RGB      = [204, 0, 0];
+const BLUE: RGB     = [30, 90, 180];
+const DARK: RGB     = [20, 20, 20];
+const GRAY: RGB     = [100, 100, 100];
+const LGRAY: RGB    = [220, 220, 220];
+const WHITE: RGB    = [255, 255, 255];
+const OFFWHITE: RGB = [248, 248, 250];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Reusable Signature Pad (same pattern as WorkAuthorizationForm)

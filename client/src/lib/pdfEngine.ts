@@ -28,13 +28,18 @@ function finalizePdf(doc: jsPDF): string {
 }
 
 // ─── Brand constants ─────────────────────────────────────────────────────────
-const RED   = [204, 0, 0]   as const;  // Titan red  #CC0000
-const BLUE  = [30, 90, 180] as const;  // Titan blue #1E5AB4
-const DARK  = [20, 20, 20]  as const;  // Near-black
-const GRAY  = [100, 100, 100] as const;
-const LGRAY = [220, 220, 220] as const;
-const WHITE = [255, 255, 255] as const;
-const OFFWHITE = [248, 248, 250] as const;
+// jsPDF's TS defs infer each setter's tuple as a specific literal, so `as const`
+// tuples like `readonly [204,0,0]` don't unify across setFillColor / setDrawColor
+// / setTextColor. Typing every color as `[number, number, number]` keeps the
+// exact runtime values while letting them pass to any jsPDF color setter.
+type RGB = [number, number, number];
+const RED: RGB      = [204, 0, 0];      // Titan red  #CC0000
+const BLUE: RGB     = [30, 90, 180];    // Titan blue #1E5AB4
+const DARK: RGB     = [20, 20, 20];     // Near-black
+const GRAY: RGB     = [100, 100, 100];
+const LGRAY: RGB    = [220, 220, 220];
+const WHITE: RGB    = [255, 255, 255];
+const OFFWHITE: RGB = [248, 248, 250];
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 export interface WorkAuthPDFData {
@@ -1205,7 +1210,7 @@ export interface EstimatePDFData {
 export function generateEstimatePDF(data: EstimatePDFData): string {
   const doc = new jsPDF({ unit: "mm", format: "letter" });
 
-  const statusColors: Record<string, readonly [number, number, number]> = {
+  const statusColors: Record<string, [number, number, number]> = {
     draft: GRAY, sent: BLUE, approved: [0, 150, 80], rejected: RED,
   };
 
@@ -1343,7 +1348,7 @@ export function generateEstimatePDF(data: EstimatePDFData): string {
 export function generateInvoicePDF(data: InvoicePDFData): string {
   const doc = new jsPDF({ unit: "mm", format: "letter" });
 
-  const statusColors: Record<string, readonly [number, number, number]> = {
+  const statusColors: Record<string, [number, number, number]> = {
     draft: GRAY, sent: BLUE, paid: [0, 150, 80], overdue: RED,
   };
 

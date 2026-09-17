@@ -448,7 +448,7 @@ export function registerAuthRoutes(app: Express, sqlite: Database) {
     sqlite.prepare("UPDATE employees SET password_hash = ?, pin = ?, must_change_pin = 1 WHERE id = ?")
       .run(hash, hashPassword(initialPin), emp.id);
     writeAudit(sqlite, emp.id, emp.name, "pin_default_generated", "employee", emp.id,
-      `Initial PIN for ${emp.name}: ${initialPin}`, null);
+      `Initial PIN for ${emp.name}: ${initialPin}`, undefined);
   }
 
   // ── 2FA / session helpers ─────────────────────────────────────────────────

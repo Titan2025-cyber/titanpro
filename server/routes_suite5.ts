@@ -174,7 +174,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
       const { status, qbId, errorMessage, syncedAt } = req.body;
       const row = sqlite.prepare(
         "UPDATE qb_sync_log SET status=COALESCE(?,status), qb_id=COALESCE(?,qb_id), error_message=COALESCE(?,error_message), synced_at=COALESCE(?,synced_at) WHERE id=? RETURNING *"
-      ).get(status || null, qbId || null, errorMessage || null, syncedAt || null, parseInt(req.params.id));
+      ).get(status || null, qbId || null, errorMessage || null, syncedAt || null, parseInt(String(req.params.id)));
       res.json(row);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -243,14 +243,14 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
       const { triggerDays, channel, messageTemplate, isActive } = req.body;
       const row = sqlite.prepare(
         "UPDATE ar_followup_rules SET trigger_days=COALESCE(?,trigger_days), channel=COALESCE(?,channel), message_template=COALESCE(?,message_template), is_active=COALESCE(?,is_active) WHERE id=? RETURNING *"
-      ).get(triggerDays ?? null, channel ?? null, messageTemplate ?? null, isActive !== undefined ? (isActive ? 1 : 0) : null, parseInt(req.params.id));
+      ).get(triggerDays ?? null, channel ?? null, messageTemplate ?? null, isActive !== undefined ? (isActive ? 1 : 0) : null, parseInt(String(req.params.id)));
       res.json(row);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   app.delete("/api/ar-followup-rules/:id", (req, res) => {
     try {
-      sqlite.prepare("DELETE FROM ar_followup_rules WHERE id=?").run(parseInt(req.params.id));
+      sqlite.prepare("DELETE FROM ar_followup_rules WHERE id=?").run(parseInt(String(req.params.id)));
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -330,19 +330,19 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
   app.patch("/api/lien-waivers/:id", requireManage, (req, res) => {
     try {
       const fields = req.body;
-      const existing = sqlite.prepare("SELECT * FROM lien_waivers WHERE id=?").get(parseInt(req.params.id)) as any;
+      const existing = sqlite.prepare("SELECT * FROM lien_waivers WHERE id=?").get(parseInt(String(req.params.id))) as any;
       if (!existing) return res.status(404).json({ error: "Not found" });
       const signedAt = fields.status === "signed" && !existing.signed_at ? new Date().toISOString() : existing.signed_at;
       const row = sqlite.prepare(
         "UPDATE lien_waivers SET waiver_type=COALESCE(?,waiver_type), state=COALESCE(?,state), through_date=COALESCE(?,through_date), amount=COALESCE(?,amount), signer_name=COALESCE(?,signer_name), signer_title=COALESCE(?,signer_title), signed_at=COALESCE(?,signed_at), status=COALESCE(?,status), notes=COALESCE(?,notes) WHERE id=? RETURNING *"
-      ).get(fields.waiverType ?? null, fields.state ?? null, fields.throughDate ?? null, fields.amount ?? null, fields.signerName ?? null, fields.signerTitle ?? null, signedAt ?? null, fields.status ?? null, fields.notes ?? null, parseInt(req.params.id));
+      ).get(fields.waiverType ?? null, fields.state ?? null, fields.throughDate ?? null, fields.amount ?? null, fields.signerName ?? null, fields.signerTitle ?? null, signedAt ?? null, fields.status ?? null, fields.notes ?? null, parseInt(String(req.params.id)));
       res.json(row);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   app.delete("/api/lien-waivers/:id", requireManage, (req, res) => {
     try {
-      sqlite.prepare("DELETE FROM lien_waivers WHERE id=?").run(parseInt(req.params.id));
+      sqlite.prepare("DELETE FROM lien_waivers WHERE id=?").run(parseInt(String(req.params.id)));
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -464,7 +464,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
 
   app.patch("/api/time-clock/:id", (req: any, res) => {
     try {
-      const id = parseInt(req.params.id);
+      const id = parseInt(String(req.params.id));
       const row = sqlite.prepare("SELECT * FROM time_clock WHERE id = ?").get(id) as any;
       if (!row) return res.status(404).json({ error: "Time entry not found." });
       if (!canEditEntry(req, row)) return res.status(403).json({ error: "You can only edit your own time entries." });
@@ -520,7 +520,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
 
   app.delete("/api/time-clock/:id", (req: any, res) => {
     try {
-      const id = parseInt(req.params.id);
+      const id = parseInt(String(req.params.id));
       const row = sqlite.prepare("SELECT * FROM time_clock WHERE id = ?").get(id) as any;
       if (!row) return res.status(404).json({ error: "Time entry not found." });
       if (!canEditEntry(req, row)) return res.status(403).json({ error: "You can only delete your own time entries." });
@@ -571,7 +571,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
       const allComplete = items ? items.filter((i: any) => i.required).every((i: any) => i.checked) : null;
       const row = sqlite.prepare(
         "UPDATE departure_checklists SET items=COALESCE(?,items), completed_at=COALESCE(?,completed_at), all_required_complete=COALESCE(?,all_required_complete), notes=COALESCE(?,notes) WHERE id=? RETURNING *"
-      ).get(itemsStr, completedAt ?? null, allComplete !== null ? (allComplete ? 1 : 0) : null, notes ?? null, parseInt(req.params.id));
+      ).get(itemsStr, completedAt ?? null, allComplete !== null ? (allComplete ? 1 : 0) : null, notes ?? null, parseInt(String(req.params.id)));
       res.json(row);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -600,14 +600,14 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
       const { status, sentAt, messageBody } = req.body;
       const row = sqlite.prepare(
         "UPDATE appointment_reminders SET status=COALESCE(?,status), sent_at=COALESCE(?,sent_at), message_body=COALESCE(?,message_body) WHERE id=? RETURNING *"
-      ).get(status ?? null, sentAt ?? null, messageBody ?? null, parseInt(req.params.id));
+      ).get(status ?? null, sentAt ?? null, messageBody ?? null, parseInt(String(req.params.id)));
       res.json(row);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   app.delete("/api/appointment-reminders/:id", (req, res) => {
     try {
-      sqlite.prepare("DELETE FROM appointment_reminders WHERE id=?").run(parseInt(req.params.id));
+      sqlite.prepare("DELETE FROM appointment_reminders WHERE id=?").run(parseInt(String(req.params.id)));
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -616,7 +616,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
   app.post("/api/appointment-reminders/:id/send", (req, res) => {
     try {
       const now = new Date().toISOString();
-      const row = sqlite.prepare("UPDATE appointment_reminders SET status='sent', sent_at=? WHERE id=? RETURNING *").get(now, parseInt(req.params.id));
+      const row = sqlite.prepare("UPDATE appointment_reminders SET status='sent', sent_at=? WHERE id=? RETURNING *").get(now, parseInt(String(req.params.id)));
       res.json(row);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -650,7 +650,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
       const acknowledgedAt = acknowledged ? new Date().toISOString() : null;
       const row = sqlite.prepare(
         "UPDATE hazmat_flags SET acknowledged=COALESCE(?,acknowledged), acknowledged_by=COALESCE(?,acknowledged_by), acknowledged_at=COALESCE(?,acknowledged_at), risk_level=COALESCE(?,risk_level), notes=COALESCE(?,notes) WHERE id=? RETURNING *"
-      ).get(acknowledged !== undefined ? (acknowledged ? 1 : 0) : null, acknowledgedBy ?? null, acknowledgedAt, riskLevel ?? null, notes ?? null, parseInt(req.params.id));
+      ).get(acknowledged !== undefined ? (acknowledged ? 1 : 0) : null, acknowledgedBy ?? null, acknowledgedAt, riskLevel ?? null, notes ?? null, parseInt(String(req.params.id)));
       res.json(row);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -708,7 +708,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
 
   app.put("/api/conversion-overrides/:jobId", requireManage, (req, res) => {
     try {
-      const jobId = parseInt(req.params.jobId, 10);
+      const jobId = parseInt(String(req.params.jobId), 10);
       if (!Number.isFinite(jobId)) return res.status(400).json({ error: "Invalid jobId" });
       const soldRaw = req.body?.sold;
       // Accept true/false, 1/0, "true"/"false" — anything else is a bad request.
@@ -735,7 +735,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
 
   app.delete("/api/conversion-overrides/:jobId", requireManage, (req, res) => {
     try {
-      const jobId = parseInt(req.params.jobId, 10);
+      const jobId = parseInt(String(req.params.jobId), 10);
       if (!Number.isFinite(jobId)) return res.status(400).json({ error: "Invalid jobId" });
       const r = sqlite.prepare("DELETE FROM conversion_overrides WHERE job_id=?").run(jobId);
       res.json({ deleted: r.changes });

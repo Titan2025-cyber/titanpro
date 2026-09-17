@@ -537,7 +537,7 @@ export function registerHRRoutes(app: Express, sqlite: Database.Database) {
       emergencyPhone: b.emergencyPhone || null, notes: b.notes || null,
       i9: b.i9OnFile ? 1 : 0, w4: b.w4OnFile ? 1 : 0, everify: b.everifyDone ? 1 : 0,
     });
-    writeAudit(sqlite, req.employee?.id ?? null, actor(req), "hr_employee_create", "hr_employee", info.lastInsertRowid, `${b.firstName} ${b.lastName}`);
+    writeAudit(sqlite, req.employee?.id ?? null, actor(req), "hr_employee_create", "hr_employee", Number(info.lastInsertRowid), `${b.firstName} ${b.lastName}`);
     res.json(camel(sqlite.prepare("SELECT * FROM hr_employees WHERE id=?").get(info.lastInsertRowid)));
   }));
   app.patch("/api/hr/employees/:id", hrAuth, wrap((req, res) => {
@@ -699,7 +699,7 @@ export function registerHRRoutes(app: Express, sqlite: Database.Database) {
        VALUES (?,?,?,?,?,?,?,?)`
     ).run(b.employeeId, b.type || "verbal", b.severity || "minor", b.incidentDate || todayISO(),
       b.subject || null, b.body || null, b.correctiveAction || null, b.issuedBy || actor(req));
-    writeAudit(sqlite, req.employee?.id ?? null, actor(req), "hr_writeup_create", "hr_writeup", info.lastInsertRowid, b.subject || "");
+    writeAudit(sqlite, req.employee?.id ?? null, actor(req), "hr_writeup_create", "hr_writeup", Number(info.lastInsertRowid), b.subject || "");
     res.json(camel(sqlite.prepare("SELECT * FROM hr_writeups WHERE id=?").get(info.lastInsertRowid)));
   }));
   app.patch("/api/hr/writeups/:id", hrAuth, wrap((req, res) => {
@@ -775,7 +775,7 @@ export function registerHRRoutes(app: Express, sqlite: Database.Database) {
        VALUES (?,?,?,?,?,?,?,?)`
     ).run(b.employeeId, b.category || "pto", b.startDate, b.endDate, hours,
       b.reason || null, b.status || "pending", b.requestedBy || actor(req));
-    writeAudit(sqlite, req.employee?.id ?? null, actor(req), "hr_timeoff_create", "hr_timeoff", info.lastInsertRowid, `${b.category || "pto"} ${b.startDate}→${b.endDate}`);
+    writeAudit(sqlite, req.employee?.id ?? null, actor(req), "hr_timeoff_create", "hr_timeoff", Number(info.lastInsertRowid), `${b.category || "pto"} ${b.startDate}→${b.endDate}`);
     res.json(camel(sqlite.prepare("SELECT * FROM hr_timeoff WHERE id=?").get(info.lastInsertRowid)));
   }));
   app.patch("/api/hr/timeoff/:id", hrAuth, wrap((req, res) => {
@@ -789,7 +789,7 @@ export function registerHRRoutes(app: Express, sqlite: Database.Database) {
     if ("status" in b && b.status !== existing.status) {
       sets.push("status=?", "decided_by=?", "decided_at=datetime('now')");
       vals.push(b.status, b.decidedBy || actor(req));
-      writeAudit(sqlite, req.employee?.id ?? null, actor(req), `hr_timeoff_${b.status}`, "hr_timeoff", req.params.id, existing.category);
+      writeAudit(sqlite, req.employee?.id ?? null, actor(req), `hr_timeoff_${b.status}`, "hr_timeoff", String(req.params.id), existing.category);
     }
     if (!sets.length) return res.status(400).json({ error: "No fields" });
     vals.push(req.params.id);
