@@ -46,6 +46,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ChevronLeft, ChevronRight, Plus, Trash2, Users, MapPin, X, Calendar as CalIcon, CheckCircle2 } from "lucide-react";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 type CalendarEvent = {
   id: number; title: string; eventDate: string;
@@ -153,14 +154,30 @@ export default function Calendar() {
     };
   });
   const [viewLabel, setViewLabel] = useState<string>("");
-  // Default view: full-month Agenda (list) on phone — the month grid is too
-  // cramped for 30–31 cells on a 375px screen, and listWeek only shows a
-  // 7-day slice which hides most already-scheduled work. listMonth shows
-  // every event across the whole visible month as a tappable list.
+  // Default view: full-month Agenda (list) on phone — the month grid is
+  // FullCalendar’s dayGridMonth which does NOT responsive-collapse on narrow
+  // viewports (it renders as a broken single-column of 40px cells). listMonth
+  // shows every event across the whole visible month as a tappable list.
   type CalView = "dayGridMonth" | "timeGridWeek" | "timeGridDay" | "timeGridFourDay" | "listWeek" | "listMonth";
+  const isMobileNow = useIsMobile();
   const initialView: CalView =
     typeof window !== "undefined" && window.innerWidth < 768 ? "listMonth" : "dayGridMonth";
   const [currentView, setCurrentView] = useState<CalView>(initialView);
+
+  // Belt-and-suspenders: after FullCalendar mounts, force listMonth on mobile
+  // in case the view was previously persisted, cached, or FC picked its own
+  // default. Runs once on mount + whenever the mobile media query flips.
+  useEffect(() => {
+    if (!isMobileNow) return;
+    const api = calRef.current?.getApi?.();
+    if (!api) return;
+    const active = api.view?.type;
+    if (active === "dayGridMonth" || active === "timeGridWeek" || active === "timeGridDay" || active === "timeGridFourDay") {
+      api.changeView("listMonth");
+      setCurrentView("listMonth");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobileNow]);
 
   // Data --------------------------------------------------------------------
   // Widen the visible range by ±60 days when fetching so that list views

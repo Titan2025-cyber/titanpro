@@ -428,3 +428,42 @@
 @media (prefers-reduced-motion: reduce) {
   /* depth classes are static — nothing to disable, listed for clarity */
 }
+
+/* -----------------------------------------------------------------------
+   FullCalendar mobile rescue
+   dayGridMonth has no built-in responsive collapse — on <768px it renders
+   its <table> as a stack of 40-px tall rows with S/M/T/W… headers on one
+   column and every day number on its own line. This makes the calendar
+   look empty because events get pushed below the fold.
+
+   Our primary defense is defaulting mobile users to listMonth (Agenda) in
+   Calendar.tsx. This block is the fallback if a user manually switches to
+   Month on a phone: horizontal-scroll the grid inside a container so the
+   7-column layout survives.
+   ----------------------------------------------------------------------- */
+@media (max-width: 767px) {
+  .fc .fc-view-harness {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .fc .fc-daygrid,
+  .fc .fc-scrollgrid,
+  .fc .fc-scrollgrid-section > * {
+    min-width: 640px;
+  }
+  .fc .fc-col-header-cell-cushion,
+  .fc .fc-daygrid-day-number {
+    font-size: 12px;
+    padding: 2px 4px;
+  }
+  .fc .fc-daygrid-event {
+    font-size: 11px;
+    padding: 1px 3px;
+  }
+  /* listMonth / listWeek stay full-width and readable */
+  .fc .fc-list,
+  .fc .fc-list-table {
+    min-width: 0;
+    width: 100%;
+  }
+}
