@@ -829,7 +829,7 @@ export default function RoutePlanner() {
                   <Select value={field.value} onValueChange={field.onChange}>
                     <SelectTrigger data-testid="select-trip-assigned"><SelectValue placeholder="Select team member" /></SelectTrigger>
                     <SelectContent>
-                      {EMPLOYEES.map(e => <SelectItem key={e} value={e}>{e}</SelectItem>)}
+                      {employees.map(e => <SelectItem key={e.id} value={e.name}>{e.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </FormItem>

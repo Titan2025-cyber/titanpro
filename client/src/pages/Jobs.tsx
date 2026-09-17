@@ -9,7 +9,7 @@ import {
   Plus, Search, MapPin, User, ChevronRight, Calendar,
   CheckCircle2, Clock, AlertCircle, DollarSign, FileText,
   Wrench, TrendingUp, LayoutGrid, List, ChevronDown, CheckSquare, Square, ChevronUp,
-  TrendingDown, Receipt, CreditCard, KeyRound, Droplets, Hammer
+  TrendingDown, Receipt, CreditCard, KeyRound, Droplets, Hammer, Flame, Wind, Home
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
