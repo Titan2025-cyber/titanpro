@@ -46,6 +46,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ChevronLeft, ChevronRight, Plus, Trash2, Users, MapPin, X, Calendar as CalIcon, CheckCircle2 } from "lucide-react";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 type CalendarEvent = {
   id: number; title: string; eventDate: string;
@@ -162,6 +163,16 @@ export default function Calendar() {
   type CalView = "dayGridMonth" | "timeGridWeek" | "timeGridDay" | "timeGridFourDay" | "listWeek" | "listMonth";
   const initialView: CalView = "dayGridMonth";
   const [currentView, setCurrentView] = useState<CalView>(initialView);
+  const isMobile = useIsMobile();
+
+  // Mobile month-grid state — on phones we render a hand-rolled CSS-grid
+  // month view (see MobileMonthGrid at the bottom of this file) because
+  // FullCalendar’s dayGridMonth collapses to a single vertical column at
+  // narrow widths and its inline column-width JS overrides any CSS !important.
+  // Anchor date drives which month is shown; nav()/goToDate() mutate it on
+  // mobile and mutate FullCalendar on desktop.
+  const [mobileAnchorDate, setMobileAnchorDate] = useState<Date>(() => new Date());
+  const useMobileMonth = isMobile && currentView === "dayGridMonth";
 
   // Data --------------------------------------------------------------------
   // Widen the visible range by ±60 days when fetching so that list views
@@ -335,6 +346,16 @@ export default function Calendar() {
 
   // Toolbar helpers ---------------------------------------------------------
   function nav(action: "prev" | "next" | "today") {
+    if (useMobileMonth) {
+      setMobileAnchorDate((d) => {
+        if (action === "today") return new Date();
+        const nd = new Date(d);
+        nd.setDate(1);
+        nd.setMonth(nd.getMonth() + (action === "next" ? 1 : -1));
+        return nd;
+      });
+      return;
+    }
     const api = calRef.current?.getApi();
     if (!api) return;
     if (action === "prev") api.prev();
@@ -342,10 +363,18 @@ export default function Calendar() {
     else api.today();
   }
   function changeView(v: typeof currentView) {
-    calRef.current?.getApi().changeView(v);
     setCurrentView(v);
+    // On mobile, dayGridMonth uses our custom grid so no FC call needed.
+    // For every other view we still drive FullCalendar.
+    if (!(isMobile && v === "dayGridMonth")) {
+      calRef.current?.getApi()?.changeView(v);
+    }
   }
   function goToDate(iso: string) {
+    if (useMobileMonth) {
+      setMobileAnchorDate(new Date(iso + "T00:00:00"));
+      return;
+    }
     calRef.current?.getApi().gotoDate(iso);
   }
 
@@ -471,7 +500,8 @@ export default function Calendar() {
           </div>
         </aside>
 
-        {/* FullCalendar main area */}
+        {/* Calendar main area — hand-rolled CSS-grid month view on mobile,
+            FullCalendar for every other view / desktop. */}
         <div className="rounded-md border bg-background p-2">
           {/* Diagnostic banner — makes empty / failed calendar loads loud
               instead of silently blank. Existing events data is untouched;
@@ -485,38 +515,64 @@ export default function Calendar() {
               No scheduled events in the current window. Tap Month or Week to widen the view, or use the ← / → arrows to navigate.
             </div>
           ) : null}
-          <FullCalendar
-            ref={calRef as any}
-            plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin] as any}
-            initialView={initialView}
-            headerToolbar={false /* we render our own */}
-            height="calc(100vh - 220px)"
-            firstDay={0}
-            nowIndicator
-            editable
-            selectable
-            selectMirror
-            dayMaxEvents={3}
-            weekNumbers={false}
-            eventTimeFormat={{ hour: "numeric", minute: "2-digit", meridiem: "short" }}
-            slotLabelFormat={{ hour: "numeric", minute: "2-digit", meridiem: "short" }}
-            views={{
-              timeGridFourDay: { type: "timeGrid", duration: { days: 4 } },
-            }}
-            events={fcEvents as any}
-            select={handleSelect}
-            eventClick={handleEventClick}
-            eventDrop={handleEventDrop}
-            eventResize={handleEventResize}
-            eventContent={(arg) => renderEventContent(arg, completeMut.mutate)}
-            datesSet={(arg) => {
-              setViewLabel(arg.view.title);
-              // Extend fetch window slightly so events partially in view render.
-              const s = arg.startStr.slice(0, 10);
-              const e = arg.endStr.slice(0, 10);
-              setVisibleRange((prev) => (prev.start === s && prev.end === e ? prev : { start: s, end: e }));
-            }}
-          />
+
+          {useMobileMonth ? (
+            <MobileMonthGrid
+              anchor={mobileAnchorDate}
+              events={filtered}
+              onDayTap={(iso, dayEvents) => {
+                // Single event on the day → open that event straight away.
+                // Otherwise open Create prefilled to that date; the +N dots
+                // pattern from iOS Calendar collapses the day list into a
+                // create-or-edit flow.
+                if (dayEvents.length === 1) openEdit(dayEvents[0]);
+                else openCreate({ eventDate: iso });
+              }}
+              onRangeChange={(startIso, endIso) => {
+                setVisibleRange((prev) =>
+                  prev.start === startIso && prev.end === endIso
+                    ? prev
+                    : { start: startIso, end: endIso }
+                );
+                setViewLabel(
+                  mobileAnchorDate.toLocaleDateString(undefined, { month: "long", year: "numeric" })
+                );
+              }}
+            />
+          ) : (
+            <FullCalendar
+              ref={calRef as any}
+              plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin] as any}
+              initialView={initialView}
+              headerToolbar={false /* we render our own */}
+              height="calc(100vh - 220px)"
+              firstDay={0}
+              nowIndicator
+              editable
+              selectable
+              selectMirror
+              dayMaxEvents={3}
+              weekNumbers={false}
+              eventTimeFormat={{ hour: "numeric", minute: "2-digit", meridiem: "short" }}
+              slotLabelFormat={{ hour: "numeric", minute: "2-digit", meridiem: "short" }}
+              views={{
+                timeGridFourDay: { type: "timeGrid", duration: { days: 4 } },
+              }}
+              events={fcEvents as any}
+              select={handleSelect}
+              eventClick={handleEventClick}
+              eventDrop={handleEventDrop}
+              eventResize={handleEventResize}
+              eventContent={(arg) => renderEventContent(arg, completeMut.mutate)}
+              datesSet={(arg) => {
+                setViewLabel(arg.view.title);
+                // Extend fetch window slightly so events partially in view render.
+                const s = arg.startStr.slice(0, 10);
+                const e = arg.endStr.slice(0, 10);
+                setVisibleRange((prev) => (prev.start === s && prev.end === e ? prev : { start: s, end: e }));
+              }}
+            />
+          )}
         </div>
       </div>
 
@@ -907,6 +963,148 @@ function MiniMonth({ onPick }: { onPick: (iso: string) => void }) {
               `}
             >
               {c.d}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Mobile month grid (hand-rolled) ──────────────────────────────────────────
+// A CSS-grid month view sized for phones. iOS Calendar-inspired: day numbers
+// with colored dots underneath for each event on that day. Bypasses
+// FullCalendar entirely on mobile because FC's dayGridMonth collapses to a
+// single-column stack at narrow widths and inlines column widths via JS,
+// making CSS overrides fragile.
+//
+// - Renders 6 weeks × 7 days = 42 cells so the grid height is stable across
+//   months (avoids layout shift when nav'ing prev/next).
+// - Days outside the current month are dimmed (opacity: 0.35).
+// - Each cell shows the day number and up to 3 event dots; a "+N" chip when
+//   more events exist.
+// - Tapping a cell calls onDayTap(iso, events) — parent decides whether to
+//   open the create dialog prefilled or the editor for the sole event.
+// - Fires onRangeChange with the ISO start/end of the visible 42-day window
+//   so the parent's event query stays in sync.
+function MobileMonthGrid({
+  anchor,
+  events,
+  onDayTap,
+  onRangeChange,
+}: {
+  anchor: Date;
+  events: CalendarEvent[];
+  onDayTap: (iso: string, dayEvents: CalendarEvent[]) => void;
+  onRangeChange: (startIso: string, endIso: string) => void;
+}) {
+  // Build the 42-day window: first Sun on/before the 1st of the anchor month.
+  const cells = useMemo(() => {
+    const year = anchor.getFullYear();
+    const month = anchor.getMonth();
+    const firstOfMonth = new Date(year, month, 1);
+    // Sunday-first grid (firstDay=0 elsewhere in this file).
+    const gridStart = new Date(firstOfMonth);
+    gridStart.setDate(gridStart.getDate() - gridStart.getDay());
+    const out: { date: Date; iso: string; inMonth: boolean; isToday: boolean }[] = [];
+    const todayIso = new Date().toISOString().slice(0, 10);
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(gridStart);
+      d.setDate(gridStart.getDate() + i);
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      out.push({
+        date: d,
+        iso,
+        inMonth: d.getMonth() === month,
+        isToday: iso === todayIso,
+      });
+    }
+    return out;
+  }, [anchor]);
+
+  // Notify parent of the visible date range so the parent event query can
+  // refetch with a matching window. Fire once per anchor change.
+  useEffect(() => {
+    if (cells.length === 0) return;
+    onRangeChange(cells[0].iso, cells[cells.length - 1].iso);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchor]);
+
+  // Index events by ISO for O(1) lookup per cell.
+  const byDay = useMemo(() => {
+    const m = new Map<string, CalendarEvent[]>();
+    for (const ev of events) {
+      const list = m.get(ev.eventDate) ?? [];
+      list.push(ev);
+      m.set(ev.eventDate, list);
+    }
+    return m;
+  }, [events]);
+
+  const dayHeaders = ["S", "M", "T", "W", "T", "F", "S"];
+
+  return (
+    <div className="w-full select-none">
+      {/* Weekday headers */}
+      <div className="grid grid-cols-7 border-b text-center pb-1">
+        {dayHeaders.map((d, i) => (
+          <div
+            key={i}
+            className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium"
+          >
+            {d}
+          </div>
+        ))}
+      </div>
+
+      {/* 6 rows × 7 cols grid */}
+      <div className="grid grid-cols-7 grid-rows-6" style={{ minHeight: "60vh" }}>
+        {cells.map((c) => {
+          const dayEvents = byDay.get(c.iso) ?? [];
+          const dotColors = dayEvents.slice(0, 3);
+          const overflow = dayEvents.length > 3 ? dayEvents.length - 3 : 0;
+          return (
+            <button
+              key={c.iso}
+              type="button"
+              onClick={() => onDayTap(c.iso, dayEvents)}
+              className={[
+                "border-r border-b flex flex-col items-center pt-1.5 pb-1 gap-1",
+                "text-xs transition active:bg-muted/60",
+                c.inMonth ? "text-foreground" : "text-muted-foreground/40",
+              ].join(" ")}
+              data-testid={`mobile-month-day-${c.iso}`}
+            >
+              {/* Day number — today pill */}
+              <span
+                className={
+                  c.isToday
+                    ? "inline-flex w-6 h-6 items-center justify-center rounded-full bg-[hsl(var(--titan-red))] text-white text-xs font-semibold"
+                    : "text-sm"
+                }
+              >
+                {c.date.getDate()}
+              </span>
+
+              {/* Event dots */}
+              {dayEvents.length > 0 ? (
+                <div className="flex items-center gap-0.5 flex-wrap justify-center px-0.5">
+                  {dotColors.map((ev) => (
+                    <span
+                      key={ev.id}
+                      className={[
+                        "inline-block w-1.5 h-1.5 rounded-full",
+                        ev.completedAt ? "bg-muted-foreground/40" : "bg-[hsl(var(--titan-blue))]",
+                      ].join(" ")}
+                    />
+                  ))}
+                  {overflow > 0 ? (
+                    <span className="text-[9px] leading-none text-muted-foreground ml-0.5">
+                      +{overflow}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
             </button>
           );
         })}
