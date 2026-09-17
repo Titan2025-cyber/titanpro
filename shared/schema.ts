@@ -6,7 +6,7 @@ import { z } from "zod";
 export const contacts = sqliteTable("contacts", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
-  type: text("type").notNull().default("customer"), // customer | sub | referral
+  type: text("type").notNull().default("customer"), // customer | sub | referral | property_manager | adjuster
   email: text("email"),
   phone: text("phone"),
   address: text("address"),
@@ -1742,3 +1742,85 @@ export const consumableTransactions = sqliteTable("consumable_transactions", {
 export const insertConsumableTransactionSchema = createInsertSchema(consumableTransactions).omit({ id: true });
 export type InsertConsumableTransaction = z.infer<typeof insertConsumableTransactionSchema>;
 export type ConsumableTransaction = typeof consumableTransactions.$inferSelect;
+
+// ── Inbound Leads (Push 6 #6) ─────────────────────────────────────────────────
+// Every call/form-submission/text that comes in gets logged here so the rep
+// has one queue to work each morning. Sources match jobs.leadSource so
+// attribution flows straight through when a lead converts.
+export const inboundLeads = sqliteTable("inbound_leads", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  receivedAt: text("received_at").notNull(),
+  source: text("source").notNull(),                    // phone | web_form | text | email | referral | walk_in | other
+  sourceDetail: text("source_detail"),                 // campaign name, referrer name, phone number, etc.
+  callerName: text("caller_name"),
+  callerPhone: text("caller_phone"),
+  callerAddress: text("caller_address"),
+  lossType: text("loss_type"),                         // water | fire | mold | storm | biohazard | reconstruction | unknown
+  urgency: text("urgency").default("normal"),          // emergency | urgent | normal | quote
+  status: text("status").default("open"),              // open | contacted | scheduled | won | lost | duplicate
+  disposition: text("disposition"),                    // when lost/won: reason
+  assignedTo: text("assigned_to"),                     // rep who took the call
+  jobId: integer("job_id"),                            // set when the lead converts to a job
+  notes: text("notes"),
+  loggedBy: text("logged_by"),
+  createdAt: text("created_at").notNull().default(""),
+  updatedAt: text("updated_at"),
+});
+export const insertInboundLeadSchema = createInsertSchema(inboundLeads).omit({ id: true });
+export type InsertInboundLead = z.infer<typeof insertInboundLeadSchema>;
+export type InboundLead = typeof inboundLeads.$inferSelect;
+
+// ── Marketing Goals (Push 6 #7) ───────────────────────────────────────────────
+// Weekly targets per KPI so Today tab shows pace instead of raw counts.
+// One row per KPI per ISO week; a week with no explicit row falls back to
+// the "default" row (weekStart="default") if present.
+export const marketingGoals = sqliteTable("marketing_goals", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  weekStart: text("week_start").notNull(),             // ISO date of Monday | "default"
+  metric: text("metric").notNull(),                    // jobs_sold | reviews_sent | partner_touches | posts_published | leads_answered
+  target: real("target").notNull(),
+  setBy: text("set_by"),
+  createdAt: text("created_at").notNull().default(""),
+  updatedAt: text("updated_at"),
+});
+export const insertMarketingGoalSchema = createInsertSchema(marketingGoals).omit({ id: true });
+export type InsertMarketingGoal = z.infer<typeof insertMarketingGoalSchema>;
+export type MarketingGoal = typeof marketingGoals.$inferSelect;
+
+// ── Neighborhood Canvassing Lists (Push 6 #13) ────────────────────────────────
+// After a big job on Elm St, the rep generates a "20 nearest neighbors" list
+// and either exports to postcard-mailer CSV or door-hangs manually. Stored so
+// they can re-print, add notes ("no soliciting sign at #124"), and track
+// conversions from canvassed addresses back to jobs.
+export const canvassingLists = sqliteTable("canvassing_lists", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  jobId: integer("job_id").notNull(),                  // anchor job (source of the referral story)
+  name: text("name").notNull(),                        // "Elm St spring 2026" — rep-editable
+  radiusFt: integer("radius_ft").default(500),
+  totalAddresses: integer("total_addresses").default(0),
+  status: text("status").default("draft"),             // draft | mailed | door_hung | complete
+  mailedAt: text("mailed_at"),
+  notes: text("notes"),
+  createdBy: text("created_by"),
+  createdAt: text("created_at").notNull().default(""),
+});
+export const insertCanvassingListSchema = createInsertSchema(canvassingLists).omit({ id: true });
+export type InsertCanvassingList = z.infer<typeof insertCanvassingListSchema>;
+export type CanvassingList = typeof canvassingLists.$inferSelect;
+
+// One row per address inside a canvassing list. Rep marks doors as
+// "no answer / not interested / interested / converted" as they work the list.
+export const canvassingAddresses = sqliteTable("canvassing_addresses", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  listId: integer("list_id").notNull(),
+  address: text("address").notNull(),
+  distanceFt: real("distance_ft"),                     // computed from anchor at generation time
+  ownerName: text("owner_name"),                       // best-effort from property_lookup
+  outcome: text("outcome").default("pending"),         // pending | no_answer | not_interested | interested | converted
+  convertedJobId: integer("converted_job_id"),         // set when this door became a job
+  notes: text("notes"),
+  createdAt: text("created_at").notNull().default(""),
+});
+export const insertCanvassingAddressSchema = createInsertSchema(canvassingAddresses).omit({ id: true });
+export type InsertCanvassingAddress = z.infer<typeof insertCanvassingAddressSchema>;
+export type CanvassingAddress = typeof canvassingAddresses.$inferSelect;

@@ -2268,6 +2268,71 @@ if (consCount.c === 0) {
   }
 }
 
+// ── Push 6 tables: inbound_leads, marketing_goals, canvassing_lists,
+// canvassing_addresses ───────────────────────────────────────────────────────
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS inbound_leads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_detail TEXT,
+    caller_name TEXT,
+    caller_phone TEXT,
+    caller_address TEXT,
+    loss_type TEXT,
+    urgency TEXT DEFAULT 'normal',
+    status TEXT DEFAULT 'open',
+    disposition TEXT,
+    assigned_to TEXT,
+    job_id INTEGER,
+    notes TEXT,
+    logged_by TEXT,
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS marketing_goals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    week_start TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    target REAL NOT NULL,
+    set_by TEXT,
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT,
+    UNIQUE (week_start, metric)
+  );
+
+  CREATE TABLE IF NOT EXISTS canvassing_lists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    radius_ft INTEGER DEFAULT 500,
+    total_addresses INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'draft',
+    mailed_at TEXT,
+    notes TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT ''
+  );
+
+  CREATE TABLE IF NOT EXISTS canvassing_addresses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    list_id INTEGER NOT NULL,
+    address TEXT NOT NULL,
+    distance_ft REAL,
+    owner_name TEXT,
+    outcome TEXT DEFAULT 'pending',
+    converted_job_id INTEGER,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT ''
+  );
+`);
+
+// Extend follow_up_sequences.sequence_type enum by convention (no schema
+// change needed — the column is TEXT). New values used by Push 6:
+//   post_job_6wk | post_job_90d | post_job_12mo   — customer nurture
+//   pm_quarterly | pm_seasonal | pm_post_storm    — property manager cadence
+
 // ── Performance: auto-index all foreign-key (*_id) columns ───────────────────
 // Runs on every startup. Idempotent (IF NOT EXISTS). This makes per-job /
 // per-contact / per-invoice lookups use an index instead of a full table scan,

@@ -358,6 +358,11 @@ function AuthenticatedRoutes() {
         <Route path="/profitability-hub" component={() => <Page component={ProfitabilityHub} name="ProfitabilityHub" />} />
         <Route path="/partner-hub" component={() => <Page component={PartnerHub} name="PartnerHub" />} />
         <Route path="/marketing-hub" component={() => <Page component={MarketingHub} name="MarketingHub" />} />
+        {/* Push 6 standalone deep-links so bookmarks and share URLs work */}
+        <Route path="/inbound-leads"><Redirect to="/marketing-hub?tab=leads" /></Route>
+        <Route path="/marketing-nurture"><Redirect to="/marketing-hub?tab=nurture" /></Route>
+        <Route path="/marketing-canvassing"><Redirect to="/marketing-hub?tab=canvassing" /></Route>
+        <Route path="/marketing-goals"><Redirect to="/marketing-hub?tab=goals" /></Route>
         <Route path="/equipment-hub" component={() => <Page component={EquipmentHub} name="EquipmentHub" />} />
         {/* Email and Messaging (Dispatch) are now standalone top-level modules.
             Old CommsHub wrapper is retired — /comms-hub redirects to /email

@@ -19,6 +19,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import InboundLeadsCard from "@/pages/InboundLeadsCard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -120,6 +121,110 @@ function reviewSignalFor(job: any, warrantyByJob: Map<number, number>): { signal
   if (invoicePaid) return { signal: "green", reason: "Paid in full" };
 
   return { signal: "neutral", reason: "" };
+}
+
+// ── Push 6 #7: Weekly goal pace helper ─────────────────────────────────────
+// Each KPI card can carry a pace strip — green / amber / red — based on
+// current value vs. the weekly target, prorated to elapsed days-in-week.
+// Amber when you're behind but recoverable; red when you're clearly off pace.
+
+function paceFor(value: number, target: number) {
+  if (!target || target <= 0) return null;
+  const now = new Date();
+  const day = now.getDay(); // 0 = Sun
+  const daysIn = day === 0 ? 7 : day; // treat Sun as end-of-week
+  const expected = (target * daysIn) / 7;
+  const pct = value / target;
+  const expectedPct = expected / target;
+  const gap = pct - expectedPct;
+  if (gap >= -0.05) return { color: "green", label: "On pace" } as const;
+  if (gap >= -0.2) return { color: "amber", label: "Behind" } as const;
+  return { color: "red", label: "Off pace" } as const;
+}
+
+const KPI_TO_METRIC: Record<string, string> = {
+  "kpi-sold": "jobs_sold",
+  "kpi-conversion": "conversion_pct",
+  "kpi-reviews": "reviews_sent",
+  "kpi-partners": "active_partners",
+};
+
+function KpiCardWithPace({
+  label, icon: Icon, value, sub, testid,
+}: {
+  label: string;
+  icon: any;
+  value: any;
+  sub: string;
+  testid: string;
+}) {
+  const weekStart = (() => {
+    const d = new Date();
+    const day = d.getDay();
+    const diff = d.getDate() - (day === 0 ? 6 : day - 1); // Monday start
+    d.setDate(diff);
+    d.setHours(0, 0, 0, 0);
+    return d.toISOString().slice(0, 10);
+  })();
+
+  const { data: goals = [] } = useQuery<any[]>({
+    queryKey: ["/api/marketing-goals", { weekStart }],
+    queryFn: () =>
+      apiRequest("GET", `/api/marketing-goals?weekStart=${weekStart}`).then((r) => r.json()),
+  });
+
+  const metric = KPI_TO_METRIC[testid];
+  const goal = metric ? goals.find((g: any) => g.metric === metric) : null;
+  const target = goal?.target ?? 0;
+
+  // Extract numeric value — KPIs may render strings like "50%"
+  const numeric =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+      ? Number(String(value).replace(/[^0-9.\-]/g, "")) || 0
+      : 0;
+
+  const pace = target > 0 ? paceFor(numeric, target) : null;
+  const paceClasses =
+    pace?.color === "green"
+      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30"
+      : pace?.color === "amber"
+      ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/30"
+      : pace?.color === "red"
+      ? "bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/30"
+      : "";
+
+  return (
+    <Card data-testid={testid}>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between mb-2">
+          <Icon className="w-4 h-4 text-muted-foreground" />
+          <span className="text-xs text-muted-foreground truncate">{label}</span>
+        </div>
+        <div className="text-2xl font-bold">{value}</div>
+        <div className="text-xs text-muted-foreground mt-1">{sub}</div>
+        {pace && (
+          <div
+            className={`mt-2 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border inline-block ${paceClasses}`}
+            data-testid={`${testid}-pace`}
+          >
+            {pace.label} · goal {target}
+          </div>
+        )}
+        {!pace && target === 0 && (
+          <Link href="/marketing-goals">
+            <button
+              className="mt-2 text-[10px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
+              data-testid={`${testid}-set-goal`}
+            >
+              set weekly goal
+            </button>
+          </Link>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function MarketingToday() {
@@ -410,24 +515,25 @@ export default function MarketingToday() {
         </Card>
       )}
 
-      {/* KPI Strip */}
+      {/* KPI Strip — with goal pace overlay (Push 6 #7) */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {kpis.map((k) => (
-          <Card key={k.testid} data-testid={k.testid}>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <k.icon className="w-4 h-4 text-muted-foreground" />
-                <span className="text-xs text-muted-foreground truncate">{k.label}</span>
-              </div>
-              <div className="text-2xl font-bold">{k.value}</div>
-              <div className="text-xs text-muted-foreground mt-1">{k.sub}</div>
-            </CardContent>
-          </Card>
+          <KpiCardWithPace
+            key={k.testid}
+            label={k.label}
+            icon={k.icon}
+            value={k.value}
+            sub={k.sub}
+            testid={k.testid}
+          />
         ))}
       </div>
 
-      {/* Action Queue */}
+      {/* Action Queue — now 5 cards: reviews, partners, storm, untagged, inbound leads (Push 6 #6) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Inbound leads today — Push 6 #6 */}
+        <InboundLeadsCard />
+
         {/* Reviews ready to send — with red/green flags */}
         <Card data-testid="queue-reviews">
           <CardHeader className="pb-2">

@@ -5218,9 +5218,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(row);
   });
   app.patch("/api/follow-ups/:id", (req, res) => {
-    const d = req.body;
-    const row = sqlite.prepare(`UPDATE follow_up_sequences SET status=?, sent_at=?, email_subject=?, email_body=?, notes=? WHERE id=? RETURNING *`)
-      .get(d.status, d.sentAt||null, d.emailSubject||null, d.emailBody||null, d.notes||null, req.params.id);
+    // Push 6: build a dynamic UPDATE so callers can patch just status / sentAt
+    // without wiping email_subject/email_body/notes.
+    const d = req.body || {};
+    const map: Record<string, string> = {
+      status: "status",
+      sentAt: "sent_at",
+      emailSubject: "email_subject",
+      emailBody: "email_body",
+      notes: "notes",
+      scheduledAt: "scheduled_at",
+    };
+    const sets: string[] = [];
+    const vals: any[] = [];
+    for (const k of Object.keys(map)) {
+      if (Object.prototype.hasOwnProperty.call(d, k)) {
+        sets.push(`${map[k]} = ?`);
+        vals.push(d[k]);
+      }
+    }
+    if (sets.length === 0) {
+      const row = sqlite.prepare("SELECT * FROM follow_up_sequences WHERE id = ?").get(req.params.id);
+      return res.json(row);
+    }
+    vals.push(req.params.id);
+    const row = sqlite.prepare(
+      `UPDATE follow_up_sequences SET ${sets.join(", ")} WHERE id = ? RETURNING *`
+    ).get(...vals);
     res.json(row);
   });
   app.delete("/api/follow-ups/:id", (req, res) => {
@@ -10488,6 +10512,410 @@ Approve in Partner Portal → Admin View.
   // reminders, NOAA polling). See server/scheduler.ts.
   startScheduler(sqlite);
   startEmailScheduler(sqlite);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PUSH 6 ROUTES — Inbound leads, goals, canvassing, nurture, PM cadence
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Inbound Leads (#6) ────────────────────────────────────────────────────
+  const mapLead = (r: any) => r == null ? r : ({
+    id: r.id,
+    receivedAt: r.received_at,
+    source: r.source,
+    sourceDetail: r.source_detail,
+    callerName: r.caller_name,
+    callerPhone: r.caller_phone,
+    callerAddress: r.caller_address,
+    lossType: r.loss_type,
+    urgency: r.urgency,
+    status: r.status,
+    disposition: r.disposition,
+    assignedTo: r.assigned_to,
+    jobId: r.job_id,
+    notes: r.notes,
+    loggedBy: r.logged_by,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  });
+
+  app.get("/api/inbound-leads", (req, res) => {
+    try {
+      const since = req.query.since as string | undefined;
+      let rows;
+      if (since) {
+        rows = sqlite.prepare(
+          "SELECT * FROM inbound_leads WHERE received_at >= ? ORDER BY received_at DESC"
+        ).all(since);
+      } else {
+        rows = sqlite.prepare("SELECT * FROM inbound_leads ORDER BY received_at DESC LIMIT 200").all();
+      }
+      res.json((rows as any[]).map(mapLead));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post("/api/inbound-leads", (req, res) => {
+    try {
+      const b = req.body || {};
+      if (!b.source) return res.status(400).json({ error: "source is required" });
+      const now = new Date().toISOString();
+      const result = sqlite.prepare(
+        `INSERT INTO inbound_leads
+         (received_at, source, source_detail, caller_name, caller_phone, caller_address,
+          loss_type, urgency, status, assigned_to, notes, logged_by, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      ).run(
+        b.receivedAt || now, b.source, b.sourceDetail || null,
+        b.callerName || null, b.callerPhone || null, b.callerAddress || null,
+        b.lossType || null, b.urgency || "normal", b.status || "open",
+        b.assignedTo || null, b.notes || null, b.loggedBy || null, now
+      );
+      const row = sqlite.prepare("SELECT * FROM inbound_leads WHERE id = ?").get(result.lastInsertRowid);
+      res.status(201).json(mapLead(row));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.patch("/api/inbound-leads/:id", (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const b = req.body || {};
+      const now = new Date().toISOString();
+      const fields: string[] = [];
+      const values: any[] = [];
+      const map: Record<string, string> = {
+        status: "status", disposition: "disposition", assignedTo: "assigned_to",
+        jobId: "job_id", notes: "notes", callerName: "caller_name",
+        callerPhone: "caller_phone", callerAddress: "caller_address",
+        lossType: "loss_type", urgency: "urgency", sourceDetail: "source_detail",
+      };
+      for (const [k, v] of Object.entries(map)) {
+        if (k in b) { fields.push(`${v} = ?`); values.push(b[k]); }
+      }
+      if (fields.length === 0) return res.status(400).json({ error: "no fields to update" });
+      fields.push("updated_at = ?"); values.push(now);
+      values.push(id);
+      sqlite.prepare(`UPDATE inbound_leads SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+      const row = sqlite.prepare("SELECT * FROM inbound_leads WHERE id = ?").get(id);
+      res.json(mapLead(row));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete("/api/inbound-leads/:id", (req, res) => {
+    try {
+      sqlite.prepare("DELETE FROM inbound_leads WHERE id = ?").run(Number(req.params.id));
+      res.status(204).end();
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Marketing Goals (#7) ──────────────────────────────────────────────────
+  const mapGoal = (r: any) => r == null ? r : ({
+    id: r.id, weekStart: r.week_start, metric: r.metric, target: r.target,
+    setBy: r.set_by, createdAt: r.created_at, updatedAt: r.updated_at,
+  });
+
+  app.get("/api/marketing-goals", (req, res) => {
+    try {
+      const weekStart = req.query.weekStart as string | undefined;
+      let rows;
+      if (weekStart) {
+        rows = sqlite.prepare(
+          "SELECT * FROM marketing_goals WHERE week_start IN (?, 'default')"
+        ).all(weekStart);
+      } else {
+        rows = sqlite.prepare("SELECT * FROM marketing_goals ORDER BY week_start DESC, metric ASC").all();
+      }
+      res.json((rows as any[]).map(mapGoal));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post("/api/marketing-goals", (req, res) => {
+    try {
+      const b = req.body || {};
+      if (!b.metric || b.target == null) {
+        return res.status(400).json({ error: "metric and target are required" });
+      }
+      const now = new Date().toISOString();
+      const weekStart = b.weekStart || "default";
+      sqlite.prepare(
+        `INSERT INTO marketing_goals (week_start, metric, target, set_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (week_start, metric) DO UPDATE SET
+           target = excluded.target,
+           set_by = excluded.set_by,
+           updated_at = excluded.updated_at`
+      ).run(weekStart, b.metric, Number(b.target), b.setBy || null, now, now);
+      const row = sqlite.prepare(
+        "SELECT * FROM marketing_goals WHERE week_start = ? AND metric = ?"
+      ).get(weekStart, b.metric);
+      res.status(201).json(mapGoal(row));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete("/api/marketing-goals/:id", (req, res) => {
+    try {
+      sqlite.prepare("DELETE FROM marketing_goals WHERE id = ?").run(Number(req.params.id));
+      res.status(204).end();
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Canvassing Lists (#13) ────────────────────────────────────────────────
+  const mapList = (r: any) => r == null ? r : ({
+    id: r.id, jobId: r.job_id, name: r.name, radiusFt: r.radius_ft,
+    totalAddresses: r.total_addresses, status: r.status, mailedAt: r.mailed_at,
+    notes: r.notes, createdBy: r.created_by, createdAt: r.created_at,
+  });
+  const mapAddr = (r: any) => r == null ? r : ({
+    id: r.id, listId: r.list_id, address: r.address, distanceFt: r.distance_ft,
+    ownerName: r.owner_name, outcome: r.outcome, convertedJobId: r.converted_job_id,
+    notes: r.notes, createdAt: r.created_at,
+  });
+
+  // Great-circle distance in feet between two lat/lng points (Haversine).
+  const haversineFt = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const R = 20925524.9; // Earth radius in feet
+    const toRad = (d: number) => (d * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) ** 2 +
+              Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+  };
+
+  app.get("/api/canvassing-lists", (_req, res) => {
+    try {
+      const rows = sqlite.prepare("SELECT * FROM canvassing_lists ORDER BY created_at DESC").all();
+      res.json((rows as any[]).map(mapList));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.get("/api/canvassing-lists/:id", (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const list = sqlite.prepare("SELECT * FROM canvassing_lists WHERE id = ?").get(id) as any;
+      if (!list) return res.status(404).json({ error: "not found" });
+      const addrs = sqlite.prepare(
+        "SELECT * FROM canvassing_addresses WHERE list_id = ? ORDER BY distance_ft ASC"
+      ).all(id) as any[];
+      res.json({ list: mapList(list), addresses: addrs.map(mapAddr) });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Generate a canvassing list around a job. Picks the N nearest OTHER jobs'
+  // addresses (proxy for neighborhood coverage) within radius. In prod this
+  // would call a parcel-data provider — for now we use our own job database
+  // as the address source, which still delivers value for repeat-neighborhood
+  // work in Cody's service area.
+  app.post("/api/canvassing-lists", (req, res) => {
+    try {
+      const b = req.body || {};
+      if (!b.jobId) return res.status(400).json({ error: "jobId is required" });
+      const jobId = Number(b.jobId);
+      const radiusFt = Number(b.radiusFt) || 500;
+      const anchor = sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId) as any;
+      if (!anchor) return res.status(404).json({ error: "job not found" });
+      if (!anchor.latitude || !anchor.longitude) {
+        return res.status(400).json({
+          error: "Anchor job has no geocoded address. Add coordinates to the job first."
+        });
+      }
+      const now = new Date().toISOString();
+      const name = b.name || `${anchor.address || "Job #" + jobId} canvassing`;
+
+      // Collect candidate addresses from OTHER jobs with coordinates
+      const candidates = sqlite.prepare(
+        "SELECT id, address, latitude, longitude, contact_id FROM jobs WHERE id != ? AND latitude IS NOT NULL AND longitude IS NOT NULL"
+      ).all(jobId) as any[];
+      const contacts = sqlite.prepare("SELECT id, name FROM contacts").all() as any[];
+      const contactById = new Map<number, string>(contacts.map((c: any) => [c.id, c.name]));
+
+      const nearby = candidates
+        .map((c: any) => ({
+          address: c.address,
+          distance: haversineFt(anchor.latitude, anchor.longitude, c.latitude, c.longitude),
+          ownerName: contactById.get(c.contact_id) || null,
+        }))
+        .filter((c) => c.distance <= radiusFt && c.address)
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, 30); // hard cap
+
+      const listResult = sqlite.prepare(
+        `INSERT INTO canvassing_lists (job_id, name, radius_ft, total_addresses, status, created_by, created_at)
+         VALUES (?, ?, ?, ?, 'draft', ?, ?)`
+      ).run(jobId, name, radiusFt, nearby.length, b.createdBy || null, now);
+      const listId = Number(listResult.lastInsertRowid);
+
+      const insertAddr = sqlite.prepare(
+        `INSERT INTO canvassing_addresses (list_id, address, distance_ft, owner_name, outcome, created_at)
+         VALUES (?, ?, ?, ?, 'pending', ?)`
+      );
+      for (const n of nearby) {
+        insertAddr.run(listId, n.address, n.distance, n.ownerName, now);
+      }
+
+      const list = sqlite.prepare("SELECT * FROM canvassing_lists WHERE id = ?").get(listId) as any;
+      const addrs = sqlite.prepare(
+        "SELECT * FROM canvassing_addresses WHERE list_id = ? ORDER BY distance_ft ASC"
+      ).all(listId) as any[];
+      res.status(201).json({ list: mapList(list), addresses: addrs.map(mapAddr) });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.patch("/api/canvassing-lists/:id", (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const b = req.body || {};
+      const fields: string[] = [];
+      const values: any[] = [];
+      const map: Record<string, string> = {
+        name: "name", status: "status", mailedAt: "mailed_at", notes: "notes",
+      };
+      for (const [k, v] of Object.entries(map)) {
+        if (k in b) { fields.push(`${v} = ?`); values.push(b[k]); }
+      }
+      if (fields.length === 0) return res.status(400).json({ error: "no fields to update" });
+      values.push(id);
+      sqlite.prepare(`UPDATE canvassing_lists SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+      const row = sqlite.prepare("SELECT * FROM canvassing_lists WHERE id = ?").get(id);
+      res.json(mapList(row));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.patch("/api/canvassing-addresses/:id", (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const b = req.body || {};
+      const fields: string[] = [];
+      const values: any[] = [];
+      const map: Record<string, string> = {
+        outcome: "outcome", notes: "notes", convertedJobId: "converted_job_id",
+        ownerName: "owner_name",
+      };
+      for (const [k, v] of Object.entries(map)) {
+        if (k in b) { fields.push(`${v} = ?`); values.push(b[k]); }
+      }
+      if (fields.length === 0) return res.status(400).json({ error: "no fields to update" });
+      values.push(id);
+      sqlite.prepare(`UPDATE canvassing_addresses SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+      const row = sqlite.prepare("SELECT * FROM canvassing_addresses WHERE id = ?").get(id);
+      res.json(mapAddr(row));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete("/api/canvassing-lists/:id", (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      sqlite.prepare("DELETE FROM canvassing_addresses WHERE list_id = ?").run(id);
+      sqlite.prepare("DELETE FROM canvassing_lists WHERE id = ?").run(id);
+      res.status(204).end();
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Post-job customer nurture sequences (#12) ─────────────────────────────
+  // Seeds three follow_up_sequences rows for a completed job:
+  //   6-week check-in     "How's the drywall holding up? Any concerns?"
+  //   90-day maintenance  "Check your washing machine hose"
+  //   12-month anniversary "A year ago today we helped you rebuild"
+  //
+  // The rep still approves each one from the Nurture tab before it sends —
+  // no auto-send, consistent with the review-engine safety pattern.
+  app.post("/api/jobs/:id/nurture-sequence", (req, res) => {
+    try {
+      const jobId = Number(req.params.id);
+      const job = sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId) as any;
+      if (!job) return res.status(404).json({ error: "job not found" });
+      if (!job.contact_id) return res.status(400).json({ error: "job has no contact" });
+      const anchor = job.job_complete || job.invoice_sent_date || new Date().toISOString();
+      const anchorMs = new Date(anchor).getTime();
+      const now = new Date().toISOString();
+      const seqs = [
+        {
+          type: "post_job_6wk",
+          days: 42,
+          subject: "How's everything looking?",
+          body: "Hey there — it's been about six weeks since we finished up. Just wanted to check in and make sure the drywall's holding up and everything's still looking good. Any concerns at all, big or small, let me know and I'll take care of it. — Cody, Titan Restoration",
+        },
+        {
+          type: "post_job_90d",
+          days: 90,
+          subject: "A quick maintenance tip",
+          body: "Hope you're doing well. A quick tip from us: this is a great time to check your washing machine hoses and under-sink connections. Rubber hoses age out around 5 years — replacing them with braided stainless is a $15 fix that has saved a lot of our customers from another water loss. Any questions, just call. — Cody, Titan Restoration",
+        },
+        {
+          type: "post_job_12mo",
+          days: 365,
+          subject: "One year ago today",
+          body: "Hi — a year ago today we finished restoring your home. Hope everything is still holding up perfectly. If you ever need us again (or know a neighbor who does), we'd be honored to help. — Cody, Titan Restoration",
+        },
+      ];
+      const insertStmt = sqlite.prepare(
+        `INSERT INTO follow_up_sequences
+         (job_id, contact_id, sequence_type, scheduled_at, status, email_subject, email_body, created_at)
+         VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`
+      );
+      // Guard against duplicates — check if any of these three types already exist for this job.
+      const existing = sqlite.prepare(
+        "SELECT sequence_type FROM follow_up_sequences WHERE job_id = ? AND sequence_type IN ('post_job_6wk','post_job_90d','post_job_12mo')"
+      ).all(jobId) as any[];
+      const existingSet = new Set(existing.map((r: any) => r.sequence_type));
+      const created: any[] = [];
+      for (const s of seqs) {
+        if (existingSet.has(s.type)) continue;
+        const scheduledAt = new Date(anchorMs + s.days * 86400 * 1000).toISOString();
+        const result = insertStmt.run(jobId, job.contact_id, s.type, scheduledAt, s.subject, s.body, now);
+        created.push({ id: result.lastInsertRowid, type: s.type, scheduledAt });
+      }
+      res.status(201).json({ created, skipped: seqs.length - created.length });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Property Manager cadence (#11) ────────────────────────────────────────
+  // PMs need a different rhythm than realtor/agent partners — quarterly
+  // check-in, seasonal safety tip, post-storm proactive touch. Seeds four
+  // rows (one per quarter for the next year) using the existing
+  // follow_up_sequences table with sequence_type = 'pm_quarterly'.
+  app.post("/api/contacts/:id/pm-sequence", (req, res) => {
+    try {
+      const contactId = Number(req.params.id);
+      const contact = sqlite.prepare("SELECT * FROM contacts WHERE id = ?").get(contactId) as any;
+      if (!contact) return res.status(404).json({ error: "contact not found" });
+      const now = new Date().toISOString();
+      const startMs = Date.now();
+      const quarters = [
+        { days: 0,   subject: "Quick check-in from Titan Restoration", body: "Hi ${name} — hope things are going smoothly at your properties. Just checking in from Titan. Want to keep us on your speed-dial for any water, fire, or mold issues that come up. Free for a quick call this month? — Cody" },
+        { days: 90,  subject: "Seasonal reminder for your properties",  body: "Hi ${name} — with the season changing, this is a good time to remind residents about frozen-pipe prevention / HVAC checks / storm prep. We can pass along a one-page tip sheet you can distribute if useful. — Cody, Titan Restoration" },
+        { days: 180, subject: "Mid-year property check-in",              body: "Hi ${name} — mid-year check-in. Any surprises across your properties we can help with? Water intrusions, mold concerns, tenant move-out cleanups — we can be there in an hour when it matters. — Cody" },
+        { days: 270, subject: "End-of-year property prep",               body: "Hi ${name} — as we wrap up the year, wanted to touch base and make sure Titan is your first call for any restoration work in ${nextYear}. — Cody" },
+      ];
+      // Skip if a pm_quarterly already exists in the next 30 days for this contact.
+      const nearFuture = new Date(startMs + 30 * 86400 * 1000).toISOString();
+      const existing = sqlite.prepare(
+        "SELECT id FROM follow_up_sequences WHERE contact_id = ? AND sequence_type LIKE 'pm_%' AND scheduled_at <= ? AND status = 'pending'"
+      ).all(contactId, nearFuture) as any[];
+      if (existing.length > 0) {
+        return res.status(409).json({ error: "A pending PM sequence already exists for this contact." });
+      }
+      const insertStmt = sqlite.prepare(
+        `INSERT INTO follow_up_sequences
+         (job_id, contact_id, sequence_type, scheduled_at, status, email_subject, email_body, created_at)
+         VALUES (?, ?, 'pm_quarterly', ?, 'pending', ?, ?, ?)`
+      );
+      const nextYear = new Date().getFullYear() + 1;
+      const created: any[] = [];
+      for (const q of quarters) {
+        const scheduledAt = new Date(startMs + q.days * 86400 * 1000).toISOString();
+        const body = q.body
+          .replace("${name}", contact.name?.split(" ")[0] || "there")
+          .replace("${nextYear}", String(nextYear));
+        // job_id is optional for PM sequences — use 0 as a sentinel (foreign key not enforced).
+        const result = insertStmt.run(0, contactId, scheduledAt, q.subject, body, now);
+        created.push({ id: result.lastInsertRowid, scheduledAt, subject: q.subject });
+      }
+      res.status(201).json({ created });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // END PUSH 6 ROUTES
+  // ═══════════════════════════════════════════════════════════════════════════
 
   registerCrudGapRoutes(app, sqlite, { requireRole, requireStaffAuth });
 
