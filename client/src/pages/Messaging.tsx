@@ -585,6 +585,9 @@ export default function Messaging() {
   const [renameChannel, setRenameChannel] = useState<Channel | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteChannel, setDeleteChannel] = useState<Channel | null>(null);
+  // Push 6.1 mobile fix: channel sidebar collapses on phones and slides in
+  // as a full-width overlay. Auto-closes when a channel is picked.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const { toast } = useToast();
 
   const [, navigate] = useLocation();
@@ -682,9 +685,17 @@ export default function Messaging() {
   });
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] gap-0 rounded-xl overflow-hidden border">
-      {/* Sidebar */}
-      <div className="w-56 shrink-0 bg-[hsl(220,20%,12%)] text-white flex flex-col">
+    <div className="flex h-[calc(100vh-8rem)] gap-0 rounded-xl overflow-hidden border relative">
+      {/* Mobile backdrop when sidebar is open */}
+      {sidebarOpen && (
+        <div
+          className="md:hidden absolute inset-0 bg-black/50 z-20"
+          onClick={() => setSidebarOpen(false)}
+          data-testid="sidebar-backdrop"
+        />
+      )}
+      {/* Sidebar — full-width slide-over on mobile, fixed 224px on md+ */}
+      <div className={`${sidebarOpen ? "flex absolute inset-y-0 left-0 z-30 w-[85%] max-w-[280px]" : "hidden"} md:flex md:relative md:w-56 shrink-0 bg-[hsl(220,20%,12%)] text-white flex-col`}>
         <div className="px-4 py-3 border-b border-white/10">
           <p className="font-bold text-sm">Titan Pro Chat</p>
           <p className="text-xs opacity-50">706-922-0154</p>
@@ -761,7 +772,7 @@ export default function Messaging() {
             return (
               <div key={ch.id} className={`group flex items-center gap-1 pr-1 rounded ${isActive ? "bg-white/20" : "hover:bg-white/10"}`}>
                 <button
-                  onClick={() => setActiveChannelId(ch.id)}
+                  onClick={() => { setActiveChannelId(ch.id); setSidebarOpen(false); }}
                   data-testid={`channel-${ch.name}`}
                   className={`flex-1 min-w-0 flex items-center gap-2 px-2 py-1.5 text-sm text-left ${isActive ? "text-white" : "text-white/60 group-hover:text-white"}`}
                 >
@@ -822,10 +833,20 @@ export default function Messaging() {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 flex flex-col bg-background">
-        <div className="px-4 py-3 border-b flex items-center gap-2">
-          <Hash className="w-4 h-4 text-muted-foreground" />
-          <p className="font-semibold">{activeChannel?.name || "general"}</p>
+      <div className="flex-1 flex flex-col bg-background min-w-0">
+        <div className="px-3 md:px-4 py-3 border-b flex items-center gap-2">
+          {/* Mobile: open sidebar */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="md:hidden h-8 w-8 p-0"
+            onClick={() => setSidebarOpen(true)}
+            data-testid="button-open-sidebar"
+          >
+            <Hash className="w-4 h-4" />
+          </Button>
+          <Hash className="w-4 h-4 text-muted-foreground hidden md:block" />
+          <p className="font-semibold truncate">{activeChannel?.name || "general"}</p>
           {activeChannel?.description && <p className="text-sm text-muted-foreground hidden sm:block">— {activeChannel.description}</p>}
           {jobChannel && (
             <Badge className="ml-2 bg-[hsl(var(--titan-red))]/10 text-[hsl(var(--titan-red))] border-[hsl(var(--titan-red))]/30">
