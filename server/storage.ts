@@ -863,6 +863,45 @@ if (!dryingCols.includes("missed_reason")) {
   sqlite.exec(`ALTER TABLE drying_records ADD COLUMN missed_reason TEXT`);
 }
 
+// ── Push 8 (2026-09-17): S500 evidence fields on drying_records ─────────
+// Meter provenance + calibration, HVAC status per visit, and the tech's
+// IICRC certification number captured at day-of-visit so the report can
+// always cite the signing tech's credential.
+if (!dryingCols.includes("meter_make")) {
+  sqlite.exec(`ALTER TABLE drying_records ADD COLUMN meter_make TEXT`);
+}
+if (!dryingCols.includes("meter_model")) {
+  sqlite.exec(`ALTER TABLE drying_records ADD COLUMN meter_model TEXT`);
+}
+if (!dryingCols.includes("meter_serial")) {
+  sqlite.exec(`ALTER TABLE drying_records ADD COLUMN meter_serial TEXT`);
+}
+if (!dryingCols.includes("meter_calibrated_at")) {
+  sqlite.exec(`ALTER TABLE drying_records ADD COLUMN meter_calibrated_at TEXT`);
+}
+if (!dryingCols.includes("hvac_status")) {
+  sqlite.exec(`ALTER TABLE drying_records ADD COLUMN hvac_status TEXT`);
+}
+if (!dryingCols.includes("tech_iicrc_cert")) {
+  sqlite.exec(`ALTER TABLE drying_records ADD COLUMN tech_iicrc_cert TEXT`);
+}
+
+// ── Push 8: S500 loss-detail fields on jobs ─────────────────────────
+// Required at the top of every S500 drying report. Blank at report time =
+// pre-generation validator WARN so office knows before it goes to carrier.
+if (!jobCols.includes("date_of_loss")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN date_of_loss TEXT`);
+}
+if (!jobCols.includes("date_of_first_inspection")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN date_of_first_inspection TEXT`);
+}
+if (!jobCols.includes("cause_of_loss")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN cause_of_loss TEXT`);
+}
+if (!jobCols.includes("source_of_water")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN source_of_water TEXT`);
+}
+
 // ── Dispatch: channel membership + lead-contact tracking (Cody 2026-09-16) ──
 // channel_members: which employees see + can post to a private channel. If
 // a channel has zero rows here it is treated as PUBLIC (visible to all

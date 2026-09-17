@@ -123,10 +123,47 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
   // awkward for the per-day breakdown insurance carriers actually want.
   const doc: JsPDFDoc = new jsPDF({ orientation: "portrait", unit: "mm", format: "letter" });
 
+  // ────────────────────────────────────────────────────────────────────
+  // ASCII sanitizer — the ONE fix that keeps this report legible.
+  // jsPDF's built-in Helvetica is WinAnsi-encoded (CP1252). Any Unicode
+  // character outside CP1252 comes out as null-byte gibberish (the same
+  // bug that turned `≤16%` into `"d16%`). Rather than fix each of ~130
+  // doc.text sites, we monkey-patch doc.text once here and replace common
+  // non-CP1252 glyphs with ASCII lookalikes on the way out. Every literal
+  // in this file can stay readable to future maintainers; the PDF stays
+  // clean. Kept intentionally narrow — only characters we know we emit.
+  // ────────────────────────────────────────────────────────────────────
+  const asciiSafe = (s: any): any => {
+    if (typeof s === "string") {
+      return s
+        .replace(/[\u2264]/g, "<=")   // ≤
+        .replace(/[\u2265]/g, ">=")   // ≥
+        .replace(/[\u2013\u2014]/g, "-")  // – —
+        .replace(/[\u2018\u2019]/g, "'") // ' '
+        .replace(/[\u201C\u201D]/g, '"') // " "
+        .replace(/[\u2022\u00B7]/g, "-") // • ·
+        .replace(/[\u00A7]/g, "Sec.")    // §
+        .replace(/[\u00B0]/g, " deg")    // °
+        .replace(/[\u00B1]/g, "+/-")     // ±
+        .replace(/[\u2192]/g, ">")       // →
+        .replace(/[\u2190]/g, "<")       // ←
+        .replace(/[\u00D7]/g, "x")       // ×
+        .replace(/[\u2026]/g, "...")     // …
+        // Strip anything else outside printable ASCII so a stray glyph
+        // never renders as gibberish on a carrier's desk.
+        .replace(/[^\x20-\x7E\n]/g, "");
+    }
+    if (Array.isArray(s)) return s.map(asciiSafe);
+    return s;
+  };
+  const origText = doc.text.bind(doc);
+  (doc as any).text = (txt: any, x: any, y: any, opts?: any) => origText(asciiSafe(txt), x, y, opts);
+  const origSplit = doc.splitTextToSize.bind(doc);
+  (doc as any).splitTextToSize = (txt: any, w: any, opts?: any) => origSplit(asciiSafe(txt), w, opts);
+
   // No custom font — the previous DejaVu Sans registration was writing
   // strings as UTF-16BE and rendering null bytes between every character.
-  // All target lines below use ASCII `<=` which jsPDF's built-in Helvetica
-  // handles cleanly.
+  // Everything now runs through the ASCII sanitizer above.
   const PW = 215.9;
   const PH = 279.4;
   const M  = 12;
@@ -186,8 +223,11 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
   setFont("bold", 10, BLUE);
   doc.text("JOB INFORMATION", M, y);
   y += 4;
+  // Grown from 40 to 58 to make room for the S500 loss-detail rows (cause,
+  // source, date of loss, first inspection) that Push 8 adds to intake.
+  const HEADER_BLOCK_H = 58;
   doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
-  doc.roundedRect(M, y, CONTENT_W, 40, 2, 2, "F");
+  doc.roundedRect(M, y, CONTENT_W, HEADER_BLOCK_H, 2, 2, "F");
 
   const colL = M + 4;
   const colR = M + CONTENT_W / 2 + 2;
@@ -217,8 +257,15 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
   fieldCell("Claim Number", job.claimNumber || "", colR, y + 23);
   fieldCell("Policy Number", (job as any).policyNumber || "", colL, y + 32);
   fieldCell("Report Date", new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }), colR, y + 32);
+  // S500 loss-detail row — required at top of every carrier-facing drying
+  // report. Blank fields render as blank strings so the layout stays stable
+  // and the pre-generation validator surfaces the missing data upstream.
+  const jAny = job as any;
+  fieldCell("Date of Loss", jAny.dateOfLoss || "", colL, y + 41);
+  fieldCell("Date of First Inspection", jAny.dateOfFirstInspection || "", colR, y + 41);
+  fieldCell("Cause of Loss", jAny.causeOfLoss || "", colL, y + 50, CONTENT_W - 6);
 
-  y += 46;
+  y += 4 + HEADER_BLOCK_H;
 
   // S500 Targets block
   setFont("bold", 10, BLUE);
@@ -522,6 +569,15 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
       return e.endDate >= cutoff;               // pulled on/after this day
     });
     let equipment: EquipmentEntry[] = [...equipmentOwn, ...stillOn];
+    // Defense in depth against the "Axial Air Mover Qty 0" ghost row that
+    // rendered on every day of the 2026-08 USAA report. The pre-generation
+    // validator now blocks qty=0 rows outright, but any legacy record that
+    // was created before that check should still not print a zero-qty line.
+    equipment = equipment.filter(e => {
+      if (!e || !e.type) return false;
+      const qty = Number(e.qty ?? 0);
+      return qty > 0;
+    });
     const equipCarried = stillOn.length > 0 && equipmentOwn.length === 0;
     if (equipmentOwn.length > 0) {
       // Update rolling roster: keep pre-existing carried items that are still
@@ -920,8 +976,205 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main component
+// Pre-generation validation
 // ─────────────────────────────────────────────────────────────────────────────
+// Every issue an adjuster would flag on the sample USAA claim that came in
+// on the current turn (character corruption, target=60% on concrete slab, 10
+// days between visits with no missed-day, empty affected-areas array,
+// dryingGoalMet still false on the final day) gets caught HERE before the PDF
+// is generated. Blockers gate the button; warnings render inline and let the
+// office decide whether to ship the report as-is.
+export type DryingIssueSeverity = "block" | "warn";
+export interface DryingIssue {
+  severity: DryingIssueSeverity;
+  field: string;
+  message: string;
+}
+
+// S500 target ceilings by material — anything above these is treated as
+// permissive and blocks the report. Keeps DryStandardReport self-contained
+// so a future refactor of DryingRecords doesn't silently drop the check.
+function maxAllowedTarget(material: string): number {
+  const s = (material || "").toLowerCase();
+  if (s.includes("hardwood") || s.includes("wood floor") || s.includes("engineered")) return 16;
+  if (s.includes("concrete") || s.includes("masonry") || s.includes("brick")) return 5;
+  if (s.includes("plywood") || s.includes("osb") || s.includes("subfloor") || s.includes("particle")) return 22;
+  if (s.includes("framing") || s.includes("stud") || s.includes("sill") || s.includes("joist") || s.includes("lumber")) return 19;
+  return 20;
+}
+
+function daysBetween(a?: string | null, b?: string | null): number | null {
+  if (!a || !b) return null;
+  const da = new Date(`${a}T00:00:00`);
+  const db = new Date(`${b}T00:00:00`);
+  if (Number.isNaN(da.getTime()) || Number.isNaN(db.getTime())) return null;
+  return Math.round((db.getTime() - da.getTime()) / 86_400_000);
+}
+
+export function validateDryingReport(job: Job, records: DryingRecord[]): DryingIssue[] {
+  const issues: DryingIssue[] = [];
+  const j = job as any;
+
+  // ── Job header checks ───────────────────────────────────────
+  const anyTechSig = records.some(r => (r.techSignature || r.techName || "").trim());
+  if (!(job.assignedTech || "").trim() && !anyTechSig) {
+    issues.push({ severity: "block", field: "assignedTech", message: "Job has no assigned tech and no tech signature on any drying record. Carrier reports require a named responsible tech." });
+  }
+  const policy = (j.policyNumber || "").trim();
+  if (policy && /@/.test(policy)) {
+    issues.push({ severity: "block", field: "policyNumber", message: `Policy number contains an email address ("${policy}"). This looks like the wrong field was filled during intake.` });
+  }
+  if (!(j.dateOfLoss || "").trim()) {
+    issues.push({ severity: "warn", field: "dateOfLoss", message: "Date of loss not recorded. S500 §10.5 requires date of loss on the report header." });
+  }
+  if (!(j.causeOfLoss || "").trim()) {
+    issues.push({ severity: "warn", field: "causeOfLoss", message: "Cause of loss not recorded. Carriers routinely deny reimbursement when the source is undocumented." });
+  }
+  if (!(j.sourceOfWater || "").trim() && (job.lossType || "").toLowerCase().includes("water")) {
+    issues.push({ severity: "warn", field: "sourceOfWater", message: "Water source narrative missing (e.g. 'supply line to icemaker'). S500 §10.6 wants source identified." });
+  }
+  if (!(j.dateOfFirstInspection || "").trim()) {
+    issues.push({ severity: "warn", field: "dateOfFirstInspection", message: "First inspection date not recorded. Carriers use this to reconcile equipment-day billing." });
+  }
+
+  if (records.length === 0) {
+    issues.push({ severity: "warn", field: "records", message: "No drying records logged on this job yet. The report will only contain the job header and S500 targets." });
+    return issues;
+  }
+
+  const sorted = [...records].sort((a, b) => (a.readingDate || "").localeCompare(b.readingDate || ""));
+
+  // ── Continuous-coverage check ── gap > 36h between non-missed days
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const cur  = sorted[i];
+    if (prev.recordType === "missed" || cur.recordType === "missed") continue;
+    const gap = daysBetween(prev.readingDate, cur.readingDate);
+    if (gap != null && gap >= 2) {
+      issues.push({
+        severity: "block",
+        field: `gap-${prev.readingDate}-${cur.readingDate}`,
+        message: `${gap}-day gap between Day ${prev.dayNumber} (${prev.readingDate}) and Day ${cur.dayNumber} (${cur.readingDate}) with no missed-day entry. Equipment-day charges will be flagged by desk review.`,
+      });
+    }
+  }
+
+  // ── Per-record checks ───────────────────────────────────────
+  const materialLast: Record<string, { reading: number; day: number; consecutive: number }> = {};
+  sorted.forEach((rec, idx) => {
+    const d = `Day ${rec.dayNumber ?? idx + 1}`;
+    if (rec.recordType === "missed") return; // missed days skip capture by design
+
+    // Equipment qty=0
+    try {
+      const eq: any[] = JSON.parse(rec.equipment || "[]");
+      const zeroQty = eq.filter(e => e && e.type && (e.qty == null || Number(e.qty) === 0));
+      if (zeroQty.length > 0) {
+        issues.push({
+          severity: "block",
+          field: `${d}.equipment`,
+          message: `${d}: equipment row "${zeroQty[0].type}" has quantity 0. Zero-qty rows render on the report and undermine the equipment log's credibility.`,
+        });
+      }
+    } catch {}
+
+    // Psychrometric — inside reading present
+    try {
+      const ps: any[] = JSON.parse(rec.psychrometricReadings || "[]");
+      const hasInside = ps.some(p => (p.location || "").toString().toLowerCase() === "inside");
+      if (!hasInside && rec.tempF == null) {
+        issues.push({
+          severity: "warn",
+          field: `${d}.psychrometric`,
+          message: `${d}: no INSIDE psychrometric reading. S500 §13.2 needs inside/outside/affected on every visit.`,
+        });
+      }
+    } catch {}
+
+    // Moisture targets sanity + stagnant meter
+    try {
+      const mr: any[] = JSON.parse(rec.moistureReadings || "[]");
+      if (mr.length === 0) {
+        issues.push({ severity: "warn", field: `${d}.moisture`, message: `${d}: no moisture readings recorded on this visit.` });
+      }
+      mr.forEach((m: any) => {
+        const mat = m.material || "";
+        const target = Number(m.target ?? 0);
+        const cap = maxAllowedTarget(mat);
+        if (target > cap) {
+          issues.push({
+            severity: "block",
+            field: `${d}.target.${mat}`,
+            message: `${d}: dry target for ${mat} is ${target}%, above the S500 ceiling of ${cap}%. Correct the target or the reading before generating.`,
+          });
+        }
+        // Stagnant-meter detection: same material + location, unchanged +/-1%
+        const key = `${(m.location || "").toString().toLowerCase()}|${mat.toLowerCase()}`;
+        const reading = Number(m.reading ?? 0);
+        const last = materialLast[key];
+        if (last && Math.abs(reading - last.reading) < 1 && reading > target) {
+          last.consecutive += 1;
+          if (last.consecutive >= 2) {
+            issues.push({
+              severity: "warn",
+              field: `${d}.stagnant.${mat}`,
+              message: `${d}: ${mat} at ${m.location} reads ${reading}% for the third consecutive visit unchanged. Either the meter isn't being repositioned or drying has stalled — both need a note.`,
+            });
+          }
+          materialLast[key] = { reading, day: rec.dayNumber ?? idx + 1, consecutive: last.consecutive };
+        } else {
+          materialLast[key] = { reading, day: rec.dayNumber ?? idx + 1, consecutive: 0 };
+        }
+      });
+    } catch {}
+
+    // Meter provenance
+    if (!(rec as any).meterMake && !(rec as any).meterModel) {
+      issues.push({ severity: "warn", field: `${d}.meter`, message: `${d}: no moisture-meter make/model captured. Increasingly required by carrier desk reviewers.` });
+    }
+  });
+
+  // ── Final-day sanity: if latest visit has all readings <= target, flags should be flipped
+  const lastVisit = [...sorted].reverse().find(r => r.recordType !== "missed");
+  if (lastVisit) {
+    try {
+      const mr: any[] = JSON.parse(lastVisit.moistureReadings || "[]");
+      const allAtOrBelow = mr.length > 0 && mr.every((m: any) => Number(m.reading) <= Number(m.target));
+      if (allAtOrBelow && !lastVisit.dryingGoalMet) {
+        issues.push({
+          severity: "warn",
+          field: "lastDay.dryingGoalMet",
+          message: `Day ${lastVisit.dayNumber} (${lastVisit.readingDate}) has every reading at or below target but "Drying Goal Met" is still NO. Flip it before releasing the report.`,
+        });
+      }
+      if (allAtOrBelow && !lastVisit.structuralDryingComplete) {
+        issues.push({
+          severity: "warn",
+          field: "lastDay.structuralComplete",
+          message: `Day ${lastVisit.dayNumber}: "Structural Drying Complete" flag is still NO despite all readings meeting target.`,
+        });
+      }
+    } catch {}
+
+    // Affected areas empty on every visit — warn once
+    const anyAreas = sorted.some(r => {
+      try { return (JSON.parse(r.affectedAreas || "[]") as any[]).length > 0; } catch { return false; }
+    });
+    if (!anyAreas) {
+      issues.push({
+        severity: "warn",
+        field: "affectedAreas",
+        message: "No affected-areas rows on any visit. Adjusters use sq ft + wet% to sanity-check equipment sizing per S500 Ch. 12.",
+      });
+    }
+  }
+
+  return issues;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Main component
+// ──────────────────────────────────────────────────────────────────────────
 interface DryStandardReportGeneratorProps {
   job: Job;
   jobId: number;
@@ -942,7 +1195,18 @@ export function DryStandardReportGenerator({
       apiRequest("GET", `/api/jobs/${jobId}/drying-records`).then(r => r.json()),
   });
 
+  // Run the S500 validator on every render — cheap (just parses JSON on the
+  // records already in cache) and gives the user instant feedback while they
+  // fix intake fields on the job or edit the drying rows.
+  const issues = validateDryingReport(job, records);
+  const blockers = issues.filter(i => i.severity === "block");
+  const warnings = issues.filter(i => i.severity === "warn");
+
   const handleGenerate = async () => {
+    // Re-run validation on the fresh copy of records we're about to render,
+    // not the cached list. This closes a small window where the tech fixes
+    // an issue on another tab but the button is still using the old cached
+    // validation state.
     setGenerating(true);
     try {
       // ALWAYS re-fetch drying records right before rendering so techs who
@@ -957,6 +1221,18 @@ export function DryStandardReportGenerator({
       const fresh = await apiRequest("GET", `/api/jobs/${jobId}/drying-records`)
         .then(r => r.json())
         .catch(() => records) as DryingRecord[];
+      // Final blocker check against the freshest records — abort if a
+      // blocking condition slipped in between last render and click.
+      const freshBlockers = validateDryingReport(job, fresh).filter(i => i.severity === "block");
+      if (freshBlockers.length > 0) {
+        toast({
+          title: "Report blocked — fix these first",
+          description: freshBlockers.slice(0, 3).map(b => "• " + b.message).join("\n"),
+          variant: "destructive",
+        });
+        setGenerating(false);
+        return;
+      }
       const uri = await generateDryReportPDF(job, fresh);
       setPdfDataUri(uri);
       setShowPreview(false);
@@ -1250,11 +1526,55 @@ export function DryStandardReportGenerator({
           </div>
         )}
 
+        {/* ── S500 pre-generation validation panel ──────────────────── */}
+        {(blockers.length > 0 || warnings.length > 0) && !recordsLoading && (
+          <div
+            className={`border rounded-lg p-3 space-y-2 text-xs ${
+              blockers.length > 0
+                ? "border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/20"
+                : "border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/20"
+            }`}
+            data-testid="dry-report-validation-panel"
+          >
+            <div className="flex items-center gap-2 font-semibold">
+              <AlertTriangle
+                className={`w-4 h-4 ${
+                  blockers.length > 0 ? "text-red-600" : "text-amber-600"
+                }`}
+              />
+              <span className={blockers.length > 0 ? "text-red-700 dark:text-red-400" : "text-amber-800 dark:text-amber-400"}>
+                {blockers.length > 0
+                  ? `${blockers.length} blocker${blockers.length === 1 ? "" : "s"} — report cannot be generated until these are resolved`
+                  : `${warnings.length} S500 warning${warnings.length === 1 ? "" : "s"} — review before sending to carrier`}
+              </span>
+            </div>
+            {blockers.length > 0 && (
+              <ul className="space-y-1 pl-6 list-disc text-red-800 dark:text-red-300">
+                {blockers.map((b, i) => (
+                  <li key={`b-${i}`} data-testid="dry-report-blocker">{b.message}</li>
+                ))}
+              </ul>
+            )}
+            {warnings.length > 0 && (
+              <details className="pl-6">
+                <summary className="cursor-pointer text-amber-800 dark:text-amber-400 font-medium">
+                  {warnings.length} warning{warnings.length === 1 ? "" : "s"} (click to expand)
+                </summary>
+                <ul className="space-y-1 mt-1 list-disc pl-4 text-amber-900 dark:text-amber-200">
+                  {warnings.map((w, i) => (
+                    <li key={`w-${i}`} data-testid="dry-report-warning">{w.message}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
+
         {/* Generate button */}
         <Button
           className="w-full bg-[hsl(var(--titan-red))] hover:bg-[hsl(var(--titan-red)/0.85)] text-white"
           onClick={handleGenerate}
-          disabled={generating || recordsLoading}
+          disabled={generating || recordsLoading || blockers.length > 0}
           data-testid="dry-report-btn-generate"
         >
           {generating ? (

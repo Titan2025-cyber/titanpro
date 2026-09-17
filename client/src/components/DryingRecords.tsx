@@ -346,14 +346,38 @@ function buildMoistureHistory(priorRecords: DryingRecord[]): MoistureHistory {
 // Suggested moisture-content target by material (WME %). Used when a
 // replacement material is dropped in via tear-out, so the tech doesn't
 // have to remember that hardwood dries to 12 but drywall dries to 17.
+// IICRC S500 dry standards, per material. WME targets are conservative and
+// track the standard, not what the tech's meter happens to read on the day.
+// If a tech overrides the target upward, the pre-generation validator flags
+// it so an adjuster never sees a permissive target buried in the report.
 function defaultTargetForMaterial(m: string): number {
   const s = (m || "").toLowerCase();
-  if (s.includes("hardwood") || s.includes("wood floor")) return 12;
-  if (s.includes("concrete") || s.includes("masonry") || s.includes("brick")) return 16;
-  if (s.includes("plywood") || s.includes("osb") || s.includes("subfloor")) return 19;
+  if (s.includes("hardwood") || s.includes("wood floor") || s.includes("engineered")) return 12;
+  // S500 §12.2.6 — concrete/masonry dry standard is <=4% WME (Tramex) or
+  // <=75% ERH (in-situ probe). 16 was too permissive and let jobs close
+  // with the substrate still wet.
+  if (s.includes("concrete") || s.includes("masonry") || s.includes("brick")) return 4;
+  if (s.includes("plywood") || s.includes("osb") || s.includes("subfloor") || s.includes("particle")) return 17;
   if (s.includes("framing") || s.includes("stud") || s.includes("sill") || s.includes("joist") || s.includes("lumber")) return 15;
-  return 17; // drywall + default fallback
+  if (s.includes("insulation") || s.includes("fiberglass") || s.includes("mineral wool")) return 1;
+  return 17; // drywall + default fallback (S500 <=1% ideal, 17 accounts for pin-meter WME scale)
 }
+
+// Upper bound for a valid manually-entered dry target on a given material.
+// Anything above this raises a pre-generation validation error; the tech
+// can still record the reading, but the report won't ship until either the
+// reading meets a legitimate target or the target is corrected. Prevents
+// the "concrete slab 25.8% target 60% DRY" pattern from ever reaching an
+// adjuster.
+function maxAllowedTargetForMaterial(m: string): number {
+  const s = (m || "").toLowerCase();
+  if (s.includes("hardwood") || s.includes("wood floor") || s.includes("engineered")) return 16;
+  if (s.includes("concrete") || s.includes("masonry") || s.includes("brick")) return 5;
+  if (s.includes("plywood") || s.includes("osb") || s.includes("subfloor") || s.includes("particle")) return 22;
+  if (s.includes("framing") || s.includes("stud") || s.includes("sill") || s.includes("joist") || s.includes("lumber")) return 19;
+  return 20;
+}
+export { maxAllowedTargetForMaterial };
 
 function MoistureTable({ rows, onChange, readOnly, history, dayNumber, readingDate }: {
   rows: MoistureRow[];

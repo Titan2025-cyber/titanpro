@@ -115,6 +115,15 @@ export const jobs = sqliteTable("jobs", {
   reviewOptOutReason: text("review_opt_out_reason"),
   reviewOptOutBy: text("review_opt_out_by"),
   reviewOptOutAt: text("review_opt_out_at"),
+  // IICRC S500 loss-detail fields — required at the top of every structural
+  // drying report per S500 §10.5. Filled during intake or first inspection.
+  // When any of these are blank at report generation time, the pre-generation
+  // validator raises a WARN so office knows the report is missing carrier-
+  // required context before it goes out the door. Push 8, 2026-09-17.
+  dateOfLoss: text("date_of_loss"),                   // YYYY-MM-DD — when the water intrusion occurred
+  dateOfFirstInspection: text("date_of_first_inspection"), // YYYY-MM-DD — first tech on site
+  causeOfLoss: text("cause_of_loss"),                 // e.g. "Supply line failure - kitchen sink"
+  sourceOfWater: text("source_of_water"),             // e.g. "Category 1 - clean potable water from ruptured 3/8\" braided supply line"
   createdAt: text("created_at").notNull().default(""),
 });
 export const insertJobSchema = createInsertSchema(jobs).omit({ id: true });
@@ -472,6 +481,21 @@ export const dryingRecords = sqliteTable("drying_records", {
   observations: text("observations"),
   // Signature (tech attestation)
   techSignature: text("tech_signature"),
+  // ── IICRC S500 evidence fields (Push 8, 2026-09-17) ───────────────────
+  // Moisture meter provenance — carriers increasingly require the meter used
+  // for the readings AND its last calibration date. Nullable so older records
+  // don't blow up; the pre-generation validator flags any record missing them.
+  meterMake: text("meter_make"),                    // e.g. "Tramex"
+  meterModel: text("meter_model"),                  // e.g. "Moisture Encounter Plus"
+  meterSerial: text("meter_serial"),                // manufacturer serial
+  meterCalibratedAt: text("meter_calibrated_at"),   // YYYY-MM-DD of last calibration
+  // HVAC operational status per day — S500 recommends noting whether the
+  // building's own HVAC was running during drying. Impacts psychrometrics.
+  hvacStatus: text("hvac_status"),                  // 'running' | 'off' | 'not_applicable' | null
+  // IICRC certification # of the signing tech, captured at day-of-visit so
+  // the report can show the tech's cert on the clearance page even if the
+  // employees table is edited later. Nullable.
+  techIicrcCert: text("tech_iicrc_cert"),
   createdAt: text("created_at").notNull().default(""),
 });
 export const insertDryingRecordSchema = createInsertSchema(dryingRecords).omit({ id: true });
