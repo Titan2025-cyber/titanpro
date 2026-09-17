@@ -16,6 +16,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { formatPhoneInput } from "@/lib/phone";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -713,6 +716,7 @@ export default function Jobs() {
   const [boardStage, setBoardStage] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkStatus, setBulkStatus] = useState<string>("mitigation");
+  const isMobile = useIsMobile();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({
     jobNumber: `TP-${new Date().getFullYear()}-`,
@@ -1071,13 +1075,41 @@ export default function Jobs() {
                   <div>
                     <Label>Loss Type</Label>
                     <Select value={form.lossType} onValueChange={v => setForm(f => ({ ...f, lossType: v }))}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectTrigger data-testid="select-loss-type"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {["water", "fire", "mold", "storm", "biohazard", "reconstruction"].map(t => (
                           <SelectItem key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    {/* Quick tap-tile shortcuts — render on mobile beneath the
+                        Select so a thumb can pick the common types without
+                        opening the dropdown. Select stays visible for
+                        biohazard/reconstruction. */}
+                    {isMobile && (
+                      <div className="grid grid-cols-4 gap-1.5 mt-1.5">
+                        {([
+                          { key: "water", label: "Water", Icon: Droplets },
+                          { key: "fire",  label: "Fire",  Icon: Flame    },
+                          { key: "storm", label: "Storm", Icon: Wind     },
+                          { key: "mold",  label: "Mold",  Icon: Home     },
+                        ] as const).map(({ key, label, Icon }) => {
+                          const active = form.lossType === key;
+                          return (
+                            <button
+                              key={key}
+                              type="button"
+                              onClick={() => setForm(f => ({ ...f, lossType: key }))}
+                              className={`flex flex-col items-center gap-0.5 py-2 rounded-md border-2 transition-colors ${active ? "border-[hsl(var(--titan-red))] bg-[hsl(var(--titan-red))]/10" : "border-border"}`}
+                              data-testid={`tile-loss-${key}`}
+                            >
+                              <Icon className={`w-4 h-4 ${active ? "text-[hsl(var(--titan-red))]" : "text-muted-foreground"}`} />
+                              <span className="text-[10px] font-medium">{label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1165,9 +1197,12 @@ export default function Jobs() {
                       />
                       <div className="grid grid-cols-2 gap-2">
                         <Input
+                          type="tel"
+                          inputMode="tel"
+                          autoComplete="tel"
                           value={newCustomer.phone}
-                          onChange={e => setNewCustomer(c => ({ ...c, phone: e.target.value }))}
-                          placeholder="Phone"
+                          onChange={e => setNewCustomer(c => ({ ...c, phone: formatPhoneInput(e.target.value) }))}
+                          placeholder="(706) 555-0101"
                           data-testid="input-new-customer-phone"
                         />
                         <Input
@@ -1177,12 +1212,28 @@ export default function Jobs() {
                           data-testid="input-new-customer-email"
                         />
                       </div>
-                      <Input
-                        value={newCustomer.address}
-                        onChange={e => setNewCustomer(c => ({ ...c, address: e.target.value }))}
-                        placeholder="Customer address (defaults to job address)"
-                        data-testid="input-new-customer-address"
-                      />
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs text-muted-foreground">Customer address</Label>
+                          {form.address && (
+                            <button
+                              type="button"
+                              className="text-[11px] text-[hsl(var(--titan-blue))] hover:underline"
+                              onClick={() => setNewCustomer(c => ({ ...c, address: form.address }))}
+                              data-testid="button-same-as-loss-address"
+                            >
+                              Same as loss address
+                            </button>
+                          )}
+                        </div>
+                        <Input
+                          autoComplete="street-address"
+                          value={newCustomer.address}
+                          onChange={e => setNewCustomer(c => ({ ...c, address: e.target.value }))}
+                          placeholder="Customer address (defaults to job address)"
+                          data-testid="input-new-customer-address"
+                        />
+                      </div>
                       <p className="text-[11px] text-muted-foreground">
                         This contact will be created and linked to the job on save.
                       </p>

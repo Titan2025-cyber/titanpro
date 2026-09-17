@@ -29,6 +29,20 @@ export function formatPhone(input: string | null | undefined): string {
 }
 
 /**
+ * As-you-type formatter for phone INPUTS. Different from `formatPhone` which
+ * assumes a completed value — this one produces a partial "(706) 831-1001"
+ * shape while the user is still typing so the caret feels natural on mobile.
+ * Non-digit keystrokes are stripped, and we truncate to 10 digits.
+ */
+export function formatPhoneInput(input: string): string {
+  const digits = String(input || "").replace(/\D/g, "").slice(0, 10);
+  if (digits.length === 0) return "";
+  if (digits.length <= 3) return `(${digits}`;
+  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
+/**
  * Return the tel: href safe for anchor tags. Uses E.164 when we can construct
  * it, otherwise falls back to the digits-only string.
  */

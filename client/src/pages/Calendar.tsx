@@ -153,7 +153,12 @@ export default function Calendar() {
     };
   });
   const [viewLabel, setViewLabel] = useState<string>("");
-  const [currentView, setCurrentView] = useState<"dayGridMonth" | "timeGridWeek" | "timeGridDay" | "timeGridFourDay" | "listWeek">("dayGridMonth");
+  // Default view: Agenda (list) on phone — the month grid is too cramped
+  // for 30–31 cells on a 375px screen. Users can still tap the view switcher
+  // to see the visual month layout.
+  const initialView: "dayGridMonth" | "timeGridWeek" | "timeGridDay" | "timeGridFourDay" | "listWeek" =
+    typeof window !== "undefined" && window.innerWidth < 768 ? "listWeek" : "dayGridMonth";
+  const [currentView, setCurrentView] = useState<"dayGridMonth" | "timeGridWeek" | "timeGridDay" | "timeGridFourDay" | "listWeek">(initialView);
 
   // Data --------------------------------------------------------------------
   const { data: events = [] } = useQuery<CalendarEvent[]>({
@@ -410,10 +415,13 @@ export default function Calendar() {
         </div>
       </div>
 
-      {/* Two-column layout: mini month + calendar */}
+      {/* Two-column on desktop; on mobile the calendar takes the full width
+          and the sidebar (mini month, staff filter, keyboard hints) is hidden
+          — mini-month became a useless vertical S/M/T/W… column on a phone,
+          and keyboard shortcuts don't apply on touch anyway. */}
       <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-3">
-        {/* Sidebar: mini month picker + attendee legend */}
-        <aside className="space-y-3">
+        {/* Sidebar: mini month picker + staff filter + keyboard hints — md+ only. */}
+        <aside className="space-y-3 hidden md:block">
           <MiniMonth onPick={(iso) => goToDate(iso)} />
           <div className="rounded-md border p-2">
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1.5 flex items-center gap-1">
@@ -449,7 +457,7 @@ export default function Calendar() {
           <FullCalendar
             ref={calRef as any}
             plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin] as any}
-            initialView="dayGridMonth"
+            initialView={initialView}
             headerToolbar={false /* we render our own */}
             height="calc(100vh - 220px)"
             firstDay={0}
