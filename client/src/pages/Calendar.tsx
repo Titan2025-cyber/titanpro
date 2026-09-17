@@ -698,27 +698,44 @@ export default function Calendar() {
         .fc-direction-ltr .fc-list-event-time { color: hsl(var(--muted-foreground)); }
         .fc .fc-more-link { color: hsl(var(--titan-blue)); font-size: 11px; }
 
-        /* Mobile month grid — keep the 7-column layout readable at 375px.
-           Row height drops so the whole month fits without scrolling; event
-           pills render as tiny dots so ≤10 events per day still fit. Tapping
-           a day opens the editor for that date, tapping a pill opens the
-           event editor — same click handlers as desktop. */
+        /* Mobile month grid — force the 7-column layout to hold at 375px.
+
+           The root cause of the earlier broken layout: FullCalendar’s
+           <table class="fc-scrollgrid"> uses table-layout:auto by default,
+           and at narrow widths some webkit builds collapse day <td>s
+           vertically instead of shrinking horizontally. Forcing
+           table-layout:fixed with equal column widths pins the 7-column
+           grid regardless of viewport. width:100% on <colgroup><col>
+           ensures each column gets an equal 1/7 share.
+
+           Row height + event pills also compact so the whole month fits
+           without vertical scroll. */
         @media (max-width: 767px) {
           .fc .fc-toolbar-title { font-size: 0.95rem; }
-          .fc .fc-col-header-cell-cushion { font-size: 10px; padding: 4px 2px; }
+
+          /* Hard-force the 7-column table layout. */
+          .fc .fc-scrollgrid,
+          .fc .fc-scrollgrid table,
+          .fc .fc-daygrid-body,
+          .fc .fc-daygrid-body > table { table-layout: fixed !important; width: 100% !important; }
+          .fc .fc-scrollgrid col,
+          .fc .fc-daygrid-body col { width: calc(100% / 7) !important; }
+          .fc .fc-col-header-cell,
+          .fc .fc-daygrid-day { width: calc(100% / 7) !important; min-width: 0 !important; }
+          .fc .fc-daygrid-day-frame { min-height: 56px; overflow: hidden; }
+
+          /* Weekday header + day number typography scaled down. */
+          .fc .fc-col-header-cell-cushion { font-size: 10px; padding: 4px 0; }
           .fc .fc-daygrid-day-number { font-size: 11px; padding: 2px 4px; }
-          .fc .fc-daygrid-day-frame { min-height: 56px; }
-          /* Event pills → compact dots. FullCalendar renders one <a.fc-event>
-             per event; we shrink height + hide the text to keep the grid
-             compact without hiding the color signal. The event editor is
-             still reachable via the +N more-link and by tapping the day. */
-          .fc .fc-daygrid-event { padding: 0 3px; margin: 1px 2px; font-size: 10px; line-height: 1.2; }
+
+          /* Event pills stay small; hide the inline check button + time so
+             each pill fits in ~48px width without clipping the title. */
+          .fc .fc-daygrid-event { padding: 0 3px; margin: 1px 2px; font-size: 10px; line-height: 1.2; border-radius: 3px; }
           .fc .fc-daygrid-event .gcal-event-inner { gap: 2px; }
           .fc .fc-daygrid-event .gcal-event-inner > button,
           .fc .fc-daygrid-event .gcal-event-inner > span:not(:last-child) { display: none; }
           .fc .fc-daygrid-event .gcal-event-inner > span:last-child { font-size: 10px; }
           .fc .fc-more-link { font-size: 10px; padding: 0 2px; }
-          .fc .fc-scrollgrid-liquid { height: auto; }
         }
       `}</style>
     </div>
