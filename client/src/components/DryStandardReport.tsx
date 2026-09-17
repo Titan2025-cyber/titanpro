@@ -223,9 +223,11 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
   setFont("bold", 10, BLUE);
   doc.text("JOB INFORMATION", M, y);
   y += 4;
-  // Grown from 40 to 58 to make room for the S500 loss-detail rows (cause,
-  // source, date of loss, first inspection) that Push 8 adds to intake.
-  const HEADER_BLOCK_H = 58;
+  // Grown from 40 → 58 → 68 to make room for the full S500 loss-detail rows
+  // (dateOfLoss, dateOfFirstInspection, causeOfLoss, sourceOfWater) that
+  // Push 8 added to the jobs table. Every field an adjuster expects on a
+  // carrier-facing drying report cover has a home now.
+  const HEADER_BLOCK_H = 68;
   doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
   doc.roundedRect(M, y, CONTENT_W, HEADER_BLOCK_H, 2, 2, "F");
 
@@ -257,13 +259,16 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
   fieldCell("Claim Number", job.claimNumber || "", colR, y + 23);
   fieldCell("Policy Number", (job as any).policyNumber || "", colL, y + 32);
   fieldCell("Report Date", new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }), colR, y + 32);
-  // S500 loss-detail row — required at top of every carrier-facing drying
-  // report. Blank fields render as blank strings so the layout stays stable
-  // and the pre-generation validator surfaces the missing data upstream.
+  // S500 loss-detail rows — required at top of every carrier-facing drying
+  // report per S500 §10.5/§10.6. Dates render in the same long-form format
+  // as Report Date so the cover reads consistently. Blank fields render as
+  // blank strings so the layout stays stable and the pre-generation
+  // validator surfaces missing data upstream (WARN, not BLOCK).
   const jAny = job as any;
-  fieldCell("Date of Loss", jAny.dateOfLoss || "", colL, y + 41);
-  fieldCell("Date of First Inspection", jAny.dateOfFirstInspection || "", colR, y + 41);
+  fieldCell("Date of Loss", jAny.dateOfLoss ? fmtDate(jAny.dateOfLoss) : "", colL, y + 41);
+  fieldCell("Date of First Inspection", jAny.dateOfFirstInspection ? fmtDate(jAny.dateOfFirstInspection) : "", colR, y + 41);
   fieldCell("Cause of Loss", jAny.causeOfLoss || "", colL, y + 50, CONTENT_W - 6);
+  fieldCell("Source of Water", jAny.sourceOfWater || "", colL, y + 59, CONTENT_W - 6);
 
   y += 4 + HEADER_BLOCK_H;
 
@@ -354,9 +359,15 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
     setFont("bold", 10, WHITE);
     doc.text(dayLabel, M + 3, y + 5.6);
     setFont("normal", 8, WHITE);
+    // Include the tech's IICRC cert number inline with the name on the day
+    // banner when it's present, so an adjuster scanning day-by-day sees
+    // "Tech: John Smith #WRT12345" without having to scroll to the meter
+    // strip. Falls back to just the name when cert isn't captured.
+    const techCertBanner = ((rec as any).techIicrcCert || "").toString().trim();
+    const techBannerName = rec.techName || "—";
     const rightLabel = rec.recordType === "missed"
       ? `MISSED DAY${rec.missedReason ? " — " + rec.missedReason : ""}`
-      : `Tech: ${rec.techName || "—"}`;
+      : `Tech: ${techBannerName}${techCertBanner ? "  #" + techCertBanner : ""}`;
     doc.text(rightLabel, PW - M - 3, y + 5.6, { align: "right" });
     y += 10;
 
@@ -438,6 +449,55 @@ async function generateDryReportPDF(job: Job, records: DryingRecord[]): Promise<
         y += 5;
       });
       y += 2;
+    }
+
+    // Meter provenance + HVAC status strip — required by S500 §12.2.1
+    // (equipment traceability) and §10.3 (dehu load calculation depends on
+    // whether the HVAC was running). Only renders if at least one field on
+    // the record has a value; otherwise the strip is suppressed so old
+    // reports pre-Push 8 don't grow a blank row.
+    const recAny = rec as any;
+    const meterMake = (recAny.meterMake || "").toString().trim();
+    const meterModel = (recAny.meterModel || "").toString().trim();
+    const meterSerial = (recAny.meterSerial || "").toString().trim();
+    const meterCalibrated = (recAny.meterCalibratedAt || "").toString().trim();
+    const hvacStatus = (recAny.hvacStatus || "").toString().trim();
+    const techCert = (recAny.techIicrcCert || "").toString().trim();
+    const hasMeterOrCondition =
+      meterMake || meterModel || meterSerial || meterCalibrated || hvacStatus || techCert;
+    if (hasMeterOrCondition) {
+      y = ensureSpace(y, 12, dayLabel);
+      setFont("bold", 9, BLUE);
+      doc.text("METER & SITE CONDITIONS", M, y);
+      y += 3;
+      doc.setFillColor(OFFWHITE[0], OFFWHITE[1], OFFWHITE[2]);
+      doc.roundedRect(M, y, CONTENT_W, 9, 1.5, 1.5, "F");
+      // Two-line layout: line 1 = meter make/model/serial, line 2 = last
+      // calibration + HVAC status + tech IICRC cert. Any blank field prints
+      // an em-dash placeholder so the adjuster sees the label existed.
+      setFont("bold", 7, GRAY);
+      doc.text("METER", M + 3, y + 3.5);
+      setFont("normal", 8, DARK);
+      const meterLabel = [meterMake, meterModel].filter(Boolean).join(" ") || "—";
+      doc.text(meterLabel, M + 20, y + 3.5);
+      setFont("bold", 7, GRAY);
+      doc.text("SERIAL", M + 90, y + 3.5);
+      setFont("normal", 8, DARK);
+      doc.text(meterSerial || "—", M + 105, y + 3.5);
+      setFont("bold", 7, GRAY);
+      doc.text("CALIBRATED", M + 145, y + 3.5);
+      setFont("normal", 8, DARK);
+      doc.text(meterCalibrated ? fmtDate(meterCalibrated) : "—", M + 170, y + 3.5);
+      // line 2
+      setFont("bold", 7, GRAY);
+      doc.text("HVAC", M + 3, y + 7.5);
+      setFont("normal", 8, DARK);
+      doc.text(hvacStatus ? hvacStatus.replace(/_/g, " ").toUpperCase() : "—", M + 20, y + 7.5);
+      setFont("bold", 7, GRAY);
+      doc.text("TECH IICRC #", M + 90, y + 7.5);
+      setFont("normal", 8, DARK);
+      doc.text(techCert || "—", M + 115, y + 7.5);
+      y += 11;
     }
 
     // Row 3: Affected areas (with carry-forward fallback)
