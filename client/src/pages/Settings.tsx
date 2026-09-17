@@ -5,6 +5,7 @@ import {
   Trash2, FileSpreadsheet, QrCode, Users as UsersIcon,
   ExternalLink, Settings as SettingsIcon,
   RefreshCw, ListChecks, ClipboardList, FolderLock,
+  MapPin,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -29,6 +30,7 @@ import QBSync from "@/pages/QBSync";
 import LineItemLibrary from "@/pages/LineItemLibrary";
 import JobTemplates from "@/pages/JobTemplates";
 import CompanyDocuments from "@/pages/CompanyDocuments";
+import GeofenceSettings from "@/pages/GeofenceSettings";
 
 /**
  * Settings hub — left-rail sub-navigation.
@@ -59,7 +61,8 @@ type SectionKey =
   | "line-items"
   | "job-templates"
   | "partner-portal"
-  | "company-documents";
+  | "company-documents"
+  | "geofence";
 
 type Item = {
   key: SectionKey;
@@ -207,6 +210,19 @@ const GROUPS: Group[] = [
         desc: "Branding, invite links, and access rules for the partner portal.",
         icon: ExternalLink,
         component: PartnerPortalSetup,
+      },
+    ],
+  },
+  {
+    title: "Field Operations",
+    items: [
+      {
+        key: "geofence",
+        label: "Geofence auto-punch",
+        desc: "Auto clock techs in and out based on GPS proximity to their job site.",
+        icon: MapPin,
+        component: GeofenceSettings,
+        adminOnly: true,
       },
     ],
   },

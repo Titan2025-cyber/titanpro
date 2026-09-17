@@ -1824,3 +1824,47 @@ export const canvassingAddresses = sqliteTable("canvassing_addresses", {
 export const insertCanvassingAddressSchema = createInsertSchema(canvassingAddresses).omit({ id: true });
 export type InsertCanvassingAddress = z.infer<typeof insertCanvassingAddressSchema>;
 export type CanvassingAddress = typeof canvassingAddresses.$inferSelect;
+
+// ── Push 7: Geofence auto-punch settings & audit ─────────────────────────────
+// Single-row settings table (id=1). Controls whether auto-punch is enabled,
+// how big the geofence is, how long the tech has to sit inside/outside the
+// fence before we act, business hours, and days of week we're willing to
+// punch. Nothing about employee identity lives here — that comes from the
+// session on the actual punch call.
+export const geofenceSettings = sqliteTable("geofence_settings", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  enabled: integer("enabled", { mode: "boolean" }).default(false),
+  radiusFt: integer("radius_ft").default(300),           // 300 ft ≈ 91 m
+  enterDwellSec: integer("enter_dwell_sec").default(180),  // 3 min inside → punch in
+  exitDwellSec: integer("exit_dwell_sec").default(480),    // 8 min outside → punch out
+  businessHoursStart: text("business_hours_start").default("06:00"),
+  businessHoursEnd: text("business_hours_end").default("20:00"),
+  daysOfWeek: text("days_of_week").default("1,2,3,4,5,6"), // Mon-Sat by default (0=Sun)
+  requireShiftAssignment: integer("require_shift_assignment", { mode: "boolean" }).default(true),
+  updatedAt: text("updated_at"),
+  updatedBy: text("updated_by"),
+});
+export const insertGeofenceSettingsSchema = createInsertSchema(geofenceSettings).omit({ id: true });
+export type InsertGeofenceSettings = z.infer<typeof insertGeofenceSettingsSchema>;
+export type GeofenceSettings = typeof geofenceSettings.$inferSelect;
+
+// Every auto-punch attempt (fired, skipped, undone) gets a row here so the
+// office can prove "the app punched him in at 7:12 because his GPS was 42 ft
+// from the site and he'd been there 3 min." Also the audit log for undo.
+export const timeClockAutoEvents = sqliteTable("time_clock_auto_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  employeeId: integer("employee_id"),
+  employeeName: text("employee_name"),
+  jobId: integer("job_id"),
+  eventType: text("event_type").notNull(),  // clock_in | clock_out | undo_in | undo_out | skip
+  distanceFt: real("distance_ft"),          // distance from job at moment of decision
+  dwellSec: integer("dwell_sec"),           // how long they'd been in/out of fence
+  timeClockId: integer("time_clock_id"),    // resulting time_clock row (null on skip)
+  skipReason: text("skip_reason"),          // outside_hours | no_target | already_open | undo_expired
+  latitude: real("latitude"),
+  longitude: real("longitude"),
+  createdAt: text("created_at").notNull().default(""),
+});
+export const insertTimeClockAutoEventSchema = createInsertSchema(timeClockAutoEvents).omit({ id: true });
+export type InsertTimeClockAutoEvent = z.infer<typeof insertTimeClockAutoEventSchema>;
+export type TimeClockAutoEvent = typeof timeClockAutoEvents.$inferSelect;

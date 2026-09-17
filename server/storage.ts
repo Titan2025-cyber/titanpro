@@ -2326,7 +2326,47 @@ sqlite.exec(`
     notes TEXT,
     created_at TEXT NOT NULL DEFAULT ''
   );
+
+  -- Push 7: geofence auto-punch settings (single-row id=1) + audit log.
+  CREATE TABLE IF NOT EXISTS geofence_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    enabled INTEGER DEFAULT 0,
+    radius_ft INTEGER DEFAULT 300,
+    enter_dwell_sec INTEGER DEFAULT 180,
+    exit_dwell_sec INTEGER DEFAULT 480,
+    business_hours_start TEXT DEFAULT '06:00',
+    business_hours_end TEXT DEFAULT '20:00',
+    days_of_week TEXT DEFAULT '1,2,3,4,5,6',
+    require_shift_assignment INTEGER DEFAULT 1,
+    updated_at TEXT,
+    updated_by TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS time_clock_auto_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER,
+    employee_name TEXT,
+    job_id INTEGER,
+    event_type TEXT NOT NULL,
+    distance_ft REAL,
+    dwell_sec INTEGER,
+    time_clock_id INTEGER,
+    skip_reason TEXT,
+    latitude REAL,
+    longitude REAL,
+    created_at TEXT NOT NULL DEFAULT ''
+  );
 `);
+
+// Seed default geofence_settings row if empty (id=1, disabled).
+try {
+  const has = sqlite.prepare("SELECT id FROM geofence_settings LIMIT 1").get();
+  if (!has) {
+    sqlite.prepare(
+      "INSERT INTO geofence_settings (enabled, radius_ft, enter_dwell_sec, exit_dwell_sec, business_hours_start, business_hours_end, days_of_week, require_shift_assignment) VALUES (0, 300, 180, 480, '06:00', '20:00', '1,2,3,4,5,6', 1)"
+    ).run();
+  }
+} catch {}
 
 // Extend follow_up_sequences.sequence_type enum by convention (no schema
 // change needed — the column is TEXT). New values used by Push 6:

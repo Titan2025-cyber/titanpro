@@ -10917,6 +10917,260 @@ Approve in Partner Portal → Admin View.
   // END PUSH 6 ROUTES
   // ═══════════════════════════════════════════════════════════════════════════
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PUSH 7 ROUTES — Geofence auto-punch
+  //
+  // Level-1 auto-punch: while the app is open on a tech's phone, poll GPS
+  // every ~60s, and if they've been inside a target job's fence for the
+  // configured dwell, punch in — same in reverse when they leave. The
+  // decision runs on the CLIENT (in locationTracker.tsx) because that's
+  // where the GPS lives; these endpoints exist so the client can:
+  //
+  //   • fetch settings          → GET /api/geofence-settings
+  //   • save settings           → PUT /api/geofence-settings          (owner/mgr)
+  //   • fetch today's targets   → GET /api/my/geofence-targets
+  //   • log an auto event       → POST /api/time-clock/auto-events
+  //   • undo the last event     → POST /api/time-clock/auto-events/:id/undo
+  //
+  // The actual punch still goes through the existing /api/time-clock/clock-in
+  // and /clock-out endpoints (session-authenticated) so we don't create a
+  // second identity path. This one includes the auto-event id in the notes
+  // for traceability.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Settings (single-row) ────────────────────────────────────────────────
+  app.get("/api/geofence-settings", requireStaffAuth, (_req, res) => {
+    try {
+      const row = sqlite.prepare("SELECT * FROM geofence_settings ORDER BY id ASC LIMIT 1").get() as any;
+      // If somehow missing (fresh DB), seed the default synchronously.
+      if (!row) {
+        sqlite.prepare(
+          "INSERT INTO geofence_settings (enabled, radius_ft, enter_dwell_sec, exit_dwell_sec, business_hours_start, business_hours_end, days_of_week, require_shift_assignment) VALUES (0, 300, 180, 480, '06:00', '20:00', '1,2,3,4,5,6', 1)"
+        ).run();
+        const seeded = sqlite.prepare("SELECT * FROM geofence_settings ORDER BY id ASC LIMIT 1").get();
+        return res.json(seeded);
+      }
+      res.json(row);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.put("/api/geofence-settings", requireRole("owner", "admin", "office", "general_manager"), (req: any, res) => {
+    try {
+      const {
+        enabled, radiusFt, enterDwellSec, exitDwellSec,
+        businessHoursStart, businessHoursEnd, daysOfWeek, requireShiftAssignment,
+      } = req.body || {};
+      const now = new Date().toISOString();
+      const by = req.employee?.name || "system";
+
+      // Range guards — reject nonsense before it hits the field.
+      const radius = Math.max(50, Math.min(2000, Number(radiusFt) || 300));
+      const enterDwell = Math.max(30, Math.min(3600, Number(enterDwellSec) || 180));
+      const exitDwell = Math.max(30, Math.min(3600, Number(exitDwellSec) || 480));
+
+      // Existing row → UPDATE. Otherwise INSERT.
+      const existing = sqlite.prepare("SELECT id FROM geofence_settings ORDER BY id ASC LIMIT 1").get() as any;
+      if (existing) {
+        sqlite.prepare(
+          `UPDATE geofence_settings SET
+             enabled=?, radius_ft=?, enter_dwell_sec=?, exit_dwell_sec=?,
+             business_hours_start=?, business_hours_end=?, days_of_week=?,
+             require_shift_assignment=?, updated_at=?, updated_by=?
+           WHERE id=?`
+        ).run(
+          enabled ? 1 : 0, radius, enterDwell, exitDwell,
+          businessHoursStart || "06:00", businessHoursEnd || "20:00",
+          daysOfWeek || "1,2,3,4,5,6",
+          requireShiftAssignment ? 1 : 0,
+          now, by, existing.id
+        );
+      } else {
+        sqlite.prepare(
+          `INSERT INTO geofence_settings
+            (enabled, radius_ft, enter_dwell_sec, exit_dwell_sec, business_hours_start, business_hours_end, days_of_week, require_shift_assignment, updated_at, updated_by)
+           VALUES (?,?,?,?,?,?,?,?,?,?)`
+        ).run(
+          enabled ? 1 : 0, radius, enterDwell, exitDwell,
+          businessHoursStart || "06:00", businessHoursEnd || "20:00",
+          daysOfWeek || "1,2,3,4,5,6",
+          requireShiftAssignment ? 1 : 0,
+          now, by
+        );
+      }
+      const row = sqlite.prepare("SELECT * FROM geofence_settings ORDER BY id ASC LIMIT 1").get();
+      res.json(row);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Today's geofence targets for the signed-in employee ─────────────────
+  //
+  // A "target" is a job the tech is expected to be at today. We derive that
+  // from the shifts table (tech_name + shift_date=today, job_id set, and the
+  // linked job has geocoded lat/lng). If shift_assignment is NOT required in
+  // settings, we ALSO include any active job the tech is assigned to via
+  // jobs.assigned_tech — that catches the "no shift on the calendar but the
+  // guy's been working the same job all week" case.
+  app.get("/api/my/geofence-targets", requireStaffAuth, (req: any, res) => {
+    try {
+      const emp = req.employee;
+      if (!emp?.id) return res.status(401).json({ error: "Authentication required." });
+
+      const settings = sqlite.prepare("SELECT * FROM geofence_settings ORDER BY id ASC LIMIT 1").get() as any;
+      const requireShift = settings ? !!settings.require_shift_assignment : true;
+
+      const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+      // Shift-based targets — canonical
+      const shiftTargets = sqlite.prepare(`
+        SELECT DISTINCT j.id AS jobId, j.job_number AS jobNumber, j.address, j.latitude, j.longitude
+        FROM shifts s
+        JOIN jobs j ON j.id = s.job_id
+        WHERE s.tech_name = ?
+          AND s.shift_date = ?
+          AND j.latitude IS NOT NULL
+          AND j.longitude IS NOT NULL
+          AND (j.status IS NULL OR j.status != 'closed')
+      `).all(emp.name, today) as any[];
+
+      let targets = shiftTargets;
+
+      // Fallback — active jobs assigned to me, if config allows
+      if (!requireShift) {
+        const assignedTargets = sqlite.prepare(`
+          SELECT DISTINCT j.id AS jobId, j.job_number AS jobNumber, j.address, j.latitude, j.longitude
+          FROM jobs j
+          WHERE j.assigned_tech = ?
+            AND j.latitude IS NOT NULL
+            AND j.longitude IS NOT NULL
+            AND (j.status IS NULL OR j.status NOT IN ('closed', 'complete'))
+        `).all(emp.name) as any[];
+
+        // Merge, de-dup by jobId
+        const seen = new Set(targets.map(t => t.jobId));
+        for (const t of assignedTargets) {
+          if (!seen.has(t.jobId)) { targets.push(t); seen.add(t.jobId); }
+        }
+      }
+
+      res.json({
+        settings: settings ? {
+          enabled: !!settings.enabled,
+          radiusFt: settings.radius_ft,
+          enterDwellSec: settings.enter_dwell_sec,
+          exitDwellSec: settings.exit_dwell_sec,
+          businessHoursStart: settings.business_hours_start,
+          businessHoursEnd: settings.business_hours_end,
+          daysOfWeek: settings.days_of_week,
+        } : null,
+        targets,
+      });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Log an auto-event ────────────────────────────────────────────────────
+  //
+  // Client calls this AFTER (or DURING) an auto-punch decision so we have a
+  // paper trail. Body: { eventType, jobId, distanceFt, dwellSec, timeClockId,
+  // skipReason, latitude, longitude }. Employee identity comes from session.
+  app.post("/api/time-clock/auto-events", requireStaffAuth, (req: any, res) => {
+    try {
+      const emp = req.employee;
+      if (!emp?.id) return res.status(401).json({ error: "Authentication required." });
+      const {
+        eventType, jobId, distanceFt, dwellSec, timeClockId,
+        skipReason, latitude, longitude,
+      } = req.body || {};
+      if (!eventType || typeof eventType !== "string") {
+        return res.status(400).json({ error: "eventType required" });
+      }
+      const row = sqlite.prepare(
+        `INSERT INTO time_clock_auto_events
+          (employee_id, employee_name, job_id, event_type, distance_ft, dwell_sec, time_clock_id, skip_reason, latitude, longitude, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING *`
+      ).get(
+        emp.id, emp.name, jobId || null, eventType,
+        distanceFt ?? null, dwellSec ?? null,
+        timeClockId ?? null, skipReason || null,
+        latitude ?? null, longitude ?? null,
+        new Date().toISOString(),
+      );
+      res.json(row);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Undo an auto-punch ───────────────────────────────────────────────────
+  //
+  // Within the undo window (2 minutes, enforced client-side but re-checked
+  // here), reverse a clock_in / clock_out. clock_in undo → delete the
+  // time_clock row entirely. clock_out undo → reopen the row (null out
+  // clock_out_at, duration_minutes, clock_out_lat/lng). Either way, log a
+  // corresponding undo_in / undo_out audit event. Requires session identity
+  // matches the auto-event's employee (a tech can't undo someone else's punch).
+  app.post("/api/time-clock/auto-events/:id/undo", requireStaffAuth, (req: any, res) => {
+    try {
+      const emp = req.employee;
+      if (!emp?.id) return res.status(401).json({ error: "Authentication required." });
+      const id = Number(req.params.id);
+      const ev = sqlite.prepare("SELECT * FROM time_clock_auto_events WHERE id = ?").get(id) as any;
+      if (!ev) return res.status(404).json({ error: "Auto event not found" });
+      if (ev.employee_id !== emp.id) {
+        return res.status(403).json({ error: "You can only undo your own auto-punches." });
+      }
+      const now = Date.now();
+      const then = Date.parse(ev.created_at);
+      const windowSec = 120;
+      if (Number.isFinite(then) && (now - then) / 1000 > windowSec) {
+        return res.status(400).json({ error: "Undo window has expired." });
+      }
+      if (!ev.time_clock_id) {
+        return res.status(400).json({ error: "This event didn't create a punch." });
+      }
+
+      if (ev.event_type === "clock_in") {
+        // Delete the time_clock row we just created.
+        sqlite.prepare("DELETE FROM time_clock WHERE id = ?").run(ev.time_clock_id);
+      } else if (ev.event_type === "clock_out") {
+        // Reopen the row so the tech is back on the clock.
+        sqlite.prepare(
+          "UPDATE time_clock SET clock_out_at = NULL, duration_minutes = NULL, clock_out_lat = NULL, clock_out_lng = NULL WHERE id = ?"
+        ).run(ev.time_clock_id);
+      } else {
+        return res.status(400).json({ error: "This event type can't be undone." });
+      }
+
+      // Audit the undo itself.
+      const undoType = ev.event_type === "clock_in" ? "undo_in" : "undo_out";
+      sqlite.prepare(
+        `INSERT INTO time_clock_auto_events
+          (employee_id, employee_name, job_id, event_type, time_clock_id, created_at)
+         VALUES (?,?,?,?,?,?)`
+      ).run(emp.id, emp.name, ev.job_id, undoType, ev.time_clock_id, new Date().toISOString());
+
+      res.json({ ok: true, undone: ev.event_type, timeClockId: ev.time_clock_id });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Admin: recent auto-events for one tech (audit page) ──────────────────
+  app.get("/api/time-clock/auto-events", requireStaffAuth, (req: any, res) => {
+    try {
+      const emp = req.employee;
+      // Anyone signed in can pull their own log. Owner/manager can pull any.
+      const isMgr = emp?.role === "owner" || emp?.role === "admin" || emp?.role === "office" || emp?.role === "general_manager";
+      const empId = req.query.employeeId ? Number(req.query.employeeId) : emp?.id;
+      if (!isMgr && empId !== emp?.id) {
+        return res.status(403).json({ error: "You can only view your own auto-punch log." });
+      }
+      const rows = sqlite.prepare(
+        "SELECT * FROM time_clock_auto_events WHERE employee_id = ? ORDER BY id DESC LIMIT 200"
+      ).all(empId);
+      res.json(rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // END PUSH 7 ROUTES
+  // ═══════════════════════════════════════════════════════════════════════════
+
   registerCrudGapRoutes(app, sqlite, { requireRole, requireStaffAuth });
 
   // Unmatched /api/* routes should return a clean JSON 404 rather than falling

@@ -31,6 +31,7 @@ import CommandPalette from "@/components/CommandPalette";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { PresenceTracker } from "@/lib/presence";
 import { LocationTracker } from "@/lib/locationTracker";
+import { GeofenceAutoPunch } from "@/lib/geofenceAutoPunch";
 
 
 // Lazy-loaded pages (code-split — each page downloads only when visited)
@@ -231,7 +232,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   // PIN gate (lower priority than 2FA): defensive fallback for a session whose
   // PIN is flagged for reset but that skipped the forced-change login step.
   if (user.mustChangePin === true) return <ForcePinChange />;
-  return <><PresenceTracker /><LocationTracker />{children}</>;
+  return <><PresenceTracker /><LocationTracker /><GeofenceAutoPunch />{children}</>;
 }
 
 function AppRoutes() {
