@@ -153,18 +153,35 @@ export default function Calendar() {
     };
   });
   const [viewLabel, setViewLabel] = useState<string>("");
-  // Default view: Agenda (list) on phone — the month grid is too cramped
-  // for 30–31 cells on a 375px screen. Users can still tap the view switcher
-  // to see the visual month layout.
-  const initialView: "dayGridMonth" | "timeGridWeek" | "timeGridDay" | "timeGridFourDay" | "listWeek" =
-    typeof window !== "undefined" && window.innerWidth < 768 ? "listWeek" : "dayGridMonth";
-  const [currentView, setCurrentView] = useState<"dayGridMonth" | "timeGridWeek" | "timeGridDay" | "timeGridFourDay" | "listWeek">(initialView);
+  // Default view: full-month Agenda (list) on phone — the month grid is too
+  // cramped for 30–31 cells on a 375px screen, and listWeek only shows a
+  // 7-day slice which hides most already-scheduled work. listMonth shows
+  // every event across the whole visible month as a tappable list.
+  type CalView = "dayGridMonth" | "timeGridWeek" | "timeGridDay" | "timeGridFourDay" | "listWeek" | "listMonth";
+  const initialView: CalView =
+    typeof window !== "undefined" && window.innerWidth < 768 ? "listMonth" : "dayGridMonth";
+  const [currentView, setCurrentView] = useState<CalView>(initialView);
 
   // Data --------------------------------------------------------------------
-  const { data: events = [] } = useQuery<CalendarEvent[]>({
-    queryKey: ["/api/calendar-events", visibleRange.start, visibleRange.end],
+  // Widen the visible range by ±60 days when fetching so that list views
+  // (which report a narrow 7–31 day range in datesSet) still surface
+  // adjacent scheduled work — and so we never appear “empty” because the
+  // view happens to land on a slice with no events. Filtering back to the
+  // exact visible slice is FullCalendar’s job.
+  const wideRange = (() => {
+    const s = new Date(visibleRange.start + "T00:00:00");
+    const e = new Date(visibleRange.end + "T00:00:00");
+    s.setDate(s.getDate() - 60);
+    e.setDate(e.getDate() + 60);
+    return { start: s.toISOString().slice(0, 10), end: e.toISOString().slice(0, 10) };
+  })();
+  const { data: events = [], isLoading: eventsLoading, error: eventsError } = useQuery<CalendarEvent[]>({
+    queryKey: ["/api/calendar-events", wideRange.start, wideRange.end],
     queryFn: () =>
-      apiRequest("GET", `/api/calendar-events?start=${visibleRange.start}&end=${visibleRange.end}`).then(r => r.json()),
+      apiRequest("GET", `/api/calendar-events?start=${wideRange.start}&end=${wideRange.end}`).then(r => {
+        if (!r.ok) throw new Error(`Calendar fetch failed: ${r.status}`);
+        return r.json();
+      }),
   });
 
   const { data: assignableUsers = [] } = useQuery<StaffMember[]>({
@@ -400,7 +417,8 @@ export default function Calendar() {
             { key: "timeGridWeek" as const, label: "Week" },
             { key: "timeGridDay" as const, label: "Day" },
             { key: "timeGridFourDay" as const, label: "4 day" },
-            { key: "listWeek" as const, label: "Agenda" },
+            { key: "listWeek" as const, label: "Week list" },
+            { key: "listMonth" as const, label: "Agenda" },
           ].map(v => (
             <button
               key={v.key}
@@ -454,6 +472,18 @@ export default function Calendar() {
 
         {/* FullCalendar main area */}
         <div className="rounded-md border bg-background p-2">
+          {/* Diagnostic banner — makes empty / failed calendar loads loud
+              instead of silently blank. Existing events data is untouched;
+              this only reports what the fetch is doing. */}
+          {eventsError ? (
+            <div className="mb-2 rounded-md border border-red-500/50 bg-red-500/10 text-red-700 dark:text-red-300 px-3 py-2 text-sm">
+              Couldn't load calendar events. Check your connection and pull to refresh, or sign in again if the session expired.
+            </div>
+          ) : !eventsLoading && events.length === 0 ? (
+            <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200 px-3 py-2 text-xs">
+              No scheduled events in the current window. Tap Month or Week to widen the view, or use the ← / → arrows to navigate.
+            </div>
+          ) : null}
           <FullCalendar
             ref={calRef as any}
             plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin] as any}
