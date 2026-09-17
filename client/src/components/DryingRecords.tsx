@@ -960,6 +960,17 @@ function RecordCard({ record, jobId, readOnly, priorRecords = [] }: { record: Dr
     techSignature: record.techSignature || "",
     dryingGoalMet: record.dryingGoalMet === 1,
     structuralDryingComplete: record.structuralDryingComplete === 1,
+    // Push 10 — meter provenance + HVAC status + tech IICRC cert.
+    // These are the six drying-record columns added in Push 8 that were
+    // validated and printed but had no intake UI. Blank strings save as
+    // null so the meter/hvac strip in the PDF stays suppressed when the
+    // tech didn't capture them.
+    meterMake: (record as any).meterMake ?? "",
+    meterModel: (record as any).meterModel ?? "",
+    meterSerial: (record as any).meterSerial ?? "",
+    meterCalibratedAt: (record as any).meterCalibratedAt ?? "",
+    hvacStatus: (record as any).hvacStatus ?? "",
+    techIicrcCert: (record as any).techIicrcCert ?? "",
   });
 
   const [moistureRows, setMoistureRows] = useState<MoistureRow[]>(
@@ -1030,6 +1041,15 @@ function RecordCard({ record, jobId, readOnly, priorRecords = [] }: { record: Dr
         moistureReadings: JSON.stringify(moistureRows),
         equipment: JSON.stringify(equipRows),
         affectedAreas: JSON.stringify(stampAreaTearOuts(areaRows, record.dayNumber ?? undefined, form.readingDate)),
+        // Push 10 — blank → null so the pre-generation validator and PDF
+        // renderer see a real "not captured" signal instead of an empty
+        // string that would still evaluate truthy in some checks.
+        meterMake: String(form.meterMake || "").trim() || null,
+        meterModel: String(form.meterModel || "").trim() || null,
+        meterSerial: String(form.meterSerial || "").trim() || null,
+        meterCalibratedAt: String(form.meterCalibratedAt || "").trim() || null,
+        hvacStatus: String(form.hvacStatus || "").trim() || null,
+        techIicrcCert: String(form.techIicrcCert || "").trim() || null,
       });
       // Run moisture alert check after every save
       return apiRequest("POST", `/api/jobs/${jobId}/moisture-alert-check`, {});
@@ -1264,6 +1284,92 @@ function RecordCard({ record, jobId, readOnly, priorRecords = [] }: { record: Dr
                 <label htmlFor={`complete-${record.id}`} className="text-xs font-medium">
                   Structural Drying Complete
                 </label>
+              </div>
+            </div>
+
+            {/* ── Push 10: Meter provenance + site conditions ────────── */}
+            {/* Six fields required by S500 §12.2.1 (equipment traceability)
+                and §10.3 (HVAC load context). Optional at the record level
+                so a Day-1 assessment card doesn't force the tech to type
+                everything; the pre-generation validator surfaces the gap
+                on the report if the office tries to ship without it. */}
+            <div className="border rounded-lg p-3 bg-muted/20 space-y-3">
+              <p className="text-xs font-semibold text-foreground">Meter &amp; Site Conditions (S500 §12.2.1)</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label className="text-xs">Meter Make</Label>
+                  <Input
+                    className="mt-1 h-8 text-xs"
+                    placeholder="e.g. Tramex"
+                    value={form.meterMake}
+                    disabled={!editing}
+                    onChange={e => setForm(f => ({ ...f, meterMake: e.target.value }))}
+                    data-testid="input-meter-make"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Meter Model</Label>
+                  <Input
+                    className="mt-1 h-8 text-xs"
+                    placeholder="e.g. Moisture Encounter Plus"
+                    value={form.meterModel}
+                    disabled={!editing}
+                    onChange={e => setForm(f => ({ ...f, meterModel: e.target.value }))}
+                    data-testid="input-meter-model"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Meter Serial #</Label>
+                  <Input
+                    className="mt-1 h-8 text-xs"
+                    placeholder="Manufacturer serial"
+                    value={form.meterSerial}
+                    disabled={!editing}
+                    onChange={e => setForm(f => ({ ...f, meterSerial: e.target.value }))}
+                    data-testid="input-meter-serial"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Last Calibrated</Label>
+                  <Input
+                    type="date"
+                    className="mt-1 h-8 text-xs"
+                    value={form.meterCalibratedAt}
+                    disabled={!editing}
+                    onChange={e => setForm(f => ({ ...f, meterCalibratedAt: e.target.value }))}
+                    data-testid="input-meter-calibrated-at"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">HVAC Status</Label>
+                  <Select
+                    value={form.hvacStatus || "__none__"}
+                    onValueChange={v => setForm(f => ({ ...f, hvacStatus: v === "__none__" ? "" : v }))}
+                    disabled={!editing}
+                  >
+                    <SelectTrigger className="mt-1 h-8 text-xs" data-testid="select-hvac-status">
+                      <SelectValue placeholder="Not captured" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">Not captured</SelectItem>
+                      <SelectItem value="running">Running</SelectItem>
+                      <SelectItem value="off">Off</SelectItem>
+                      <SelectItem value="off_per_s500">Off per S500 (Cat 3)</SelectItem>
+                      <SelectItem value="not_applicable">Not applicable</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Tech IICRC Cert #</Label>
+                  <Input
+                    className="mt-1 h-8 text-xs"
+                    placeholder="e.g. WRT12345"
+                    value={form.techIicrcCert}
+                    disabled={!editing}
+                    onChange={e => setForm(f => ({ ...f, techIicrcCert: e.target.value }))}
+                    data-testid="input-tech-iicrc-cert"
+                  />
+                </div>
               </div>
             </div>
 
@@ -1571,6 +1677,15 @@ function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; o
     waterCategory: lastVisit?.waterCategory || "category2",
     waterClass: lastVisit?.waterClass || "class2",
     observations: "",
+    // Push 10 — seed meter/HVAC/cert from the most recent visit. Same tech
+    // usually uses the same meter every day, so pre-filling saves typing.
+    // Tech can override for a new device or when a different tech is on-site.
+    meterMake: (lastVisit as any)?.meterMake || "",
+    meterModel: (lastVisit as any)?.meterModel || "",
+    meterSerial: (lastVisit as any)?.meterSerial || "",
+    meterCalibratedAt: (lastVisit as any)?.meterCalibratedAt || "",
+    hvacStatus: (lastVisit as any)?.hvacStatus || "",
+    techIicrcCert: (lastVisit as any)?.techIicrcCert || "",
   });
   const [moistureRows, setMoistureRows] = useState<MoistureRow[]>(seededMoisture);
   const [equipRows, setEquipRows] = useState<EquipRow[]>(seededEquip);
@@ -1597,6 +1712,14 @@ function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; o
         moistureReadings: JSON.stringify(moistureRows),
         equipment: JSON.stringify(equipRows),
         affectedAreas: JSON.stringify(stampAreaTearOuts(areaRows, form.dayNumber, form.readingDate)),
+        // Push 10 — null out blank meter/HVAC/cert fields so validator sees
+        // a real "not captured" signal.
+        meterMake: String(form.meterMake || "").trim() || null,
+        meterModel: String(form.meterModel || "").trim() || null,
+        meterSerial: String(form.meterSerial || "").trim() || null,
+        meterCalibratedAt: String(form.meterCalibratedAt || "").trim() || null,
+        hvacStatus: String(form.hvacStatus || "").trim() || null,
+        techIicrcCert: String(form.techIicrcCert || "").trim() || null,
       });
       // Run moisture alert check immediately after creating
       return apiRequest("POST", `/api/jobs/${jobId}/moisture-alert-check`, {});
@@ -1699,6 +1822,64 @@ function NewRecordForm({ jobId, onClose, priorRecords = [] }: { jobId: number; o
           <Label className="text-xs">Observations</Label>
           <Textarea className="mt-1 text-xs min-h-[60px]" placeholder="Field conditions, observations, next steps…"
             value={form.observations} onChange={e => setForm(f => ({ ...f, observations: e.target.value }))} />
+        </div>
+
+        {/* ── Push 10: Meter provenance + site conditions (new record) ── */}
+        {/* Seeded from lastVisit so a tech using the same meter every day
+            doesn't retype it. Blank fields still valid — the validator
+            warns on report generation, doesn't block record save. */}
+        <div className="border rounded-lg p-3 bg-muted/20 space-y-3">
+          <p className="text-xs font-semibold text-foreground">Meter &amp; Site Conditions (S500 §12.2.1)</p>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label className="text-xs">Meter Make</Label>
+              <Input className="mt-1 h-8 text-xs" placeholder="e.g. Tramex"
+                value={form.meterMake} onChange={e => setForm(f => ({ ...f, meterMake: e.target.value }))}
+                data-testid="new-meter-make" />
+            </div>
+            <div>
+              <Label className="text-xs">Meter Model</Label>
+              <Input className="mt-1 h-8 text-xs" placeholder="e.g. Moisture Encounter Plus"
+                value={form.meterModel} onChange={e => setForm(f => ({ ...f, meterModel: e.target.value }))}
+                data-testid="new-meter-model" />
+            </div>
+            <div>
+              <Label className="text-xs">Meter Serial #</Label>
+              <Input className="mt-1 h-8 text-xs" placeholder="Manufacturer serial"
+                value={form.meterSerial} onChange={e => setForm(f => ({ ...f, meterSerial: e.target.value }))}
+                data-testid="new-meter-serial" />
+            </div>
+            <div>
+              <Label className="text-xs">Last Calibrated</Label>
+              <Input type="date" className="mt-1 h-8 text-xs"
+                value={form.meterCalibratedAt} onChange={e => setForm(f => ({ ...f, meterCalibratedAt: e.target.value }))}
+                data-testid="new-meter-calibrated" />
+            </div>
+            <div>
+              <Label className="text-xs">HVAC Status</Label>
+              <Select
+                value={form.hvacStatus || "__none__"}
+                onValueChange={v => setForm(f => ({ ...f, hvacStatus: v === "__none__" ? "" : v }))}
+              >
+                <SelectTrigger className="mt-1 h-8 text-xs" data-testid="new-hvac-status">
+                  <SelectValue placeholder="Not captured" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Not captured</SelectItem>
+                  <SelectItem value="running">Running</SelectItem>
+                  <SelectItem value="off">Off</SelectItem>
+                  <SelectItem value="off_per_s500">Off per S500 (Cat 3)</SelectItem>
+                  <SelectItem value="not_applicable">Not applicable</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Tech IICRC Cert #</Label>
+              <Input className="mt-1 h-8 text-xs" placeholder="e.g. WRT12345"
+                value={form.techIicrcCert} onChange={e => setForm(f => ({ ...f, techIicrcCert: e.target.value }))}
+                data-testid="new-tech-iicrc-cert" />
+            </div>
+          </div>
         </div>
 
         <div className="flex gap-2">

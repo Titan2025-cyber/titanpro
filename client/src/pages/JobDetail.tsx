@@ -2614,6 +2614,14 @@ function InsuranceEditor({ job, updateJob }: { job: any; updateJob: any }) {
     policyNumber: job.policyNumber ?? "",
     claimNumber: job.claimNumber ?? "",
     insuranceCarrier: job.insuranceCarrier ?? "",
+    // Push 10 — S500 loss-detail fields required at the top of every
+    // carrier-facing drying report per S500 §10.5/§10.6. Live on the job so
+    // both the drying report and the Direction-to-Pay form read one source
+    // of truth.
+    dateOfLoss: job.dateOfLoss ?? "",
+    dateOfFirstInspection: job.dateOfFirstInspection ?? "",
+    causeOfLoss: job.causeOfLoss ?? "",
+    sourceOfWater: job.sourceOfWater ?? "",
   });
   // Sync draft whenever the underlying job changes (e.g. after save invalidation).
   useEffect(() => {
@@ -2623,8 +2631,12 @@ function InsuranceEditor({ job, updateJob }: { job: any; updateJob: any }) {
       policyNumber: job.policyNumber ?? "",
       claimNumber: job.claimNumber ?? "",
       insuranceCarrier: job.insuranceCarrier ?? "",
+      dateOfLoss: job.dateOfLoss ?? "",
+      dateOfFirstInspection: job.dateOfFirstInspection ?? "",
+      causeOfLoss: job.causeOfLoss ?? "",
+      sourceOfWater: job.sourceOfWater ?? "",
     });
-  }, [job.adjusterName, job.adjusterPhone, job.policyNumber, job.claimNumber, job.insuranceCarrier]);
+  }, [job.adjusterName, job.adjusterPhone, job.policyNumber, job.claimNumber, job.insuranceCarrier, job.dateOfLoss, job.dateOfFirstInspection, job.causeOfLoss, job.sourceOfWater]);
 
   const save = async () => {
     await updateJob.mutateAsync({
@@ -2633,6 +2645,13 @@ function InsuranceEditor({ job, updateJob }: { job: any; updateJob: any }) {
       policyNumber: draft.policyNumber.trim() || null,
       claimNumber: draft.claimNumber.trim() || null,
       insuranceCarrier: draft.insuranceCarrier.trim() || null,
+      // Push 10 loss-detail fields — null out empty strings so a blank
+      // field clears the column instead of storing "", which some UI
+      // treats as "present but unknown".
+      dateOfLoss: draft.dateOfLoss.trim() || null,
+      dateOfFirstInspection: draft.dateOfFirstInspection.trim() || null,
+      causeOfLoss: draft.causeOfLoss.trim() || null,
+      sourceOfWater: draft.sourceOfWater.trim() || null,
     });
     setEditing(false);
   };
@@ -2712,6 +2731,50 @@ function InsuranceEditor({ job, updateJob }: { job: any; updateJob: any }) {
                 data-testid="input-claim-number"
               />
             </div>
+            {/* ── Push 10: S500 loss detail fields ────────────────── */}
+            <div className="col-span-2 border-t border-border pt-3 mt-1">
+              <p className="text-xs text-muted-foreground mb-2 font-medium">S500 LOSS DETAIL</p>
+            </div>
+            <div>
+              <Label className="text-xs">Date of Loss</Label>
+              <Input
+                type="date"
+                className="mt-1"
+                value={draft.dateOfLoss}
+                onChange={e => setDraft(d => ({ ...d, dateOfLoss: e.target.value }))}
+                data-testid="input-date-of-loss"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Date of First Inspection</Label>
+              <Input
+                type="date"
+                className="mt-1"
+                value={draft.dateOfFirstInspection}
+                onChange={e => setDraft(d => ({ ...d, dateOfFirstInspection: e.target.value }))}
+                data-testid="input-date-of-first-inspection"
+              />
+            </div>
+            <div className="col-span-2">
+              <Label className="text-xs">Cause of Loss</Label>
+              <Input
+                className="mt-1"
+                value={draft.causeOfLoss}
+                onChange={e => setDraft(d => ({ ...d, causeOfLoss: e.target.value }))}
+                placeholder="e.g. Supply line failure - kitchen sink"
+                data-testid="input-cause-of-loss"
+              />
+            </div>
+            <div className="col-span-2">
+              <Label className="text-xs">Source of Water</Label>
+              <Input
+                className="mt-1"
+                value={draft.sourceOfWater}
+                onChange={e => setDraft(d => ({ ...d, sourceOfWater: e.target.value }))}
+                placeholder='e.g. Category 1 - clean potable water from 3/8" braided supply line'
+                data-testid="input-source-of-water"
+              />
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-2 text-sm">
@@ -2743,6 +2806,30 @@ function InsuranceEditor({ job, updateJob }: { job: any; updateJob: any }) {
               <p className="text-xs text-muted-foreground">Claim #</p>
               <p className="font-medium">{job.claimNumber || "—"}</p>
             </div>
+            {/* ── Push 10: S500 loss detail read view ────────────── */}
+            {(job.dateOfLoss || job.dateOfFirstInspection || job.causeOfLoss || job.sourceOfWater) && (
+              <>
+                <div className="col-span-2 border-t border-border pt-2 mt-1">
+                  <p className="text-xs text-muted-foreground font-medium">S500 LOSS DETAIL</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Date of Loss</p>
+                  <p className="font-medium">{job.dateOfLoss ? fmtDate(job.dateOfLoss) : "—"}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">First Inspection</p>
+                  <p className="font-medium">{job.dateOfFirstInspection ? fmtDate(job.dateOfFirstInspection) : "—"}</p>
+                </div>
+                <div className="col-span-2">
+                  <p className="text-xs text-muted-foreground">Cause of Loss</p>
+                  <p className="font-medium">{job.causeOfLoss || "—"}</p>
+                </div>
+                <div className="col-span-2">
+                  <p className="text-xs text-muted-foreground">Source of Water</p>
+                  <p className="font-medium">{job.sourceOfWater || "—"}</p>
+                </div>
+              </>
+            )}
           </div>
         )}
       </CardContent>
