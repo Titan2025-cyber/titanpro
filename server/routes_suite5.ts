@@ -746,9 +746,14 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
   app.get("/api/reports/bi-overview", (req, res) => {
     try {
       const jobs = sqlite.prepare("SELECT * FROM jobs").all() as any[];
-      const invoices = sqlite.prepare("SELECT * FROM invoices").all() as any[];
-      const payments = sqlite.prepare("SELECT * FROM payments WHERE type='received'").all() as any[];
-      const estimates = sqlite.prepare("SELECT * FROM estimates").all() as any[];
+      const invoices = sqlite.prepare("SELECT * FROM invoices WHERE deleted_at IS NULL").all() as any[];
+      // Pull ALL payments (received + credit_memo). The outstanding-AR IIFE
+      // below needs credit_memo rows too so bill-downs reduce the receivable.
+      // Historic total revenue uses the received-only subset filtered
+      // in JS below.
+      const payments = sqlite.prepare("SELECT * FROM payments").all() as any[];
+      const paymentsReceived = payments.filter((p: any) => p.type === "received" && !p.credit_memo);
+      const estimates = sqlite.prepare("SELECT * FROM estimates WHERE deleted_at IS NULL").all() as any[];
       const laborRows = sqlite.prepare("SELECT job_id, SUM(duration_minutes) as total_minutes FROM time_clock WHERE duration_minutes IS NOT NULL GROUP BY job_id").all() as any[];
       const laborByJob: Record<number, number> = {};
       for (const r of laborRows) laborByJob[r.job_id] = r.total_minutes;
@@ -791,7 +796,7 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
         const label = d.toLocaleString("default", { month: "short", year: "2-digit" });
         const monthStart = new Date(d.getFullYear(), d.getMonth(), 1).toISOString();
         const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59).toISOString();
-        const amount = payments
+        const amount = paymentsReceived
           .filter((p: any) => p.paid_at && p.paid_at >= monthStart && p.paid_at <= monthEnd)
           .reduce((s: number, p: any) => s + (p.amount || 0), 0);
         monthlyRevenue.push({ month: label, amount });
@@ -807,8 +812,49 @@ export function registerSuite5Routes(app: Express, sqlite: Database, auth?: Suit
       res.json({
         totalJobs: jobs.length,
         openJobs: jobs.filter((j: any) => j.status !== "complete").length,
-        totalRevenue: payments.reduce((s: number, p: any) => s + (p.amount || 0), 0),
-        outstandingAR: invoices.filter((i: any) => i.status !== "paid").reduce((s: number, i: any) => s + (i.total || 0), 0),
+        totalRevenue: paymentsReceived.reduce((s: number, p: any) => s + (p.amount || 0), 0),
+        // Outstanding A/R must net out already-collected receipts and credit
+        // memos per invoice so this figure agrees with /api/jobs/financials
+        // (and therefore with the Jobs page and JobDetail Financial Summary).
+        // Previously summed invoice.total for every non-paid invoice, which
+        // ignored partial payments and bill-downs and inflated the number.
+        outstandingAR: (() => {
+          const openInvoices = invoices.filter((i: any) => i.status !== "paid" && i.status !== "draft");
+          const invPay: Record<number, { collected: number; credit: number }> = {};
+          const jobPay: Record<number, { collected: number; credit: number }> = {};
+          for (const p of payments as any[]) {
+            const amt = Number(p.amount || 0);
+            if (!amt) continue;
+            const isCredit = !!p.credit_memo;
+            const isReceived = p.type === "received";
+            if (!isCredit && !isReceived) continue;
+            if (p.invoice_id) {
+              const b = invPay[p.invoice_id] ||= { collected: 0, credit: 0 };
+              if (isCredit) b.credit += amt; else b.collected += amt;
+            } else if (p.job_id) {
+              const b = jobPay[p.job_id] ||= { collected: 0, credit: 0 };
+              if (isCredit) b.credit += amt; else b.collected += amt;
+            }
+          }
+          const remainingJobPay: Record<number, { collected: number; credit: number }> = JSON.parse(JSON.stringify(jobPay));
+          const openByJob: Record<number, any[]> = {};
+          for (const inv of openInvoices) (openByJob[inv.job_id] ||= []).push(inv);
+          Object.values(openByJob).forEach(arr => arr.sort((a, b) => (a.id || 0) - (b.id || 0)));
+          let total = 0;
+          for (const inv of openInvoices) {
+            const b = invPay[inv.id] || { collected: 0, credit: 0 };
+            let remaining = Number(inv.total || 0) - b.collected - b.credit;
+            const jr = remainingJobPay[inv.job_id];
+            if (jr && remaining > 0) {
+              const useColl = Math.min(jr.collected, remaining);
+              remaining -= useColl; jr.collected -= useColl;
+              const useCred = Math.min(jr.credit, Math.max(0, remaining));
+              remaining -= useCred; jr.credit -= useCred;
+            }
+            total += Math.max(0, remaining);
+          }
+          return total;
+        })(),
         avgJobValue: invoices.length ? invoices.reduce((s: number, i: any) => s + (i.total || 0), 0) / invoices.length : 0,
         revenueByLossType: revByType,
         jobsByStatus: statusCount,

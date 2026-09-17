@@ -141,7 +141,69 @@ export default function Dashboard() {
     if (!d || d < mtdStartISO || d > todayISO) return s;
     return s + (inv.total || 0);
   }, 0);
-  const outstanding = invoices.filter(i => i.status !== "paid" && i.status !== "draft").reduce((s, i) => s + (i.total || 0), 0);
+  // Outstanding A/R — must match the server's /api/jobs/financials formula
+  // so this bucket agrees with the Jobs page and JobDetail Financial Summary.
+  // Old client formula summed invoice.total for every non-paid, non-draft
+  // invoice, which ignored partial payments and credit memos: an invoice
+  // with total=$10k and $7k already collected showed as $10k here while
+  // JobDetail correctly showed $3k. Same for supplement bill-downs that were
+  // booked as credit-memo payments to match the carrier settlement.
+  //
+  // Correct: outstanding per invoice = max(0, invoiceTotal - collected on it
+  //                                        - creditMemos against it).
+  // A payment is "on" this invoice when its invoiceId matches; job-level
+  // payments (no invoiceId) are treated as reducing the oldest still-open
+  // invoice on the same job — same behavior the server aggregate uses when
+  // it pools payments by job.
+  const invPay: Record<number, { collected: number; creditMemos: number }> = {};
+  const jobLevelPay: Record<number, { collected: number; creditMemos: number }> = {};
+  for (const p of payments as any[]) {
+    const amt = Number(p.amount || 0);
+    if (!amt) continue;
+    const isCredit = !!p.creditMemo;
+    const isReceived = p.type === "received";
+    if (!isCredit && !isReceived) continue;
+    if (p.invoiceId) {
+      const b = invPay[p.invoiceId] ||= { collected: 0, creditMemos: 0 };
+      if (isCredit) b.creditMemos += amt; else b.collected += amt;
+    } else if (p.jobId) {
+      const b = jobLevelPay[p.jobId] ||= { collected: 0, creditMemos: 0 };
+      if (isCredit) b.creditMemos += amt; else b.collected += amt;
+    }
+  }
+  // Group open invoices by job so we can spread job-level payments over them
+  // (oldest first — lowest id proxies for oldest here since we don't sort by
+  // issueDate on Dashboard).
+  const openByJob: Record<number, any[]> = {};
+  for (const inv of invoices as any[]) {
+    if (inv.status === "paid" || inv.status === "draft") continue;
+    if (!inv.jobId) continue;
+    (openByJob[inv.jobId] ||= []).push(inv);
+  }
+  Object.values(openByJob).forEach(arr => arr.sort((a, b) => (a.id || 0) - (b.id || 0)));
+
+  // Compute per-invoice outstanding, then spread any remaining job-level
+  // payment/credit across that job's open invoices in id order.
+  const invOutstanding = new Map<number, number>();
+  const jobLevelRemaining: Record<number, { collected: number; creditMemos: number }> = {
+    ...JSON.parse(JSON.stringify(jobLevelPay))
+  };
+  for (const inv of invoices as any[]) {
+    if (inv.status === "paid" || inv.status === "draft") { invOutstanding.set(inv.id, 0); continue; }
+    const total = Number(inv.total || 0);
+    const b = invPay[inv.id] || { collected: 0, creditMemos: 0 };
+    let remaining = total - b.collected - b.creditMemos;
+    // Apply job-level payments — oldest invoice first.
+    const jr = jobLevelRemaining[inv.jobId];
+    if (jr && remaining > 0) {
+      const useColl = Math.min(jr.collected, remaining);
+      remaining -= useColl; jr.collected -= useColl;
+      const useCredit = Math.min(jr.creditMemos, Math.max(0, remaining));
+      remaining -= useCredit; jr.creditMemos -= useCredit;
+    }
+    invOutstanding.set(inv.id, Math.max(0, remaining));
+  }
+  const outstanding = Array.from(invOutstanding.values()).reduce((s, v) => s + v, 0);
 
   // ── Overdue A/R (Needs You Now) ──────────────────────────────────────────────
   // Unpaid, non-draft invoices whose due date has passed. Ordered by most days
@@ -389,7 +451,13 @@ export default function Dashboard() {
 
   const filteredRevenueTotal = filteredPayments.reduce((s: number, p: any) => s + (p.amount || 0), 0);
   const filteredInvoicedTotal = filteredInvoicedInRange.reduce((s: number, inv: any) => s + (inv.total || 0), 0);
-  const filteredARTotal = filteredInvoices.reduce((s: number, inv: any) => s + (inv.total || 0), 0);
+  // Filtered A/R total uses per-invoice outstanding (already net of
+  // collected + credit memos) so the “Total outstanding” line in the AR
+  // Aging bucket matches the top-of-page Outstanding tile.
+  const filteredARTotal = filteredInvoices.reduce(
+    (s: number, inv: any) => s + (invOutstanding.get(inv.id) ?? (inv.total || 0)),
+    0
+  );
   const filteredPayoutTotal = filteredPayouts.reduce((s: number, p: any) => s + (p.amount || 0), 0);
   const filteredAvgCycle = filteredCycle.length > 0
     ? Math.round(filteredCycle.reduce((s, c) => s + c.days, 0) / filteredCycle.length)
@@ -479,15 +547,16 @@ export default function Dashboard() {
 
   const exportARCSV = () => exportCSV(
     `titan-outstanding-ar-${stamp()}.csv`,
-    ["Invoice", "Status", "Client", "Due Date", "Amount"],
+    ["Invoice", "Status", "Client", "Due Date", "Invoice Total", "Outstanding"],
     filteredInvoices.map((inv: any) => [
       inv.invoiceNumber || `Invoice #${inv.id}`,
       inv.status || "",
       inv.clientName || "",
       fmtDate(inv.dueDate),
       (inv.total || 0),
+      (invOutstanding.get(inv.id) ?? (inv.total || 0)),
     ]),
-    [`TOTAL (${filteredInvoices.length} invoices)`, "", "", "", filteredARTotal],
+    [`TOTAL (${filteredInvoices.length} invoices)`, "", "", "", "", filteredARTotal],
   );
 
   const exportActiveJobsCSV = () => exportCSV(
@@ -579,7 +648,7 @@ export default function Dashboard() {
                     <Badge variant="outline" className="text-xs border-[hsl(var(--titan-red)/0.4)] text-[hsl(var(--titan-red))] shrink-0">
                       {inv.daysOverdue}d overdue
                     </Badge>
-                    <p className="text-sm font-bold text-foreground shrink-0 w-20 text-right">{fmtMoney(inv.total || 0)}</p>
+                    <p className="text-sm font-bold text-foreground shrink-0 w-20 text-right">{fmtMoney(invOutstanding.get(inv.id) ?? (inv.total || 0))}</p>
                   </div>
                 </Link>
               ))}
@@ -1239,7 +1308,16 @@ export default function Dashboard() {
                               </div>
                               <p className="text-xs text-muted-foreground mt-0.5">Due {fmtDate(inv.dueDate)}{inv.clientName ? ` · ${inv.clientName}` : ""}</p>
                             </div>
-                            <span className="text-sm font-semibold text-foreground text-right shrink-0">{money(inv.total)}</span>
+                            {(() => {
+                              const out = invOutstanding.get(inv.id) ?? (inv.total || 0);
+                              const partial = out > 0 && out < (inv.total || 0);
+                              return (
+                                <span className="text-sm font-semibold text-foreground text-right shrink-0">
+                                  {money(out)}
+                                  {partial ? <span className="block text-[10px] font-normal text-muted-foreground">of {money(inv.total)}</span> : null}
+                                </span>
+                              );
+                            })()}
                             <ArrowRight className="w-4 h-4 text-muted-foreground shrink-0" />
                           </div>
                         </Link>
