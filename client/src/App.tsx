@@ -377,16 +377,16 @@ function AuthenticatedRoutes() {
         <Route path="/ai-estimate-review"><Redirect to="/xactimate-hub?tab=ai-review" /></Route>
 
         {/* Business Dev */}
-        <Route path="/lead-attribution"><Redirect to="/reports-hub?tab=attribution" /></Route>
+        <Route path="/lead-attribution"><Redirect to="/marketing-hub?tab=insights" /></Route>
         <Route path="/partner-roi"><Redirect to="/partner-hub?tab=roi" /></Route>
         <Route path="/partner-scorecard"><Redirect to="/partner-hub?tab=scorecard" /></Route>
         <Route path="/route-planner" component={() => <Page component={RoutePlanner} name="RoutePlanner" />} />
         <Route path="/bd-calendar" component={() => <Page component={BDCalendar} name="BDCalendar" />} />
         <Route path="/weekly-payouts" component={() => <Page component={WeeklyPayouts} name="WeeklyPayouts" />} />
-        <Route path="/referral-dashboard"><Redirect to="/partner-hub?tab=referrals" /></Route>
+        <Route path="/referral-dashboard"><Redirect to="/marketing-hub?tab=referrals" /></Route>
         <Route path="/follow-ups" component={() => <Page component={FollowUps} name="FollowUps" />} />
         <Route path="/reviews" component={() => <Page component={ReviewRequests} name="ReviewRequests" />} />
-        <Route path="/marketing"><Redirect to="/marketing-hub?tab=overview" /></Route>
+        <Route path="/marketing"><Redirect to="/marketing-hub?tab=today" /></Route>
 
         {/* Finance */}
         <Route path="/profitability"><Redirect to="/profitability-hub?tab=overview" /></Route>
@@ -415,7 +415,7 @@ function AuthenticatedRoutes() {
 
         {/* Suite 4 — Intelligence */}
         <Route path="/carrier-ar"><Redirect to="/ar-hub?tab=carrier-ar" /></Route>
-        <Route path="/referral-profitability"><Redirect to="/partner-hub?tab=referral-profit" /></Route>
+        <Route path="/referral-profitability"><Redirect to="/marketing-hub?tab=referrals" /></Route>
         <Route path="/equipment-lifecycle"><Redirect to="/equipment-hub?tab=lifecycle" /></Route>
 
         {/* Suite 4 — Insurance */}
@@ -429,7 +429,7 @@ function AuthenticatedRoutes() {
         <Route path="/multilingual" component={() => <Page component={MultilingualCrew} name="MultilingualCrew" />} />
 
         {/* Suite 4 — Comms + Marketing */}
-        <Route path="/storm-marketing"><Redirect to="/marketing-hub?tab=storm" /></Route>
+        <Route path="/storm-marketing"><Redirect to="/marketing-hub?tab=content" /></Route>
         <Route path="/drone-lidar" component={() => <Page component={DroneLiDAR} name="DroneLiDAR" />} />
 
         {/* Suite 5 */}
@@ -504,14 +504,14 @@ function AuthenticatedRoutes() {
         <Route path="/carrier-claim-intel"><Redirect to="/carrier-hub?tab=claim-intel" /></Route>
         <Route path="/supplement-audit-ai"><Redirect to="/supplement-hub?tab=audit" /></Route>
         <Route path="/carrier-counter-intel"><Redirect to="/carrier-hub?tab=counter-intel" /></Route>
-        <Route path="/storm-cat"><Redirect to="/marketing-hub?tab=storm-cat" /></Route>
+        <Route path="/storm-cat"><Redirect to="/marketing-hub?tab=content" /></Route>
         <Route path="/margin-alert"><Redirect to="/profitability-hub?tab=margin-alert" /></Route>
         <Route path="/adjuster-profiler"><Redirect to="/adjuster-hub?tab=profiler" /></Route>
         <Route path="/claim-explainer"><Redirect to="/supplement-hub?tab=explainer" /></Route>
         <Route path="/statute-demand"><Redirect to="/ar-hub?tab=statute" /></Route>
         <Route path="/bid-intel"><Redirect to="/supplement-hub?tab=bid-intel" /></Route>
         <Route path="/voice-note"><Redirect to="/intake-hub?tab=voice" /></Route>
-        <Route path="/marketing-suite"><Redirect to="/marketing-hub?tab=suite" /></Route>
+        <Route path="/marketing-suite"><Redirect to="/marketing-hub?tab=today" /></Route>
         <Route path="/partner-value"><Redirect to="/partner-hub?tab=value" /></Route>
         <Route component={NotFound} />
       </Switch>

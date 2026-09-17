@@ -107,6 +107,14 @@ export const jobs = sqliteTable("jobs", {
   latitude: real("latitude"),
   longitude: real("longitude"),
   geocodedAt: text("geocoded_at"),
+  // Review opt-out — set true on jobs where a review request would backfire
+  // (unhappy customer, sensitive claim, contested payment, etc.). The
+  // Marketing Hub "Reviews ready to send" queue and any future automation
+  // must respect this flag. Rep sets it manually from the job detail page.
+  reviewOptOut: integer("review_opt_out", { mode: "boolean" }).default(false),
+  reviewOptOutReason: text("review_opt_out_reason"),
+  reviewOptOutBy: text("review_opt_out_by"),
+  reviewOptOutAt: text("review_opt_out_at"),
   createdAt: text("created_at").notNull().default(""),
 });
 export const insertJobSchema = createInsertSchema(jobs).omit({ id: true });

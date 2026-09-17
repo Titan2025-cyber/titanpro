@@ -722,6 +722,22 @@ if (!jobCols.includes("year_built")) {
 if (!jobCols.includes("square_feet")) {
   sqlite.exec(`ALTER TABLE jobs ADD COLUMN square_feet INTEGER`);
 }
+// Review opt-out — problem-customer flag. When true, the Marketing Hub
+// "Reviews ready to send" queue MUST exclude this job. Prevents automated
+// or bulk-send flows from ever touching customers where a review request
+// would backfire (unhappy customers, contested claims, payment disputes).
+if (!jobCols.includes("review_opt_out")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN review_opt_out INTEGER DEFAULT 0`);
+}
+if (!jobCols.includes("review_opt_out_reason")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN review_opt_out_reason TEXT`);
+}
+if (!jobCols.includes("review_opt_out_by")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN review_opt_out_by TEXT`);
+}
+if (!jobCols.includes("review_opt_out_at")) {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN review_opt_out_at TEXT`);
+}
 
 // Invoice settlement / insurance-reduction tracking (idempotent migration).
 // original_total  = amount originally invoiced before any carrier reduction

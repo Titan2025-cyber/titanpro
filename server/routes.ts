@@ -7456,6 +7456,33 @@ Approve in Partner Portal → Admin View.
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Review Opt-Out ───────────────────────────────────────────────────────
+  // Rep marks a job as "never send a review request" — for unhappy customers,
+  // contested claims, or any situation where an ask would backfire. The
+  // Marketing Hub "Reviews ready to send" queue and the Review Engine both
+  // filter these out. Reversible via the same endpoint with optOut:false.
+  app.patch("/api/jobs/:id/review-opt-out", (req, res) => {
+    try {
+      const jobId = Number(req.params.id);
+      const { optOut, reason } = req.body || {};
+      const user = (req as any).user?.email || (req as any).user?.name || "system";
+      const nowIso = new Date().toISOString();
+      if (optOut) {
+        sqlite.prepare(
+          "UPDATE jobs SET review_opt_out = 1, review_opt_out_reason = ?, review_opt_out_by = ?, review_opt_out_at = ? WHERE id = ?",
+        ).run(String(reason || "").slice(0, 500), user, nowIso, jobId);
+      } else {
+        sqlite.prepare(
+          "UPDATE jobs SET review_opt_out = 0, review_opt_out_reason = NULL, review_opt_out_by = NULL, review_opt_out_at = NULL WHERE id = ?",
+        ).run(jobId);
+      }
+      const job: any = sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId);
+      res.json(job);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
 
   // ── Job Sketches ─────────────────────────────────────────────────────────
   // Migrate table on startup

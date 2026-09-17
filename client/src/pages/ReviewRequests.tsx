@@ -104,7 +104,26 @@ export default function ReviewRequests() {
 
   const completedJobs = (jobs as any[]).filter((j: any) => j.status === "complete");
   const sentJobIds = new Set((requests as any[]).map((r: any) => r.jobId));
-  const unsentJobs = completedJobs.filter(j => !sentJobIds.has(j.id));
+  // Exclude problem customers the rep has explicitly flagged as opt-out.
+  // This is enforced everywhere the queue surfaces — Marketing Hub Today
+  // tab, Review Engine unsent list, and any future bulk-send flow.
+  const unsentJobs = completedJobs.filter(j => !sentJobIds.has(j.id) && !j.reviewOptOut);
+  const optedOutJobs = completedJobs.filter(j => j.reviewOptOut);
+
+  const toggleOptOut = async (jobId: number, optOut: boolean, reason?: string) => {
+    try {
+      await apiRequest("PATCH", `/api/jobs/${jobId}/review-opt-out`, { optOut, reason });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      toast({
+        title: optOut ? "Customer excluded" : "Customer re-enabled",
+        description: optOut
+          ? "This job will never appear in the review send queue."
+          : "This job can now receive a review request.",
+      });
+    } catch (e: any) {
+      toast({ title: "Update failed", description: e.message, variant: "destructive" });
+    }
+  };
 
   // Funnel counts
   const sentCount = (requests as any[]).filter((r: any) => r.status !== "pending").length;
@@ -229,10 +248,71 @@ titanrestorationllc.com`;
               {unsentJobs.map((j: any) => {
                 const contact = (contacts as any[]).find(c => c.id === j.contactId);
                 return (
-                  <div key={j.id} className="flex items-center justify-between bg-white dark:bg-yellow-900 rounded px-3 py-2">
-                    <div><p className="text-sm font-medium">{j.jobNumber}</p><p className="text-xs text-muted-foreground">{contact?.name} · {j.address}</p></div>
-                    <Button size="sm" onClick={() => sendMutation.mutate({ jobId: j.id })} disabled={sendMutation.isPending} data-testid={`button-send-${j.id}`}>
-                      <Send className="w-3.5 h-3.5 mr-1" /> Send
+                  <div key={j.id} className="flex items-center justify-between bg-white dark:bg-yellow-900 rounded px-3 py-2 gap-2">
+                    <div className="min-w-0 flex-1"><p className="text-sm font-medium truncate">{j.jobNumber}</p><p className="text-xs text-muted-foreground truncate">{contact?.name} · {j.address}</p></div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          const reason = window.prompt(
+                            "Why are you excluding this customer from review requests?\n(Kept internal — they never see this.)",
+                            "",
+                          );
+                          if (reason === null) return; // cancelled
+                          void toggleOptOut(j.id, true, reason);
+                        }}
+                        data-testid={`button-exclude-${j.id}`}
+                        title="Never send a review request for this job"
+                      >
+                        Exclude
+                      </Button>
+                      <Button size="sm" onClick={() => sendMutation.mutate({ jobId: j.id })} disabled={sendMutation.isPending} data-testid={`button-send-${j.id}`}>
+                        <Send className="w-3.5 h-3.5 mr-1" /> Send
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Opted-out customers — rep-controlled silent list. Nothing here can
+          ever be sent to unless the rep explicitly re-enables. */}
+      {optedOutJobs.length > 0 && (
+        <Card data-testid="card-opted-out">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <span className="text-muted-foreground">Excluded from review requests</span>
+              <Badge variant="outline">{optedOutJobs.length}</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-1.5">
+              {optedOutJobs.map((j: any) => {
+                const contact = (contacts as any[]).find(c => c.id === j.contactId);
+                return (
+                  <div key={j.id} className="flex items-center justify-between text-sm py-1.5 border-b last:border-0 gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium truncate">{j.jobNumber} · {contact?.name || "—"}</div>
+                      {j.reviewOptOutReason && (
+                        <div className="text-xs text-muted-foreground truncate" title={j.reviewOptOutReason}>
+                          Reason: {j.reviewOptOutReason}
+                        </div>
+                      )}
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        if (!window.confirm("Re-enable review requests for this customer?")) return;
+                        void toggleOptOut(j.id, false);
+                      }}
+                      data-testid={`button-reenable-${j.id}`}
+                    >
+                      Re-enable
                     </Button>
                   </div>
                 );

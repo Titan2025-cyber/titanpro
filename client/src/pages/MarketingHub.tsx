@@ -1,22 +1,43 @@
-import { Megaphone, CloudLightning, Target } from "lucide-react";
+// MarketingHub.tsx
+//
+// Rebuilt for the marketing-rep workflow. Consolidates 12 scattered marketing
+// pages into 5 tabs a rep can run their day from — top-down.
+//
+//   1. Today       — KPI strip + action queue (send, nurture, tag, compose)
+//   2. Content     — social post templates + storm-triggered drafts
+//   3. Reviews     — send funnel (manual approval per job — never auto-sent)
+//   4. Referrals   — nurture queue + partner list + profitability
+//   5. Insights    — conversion funnel + lead attribution
+//
+// Deprecated (kept on disk for legacy deep-links but not in the tab list):
+//   • MarketingSuite — empty wrapper, redirect never worked
+//   • StormCAT — merged into Content tab via StormMarketing
+//   • ReferralNurture — surfaced inside Referrals tab
+//
+// Design principle: NOTHING in this hub sends a customer touch without the
+// rep pressing a button. Auto-send is intentionally not built — problem
+// customers stay silent unless the rep explicitly opts them in.
+
+import { Megaphone, CloudLightning, Target, Send, Handshake, Zap } from "lucide-react";
 import HubShell from "@/components/HubShell";
 import MarketingRollup from "@/components/MarketingRollup";
+import MarketingToday from "@/pages/MarketingToday";
 import Marketing from "@/pages/Marketing";
 import StormMarketing from "@/pages/StormMarketing";
-import StormCAT from "@/pages/StormCAT";
-import ConversionRate from "@/pages/ConversionRate";
+import ReviewRequests from "@/pages/ReviewRequests";
+import MarketingReferrals from "@/pages/MarketingReferrals";
+import MarketingInsights from "@/pages/MarketingInsights";
 
-// Marketing Hub flattened from 6 tabs to 3. Retired:
-//   • Marketing Suite  — its templates now live inside Marketing > Social Posts
-//   • Referral Nurture — dormant-partner list moved to Partner Overview
-// Storm Marketing and Storm CAT merged into one "Storm" tab with sub-sections.
-// Files kept on disk so any deep links still resolve; sidebar/nav no longer
-// surfaces them.
-function StormTab() {
+// Content tab — social post templates + storm-triggered drafts stacked.
+function ContentTab() {
   return (
-    <div className="space-y-6">
-      <StormCAT />
-      <StormMarketing />
+    <div className="space-y-8">
+      <section aria-label="Post templates">
+        <Marketing />
+      </section>
+      <section aria-label="Storm-triggered content">
+        <StormMarketing />
+      </section>
     </div>
   );
 }
@@ -27,12 +48,14 @@ export default function MarketingHub() {
       <MarketingRollup />
       <HubShell
         title="Marketing"
-        description="Compose, track conversions, and run storm response — all in one place."
+        description="Run your day from here — send, nurture, compose, measure."
         icon={Megaphone}
         tabs={[
-          { value: "compose", label: "Compose", icon: Megaphone, component: Marketing },
-          { value: "conversion", label: "Conversion", icon: Target, component: ConversionRate },
-          { value: "storm", label: "Storm Response", icon: CloudLightning, component: StormTab },
+          { value: "today", label: "Today", icon: Zap, component: MarketingToday },
+          { value: "content", label: "Content", icon: Megaphone, component: ContentTab },
+          { value: "reviews", label: "Reviews", icon: Send, component: ReviewRequests },
+          { value: "referrals", label: "Referrals", icon: Handshake, component: MarketingReferrals },
+          { value: "insights", label: "Insights", icon: Target, component: MarketingInsights },
         ]}
       />
     </div>
